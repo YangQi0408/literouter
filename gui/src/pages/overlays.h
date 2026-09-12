@@ -16,9 +16,30 @@ inline void labelledInput(eui::Ui& ui, const std::string& id, float x, float y, 
                           const std::string& value, const std::string& placeholder,
                           std::function<void(const std::string&)> onChange, bool multiline = false,
                           float inputHeight = 36.0f) {
-    fieldLabel(ui, id + ".label", x, y, width, label, hint);
+    ui.text(id + ".label")
+        .position(x, y)
+        .size(width, 18.0f)
+        .text(label)
+        .fontSize(12.0f)
+        .lineHeight(16.0f)
+        .fontWeight(600)
+        .color(palette().textMuted)
+        .build();
+
+    if (!hint.empty()) {
+        ui.text(id + ".hint")
+            .position(x, y + 1.0f)
+            .size(width, 16.0f)
+            .text(hint)
+            .fontSize(11.0f)
+            .lineHeight(15.0f)
+            .horizontalAlign(eui::HorizontalAlign::Right)
+            .color(palette().textFaint)
+            .build();
+    }
+
     ui.stack(id + ".wrap")
-        .position(x, y + (hint.empty() ? 18.0f : 26.0f))
+        .position(x, y + 20.0f)
         .size(width, inputHeight)
         .content([&] {
             components::input(ui, id)
@@ -37,14 +58,40 @@ inline void labelledStepper(eui::Ui& ui, const std::string& id, float x, float y
                             const std::string& label, const std::string& hint, long long value,
                             long long step, long long minValue, long long maxValue,
                             std::function<void(long long)> onChange) {
-    fieldLabel(ui, id + ".label", x, y, width, label, hint);
+    constexpr float stepperWidth = 140.0f;
+    constexpr float stepperHeight = 34.0f;
+    const float labelWidth = width - stepperWidth - 12.0f;
+
+    ui.text(id + ".label")
+        .position(x, y + (hint.empty() ? 8.0f : 0.0f))
+        .size(labelWidth, 18.0f)
+        .text(label)
+        .fontSize(12.0f)
+        .lineHeight(16.0f)
+        .fontWeight(600)
+        .color(palette().textMuted)
+        .build();
+
+    if (!hint.empty()) {
+        ui.text(id + ".hint")
+            .position(x, y + 18.0f)
+            .size(labelWidth, 32.0f)
+            .text(hint)
+            .fontSize(11.0f)
+            .lineHeight(15.0f)
+            .wrap(true)
+            .maxWidth(labelWidth)
+            .color(palette().textFaint)
+            .build();
+    }
+
     ui.stack(id + ".wrap")
-        .position(x, y + 18.0f)
-        .size(width, 36.0f)
+        .position(x + width - stepperWidth, y + (hint.empty() ? 0.0f : 4.0f))
+        .size(stepperWidth, stepperHeight)
         .content([&] {
             components::stepper(ui, id)
                 .theme(uiTokens())
-                .size(width, 36.0f)
+                .size(stepperWidth, stepperHeight)
                 .value(value)
                 .step(step)
                 .min(minValue)
@@ -158,13 +205,13 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                                   [&editor](const std::string& value) { editor.name = value; });
             detail::labelledInput(ui, "overlays.editor.baseurl", leftX, 216.0f, columnWidth,
                                   std::string(literouter::i18n::tr("Base URL")),
-                                  {std::string(literouter::i18n::tr("Includes the /v1 root of the relay."))},
+                                  {std::string(literouter::i18n::tr("Includes /v1 root"))},
                                   editor.baseUrl, "https://api.example.com/v1",
                                   [&editor](const std::string& value) { editor.baseUrl = value; });
             detail::labelledInput(
                 ui, "overlays.editor.apikey", leftX, 282.0f, columnWidth,
                 std::string(literouter::i18n::tr("API key")),
-                {std::string(literouter::i18n::tr("Literal, or ${ENV_VAR} / $ENV_VAR to read it from the environment at request time."))},
+                {std::string(literouter::i18n::tr("Supports ${ENV_VAR}"))},
                 editor.apiKey, "${OPENAI_API_KEY}", [&editor](const std::string& value) {
                     editor.apiKey = value;
                 });
