@@ -313,6 +313,28 @@ void testExtractApiKey() {
     LR_CHECK_EQ(literouter::extractApiKey(Headers{{"accept", "application/json"}}), "");
 }
 
+void testJoinPath() {
+    LR_GROUP("joinPath");
+    LR_CHECK_EQ(literouter::joinPath("", "/chat/completions"), "/chat/completions");
+    LR_CHECK_EQ(literouter::joinPath("/v1", "/chat/completions"), "/v1/chat/completions");
+    LR_CHECK_EQ(literouter::joinPath("/v1/", "/chat/completions"), "/v1/chat/completions");
+    LR_CHECK_EQ(literouter::joinPath("/v1", "chat/completions"), "/v1/chat/completions");
+    LR_CHECK_EQ(literouter::joinPath("", "chat/completions"), "/chat/completions");
+    LR_CHECK_EQ(literouter::joinPath("", ""), "/");
+    LR_CHECK_EQ(literouter::joinPath("/v1", ""), "/v1");
+    LR_CHECK_EQ(literouter::joinPath("/v1/", ""), "/v1");
+
+    // Segment deduplication: avoids "/v1/v1/messages" when base_url prefix is "/v1"
+    LR_CHECK_EQ(literouter::joinPath("/v1", "/v1/messages"), "/v1/messages");
+    LR_CHECK_EQ(literouter::joinPath("/v1/", "/v1/messages"), "/v1/messages");
+    LR_CHECK_EQ(literouter::joinPath("", "/v1/messages"), "/v1/messages");
+    LR_CHECK_EQ(literouter::joinPath("/v1beta", "/v1beta/models/gemini"), "/v1beta/models/gemini");
+    LR_CHECK_EQ(literouter::joinPath("/v1beta/", "/v1beta/models/gemini"), "/v1beta/models/gemini");
+    LR_CHECK_EQ(literouter::joinPath("/v1", "/v1"), "/v1");
+    // Nested prefixes like "/alpha/v1" preserve the sub-path
+    LR_CHECK_EQ(literouter::joinPath("/alpha/v1", "/v1/messages"), "/alpha/v1/v1/messages");
+}
+
 } // namespace
 
 int main() {
@@ -326,6 +348,7 @@ int main() {
     testHexId();
     testSecureEquals();
     testSplitBaseUrl();
+    testJoinPath();
     testExtractApiKey();
     return LR_SUMMARY("test_util");
 }

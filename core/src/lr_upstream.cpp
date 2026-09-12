@@ -179,23 +179,6 @@ std::vector<std::string> parseModelIds(std::string_view body) {
     return out;
 }
 
-// Joins a relay's base path with an endpoint. Either side may or may not carry
-// its own slash; the result always has exactly one between them.
-std::string joinPath(std::string_view prefix, std::string_view path) {
-    std::string out{prefix};
-    if (!out.empty() && out.back() == '/') {
-        out.pop_back();
-    }
-    if (path.empty()) {
-        return out.empty() ? "/" : out;
-    }
-    if (path.front() != '/') {
-        out.push_back('/');
-    }
-    out.append(path);
-    return out;
-}
-
 void configure(h::Client &client, const ProviderConfig &provider) {
     client.set_follow_location(true);
     // Blocking mode: the proxy's own worker thread is the concurrency unit, so

@@ -65,21 +65,6 @@ bool ciEqual(std::string_view a, std::string_view b) {
     return a.size() == b.size() && toLower(a) == toLower(b);
 }
 
-std::string joinPath(std::string_view prefix, std::string_view path) {
-    std::string out{prefix};
-    if (!out.empty() && out.back() == '/') {
-        out.pop_back();
-    }
-    if (path.empty()) {
-        return out.empty() ? std::string{"/"} : out;
-    }
-    if (path.front() != '/') {
-        out.push_back('/');
-    }
-    out.append(path);
-    return out;
-}
-
 bool headerExists(const std::vector<std::pair<std::string, std::string>> &headers,
                   std::string_view name) {
     return std::ranges::any_of(headers, [name](const auto &entry) {

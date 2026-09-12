@@ -248,6 +248,33 @@ bool splitBaseUrl(std::string_view base_url, std::string &root, std::string &pre
     return true;
 }
 
+std::string joinPath(std::string_view prefix, std::string_view path) {
+    std::string out{prefix};
+    while (!out.empty() && out.back() == '/') {
+        out.pop_back();
+    }
+    if (path.empty()) {
+        return out.empty() ? "/" : out;
+    }
+    if (path.front() != '/') {
+        out.push_back('/');
+        out.append(path);
+    } else {
+        // If out already ends with the leading segment of path, strip it from path.
+        // E.g. out ends with "/v1" and path starts with "/v1/" or is "/v1".
+        // Or out ends with "/v1beta" and path starts with "/v1beta/".
+        const auto next_slash = path.find('/', 1);
+        const std::string_view first_seg = (next_slash == std::string_view::npos)
+                                               ? path
+                                               : path.substr(0, next_slash);
+        if (out == first_seg) {
+            path = (next_slash == std::string_view::npos) ? std::string_view{} : path.substr(next_slash);
+        }
+        out.append(path);
+    }
+    return out.empty() ? "/" : out;
+}
+
 // ── small string utilities ───────────────────────────────────────────────────
 
 std::string trim(std::string_view text) {

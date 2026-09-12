@@ -655,6 +655,10 @@ bool secureEquals(std::string_view a, std::string_view b);
 bool splitBaseUrl(std::string_view base_url, std::string &root, std::string &prefix,
                   std::string &scheme);
 
+// Joins a base URL prefix with an endpoint path, normalizing slashes and
+// eliminating duplicate path segments (e.g. prefix "/v1" + path "/v1/messages" -> "/v1/messages").
+std::string joinPath(std::string_view prefix, std::string_view path);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Small utilities the front ends share.
 // ─────────────────────────────────────────────────────────────────────────────
