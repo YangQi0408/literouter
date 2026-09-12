@@ -696,7 +696,12 @@ void group5ModelList(StubRelay &relay_a, literouter::ProxyServer &proxy) {
     LR_CHECK(listed == expected);
     LR_CHECK(std::ranges::find(listed, kRouteModel) != listed.end());
     LR_CHECK(std::ranges::find(listed, kCloserModel) != listed.end());
-    LR_CHECK(std::ranges::find(listed, kPassModel) != listed.end());
+    LR_CHECK(std::ranges::find(listed, kPassModel) == listed.end()); // Unrouted models are excluded
+
+    // /models without /v1 prefix also works and returns identical data
+    const Hit hitNoV1 = getPath(port, "/models");
+    LR_CHECK_EQ(hitNoV1.status, 200);
+    LR_CHECK_EQ(hitNoV1.body, hit.body);
     // The route's hops are exposed for the console, in author order.
     for (const auto &item : parsed.at("data")) {
         if (item.at("id").get<std::string>() == kRouteModel) {

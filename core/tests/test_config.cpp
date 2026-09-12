@@ -687,10 +687,16 @@ void testModelHelpers() {
     // A disabled route is still findable: the router decides what to do with it.
     LR_CHECK(constConfig.route("aa") != nullptr);
 
-    // Routes first, then provider-advertised ids, de-duplicated and sorted;
-    // disabled relays and disabled/empty routes contribute nothing.
-    const std::vector<std::string> expected{"a", "b", "c", "zz"};
-    LR_CHECK(config.logicalModels() == expected);
+    // Only configured and enabled routes are returned by logicalModels() / routedModels().
+    // Disabled routes and empty route names contribute nothing.
+    const std::vector<std::string> expectedRoutes{"zz"};
+    LR_CHECK(config.logicalModels() == expectedRoutes);
+    LR_CHECK(config.routedModels() == expectedRoutes);
+
+    // allModels() includes both routed and provider-advertised models, de-duplicated and sorted.
+    const std::vector<std::string> expectedAll{"a", "b", "c", "zz"};
+    LR_CHECK(config.allModels() == expectedAll);
+
     // Sorted and unique by construction, so sorting again changes nothing.
     auto models = config.logicalModels();
     std::ranges::sort(models);

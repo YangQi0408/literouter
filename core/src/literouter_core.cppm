@@ -126,9 +126,11 @@ struct AppConfig {
     const ProviderConfig *provider(std::string_view id) const;
     ProviderConfig *provider(std::string_view id);
     const RouteConfig *route(std::string_view model) const;
-    // Every logical model name, sorted and de-duplicated: route names first,
-    // then provider-advertised ids that no route claims.
+    // Every configured route's model name, sorted and de-duplicated.
     std::vector<std::string> logicalModels() const;
+    std::vector<std::string> routedModels() const;
+    // All known models: configured routes plus provider-advertised models.
+    std::vector<std::string> allModels() const;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

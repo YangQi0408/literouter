@@ -1450,7 +1450,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         res.set_content(json{{"models", std::move(models)}}.dump(), "application/json");
     });
 
-    server.Get("/v1/models", [this](const h::Request &, h::Response &res) {
+    const auto modelsListHandler = [this](const h::Request &, h::Response &res) {
         const AppConfig cfg = impl_->snapshotConfig();
         json data = json::array();
         for (const auto &name : cfg.logicalModels()) {
@@ -1468,24 +1468,17 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
                 item["literouter"] = {{"kind", "route"},
                                       {"targets", std::move(hops)},
                                       {"enabled", route->enabled}};
-            } else {
-                json relays = json::array();
-                for (const auto &provider : cfg.providers) {
-                    if (provider.enabled && std::ranges::find(provider.models, name) !=
-                                                provider.models.end()) {
-                        relays.push_back(provider.id);
-                    }
-                }
-                item["literouter"] = {{"kind", "passthrough"}, {"targets", std::move(relays)}};
             }
             data.push_back(std::move(item));
         }
         res.status = 200;
         res.set_content(json{{"object", "list"}, {"data", std::move(data)}}.dump(),
                         "application/json");
-    });
+    };
+    server.Get("/v1/models", modelsListHandler);
+    server.Get("/models", modelsListHandler);
 
-    server.Get(R"(/v1/models/(.+))", [this](const h::Request &req, h::Response &res) {
+    const auto modelDetailHandler = [this](const h::Request &req, h::Response &res) {
         const AppConfig cfg = impl_->snapshotConfig();
         const std::string name = req.matches[1];
         const auto known = cfg.logicalModels();
@@ -1497,7 +1490,9 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         res.status = 200;
         res.set_content(json{{"id", name}, {"object", "model"}, {"owned_by", "literouter"}}.dump(),
                         "application/json");
-    });
+    };
+    server.Get(R"(/v1/models/(.+))", modelDetailHandler);
+    server.Get(R"(/models/(.+))", modelDetailHandler);
 
     server.Get("/health", [](const h::Request &, h::Response &res) {
         res.status = 200;

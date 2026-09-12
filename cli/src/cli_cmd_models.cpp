@@ -46,9 +46,9 @@ std::vector<Hop> passThroughProviders(const literouter::AppConfig &config,
     return hops;
 }
 
-std::vector<ModelRow> buildRows(const literouter::AppConfig &config) {
+std::vector<ModelRow> buildRows(const literouter::AppConfig &config, bool showAll = false) {
     std::vector<ModelRow> rows;
-    for (const auto &model : config.logicalModels()) {
+    for (const auto &model : showAll ? config.allModels() : config.logicalModels()) {
         ModelRow row;
         row.model = model;
         if (const literouter::RouteConfig *route = config.route(model); route != nullptr) {
@@ -91,7 +91,7 @@ std::string renderChain(const std::vector<Hop> &hops) {
     return out;
 }
 
-void runModels(Context &ctx) {
+void runModels(Context &ctx, bool showAll = false) {
     configureColor(ctx.noColor);
     auto storeOpt = loadStore(ctx);
     if (!storeOpt) {
@@ -99,7 +99,7 @@ void runModels(Context &ctx) {
         return;
     }
     const literouter::AppConfig &config = storeOpt->config();
-    const std::vector<ModelRow> rows = buildRows(config);
+    const std::vector<ModelRow> rows = buildRows(config, showAll);
 
     if (ctx.json) {
         json array = json::array();
@@ -141,13 +141,19 @@ void runModels(Context &ctx) {
     table.print();
 }
 
+struct ModelsOptions {
+    bool all = false;
+};
+
 } // namespace
 
 void register_models(CLI::App &root, Context &ctx) {
+    auto opts = std::make_shared<ModelsOptions>();
     CLI::App *sub = root.add_subcommand(
         "models", std::string(literouter::i18n::tr("List every logical model and the ordered relays that can serve it")));
+    sub->add_flag("-a,--all", opts->all, "Include unrouted provider models in pass-through mode");
     sub->fallthrough();
-    sub->callback([&ctx] { runModels(ctx); });
+    sub->callback([&ctx, opts] { runModels(ctx, opts->all); });
 }
 
 } // namespace lrcli

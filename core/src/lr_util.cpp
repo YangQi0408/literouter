@@ -440,14 +440,25 @@ const RouteConfig *AppConfig::route(std::string_view model) const {
     return nullptr;
 }
 
-std::vector<std::string> AppConfig::logicalModels() const {
+std::vector<std::string> AppConfig::routedModels() const {
     std::vector<std::string> out;
-    out.reserve(routes.size() + 8);
+    out.reserve(routes.size());
     for (const auto &entry : routes) {
         if (entry.enabled && !entry.model.empty()) {
             out.push_back(entry.model);
         }
     }
+    std::ranges::sort(out);
+    out.erase(std::ranges::unique(out).begin(), out.end());
+    return out;
+}
+
+std::vector<std::string> AppConfig::logicalModels() const {
+    return routedModels();
+}
+
+std::vector<std::string> AppConfig::allModels() const {
+    std::vector<std::string> out = routedModels();
     for (const auto &entry : providers) {
         if (!entry.enabled) {
             continue;
