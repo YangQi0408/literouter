@@ -358,7 +358,7 @@ LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
 ## 工程结构与架构设计
 
 ```text
-/home/yangqi/literouter/
+literouter/
 ├── mcpp.toml                   # 虚拟工作区总清单，锁定依赖与编译器工具链
 ├── AGENTS.md                   # 开发者与 AI Agent 最高规范守则
 ├── core/                       # 核心引擎层：literouter.core（C++23 模块化静态库）

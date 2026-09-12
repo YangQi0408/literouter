@@ -12,7 +12,7 @@
   - 在本地对外暴露标准的 OpenAI 兼容 HTTP 端点（`http://127.0.0.1:8787/v1`）。
   - 对内自动聚合多个上游中转站（Relay Providers），实现模型名映射、有序故障转移（Failover）、熔断器保护（Circuit Breaker）、流式 SSE 透传、连通性体检与遥测统计。
   - 具备全功能 CLI 与基于 `eui-neo` (OpenGL) 的独立桌面图形控制台，实现开箱即用的多中转站管理与监控。
-- **仓库根路径**：`/home/yangqi/literouter`
+- **项目名称**：`literouter`
 - **构建系统**：`mcpp` 虚拟 Workspace（包含 `core`、`cli`、`gui` 三个子包），统一锁定工具链为 `llvm@22.1.8`（Clang + libc++ + C++23 Modules）。
 
 ---
@@ -105,7 +105,7 @@ test result ok. 10 passed; 0 failed
 ## 4. 工程目录与源码映射
 
 ```
-/home/yangqi/literouter
+literouter
 ├── mcpp.toml                   # 虚拟 Workspace 清单，锁定依赖版本与 llvm@22.1.8
 ├── README.md                   # 详细的用户使用说明书与架构图
 ├── HANDOFF.md                  # 【本文档】项目移交与交接说明
@@ -169,7 +169,7 @@ test result ok. 10 passed; 0 failed
 
 ## 5. 核心开发与验证指令速查
 
-所有指令均在仓库根目录 `/home/yangqi/literouter` 下执行：
+所有指令均在仓库根目录下执行：
 
 ### 5.1 编译与构建
 
@@ -283,5 +283,5 @@ mcpp run -p gui
 1. [ ] **检视环境**：确认 `clang++ -v` 与 `mcpp --version` 正常可用。
 2. [ ] **执行全量核心单测**：运行 `mcpp test -p core`，确保 8 组测试全绿。
 3. [ ] **编译验证 CLI 与 GUI**：运行 `mcpp build --workspace` 确保零错误。
-4. [ ] **阅读规范**：通读 [`AGENTS.md`](file:///home/yangqi/literouter/AGENTS.md) 了解代码与提交规范。
+4. [ ] **阅读规范**：通读 [`AGENTS.md`](AGENTS.md) 了解代码与提交规范。
 5. [ ] **开始开发**：从上述 Backlog 或用户下发的新需求中选取任务开展工作。

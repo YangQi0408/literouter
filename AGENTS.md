@@ -11,7 +11,7 @@
 工程采用 `mcpp` 虚拟工作区（Virtual Workspace），划分为三个子成员（Members）：
 
 ```text
-/home/yangqi/literouter/
+literouter/
 ├── mcpp.toml                   # 虚拟工作区总清单，锁定工具链与第三方依赖
 ├── HANDOFF.md                  # 项目转交与交接说明
 ├── AGENTS.md                   # 【当前文件】Agent 操作指南与开发规范
@@ -57,13 +57,13 @@
 
 ### 规则 6：多任务/并发 Agent 构建隔离
 - `mcpp` 会在项目的 `target/` 目录下放置编译锁和对象缓存。
-- 若有多个 Agent 正在并发修改/构建，**切勿直接在 `/home/yangqi/literouter` 根目录下并发执行构建**。应将代码复制到独立的沙盒（例如 `/tmp/lr-sandbox`）中进行编译与单测，验证全绿后再复制回本工程目录。
+- 若有多个 Agent 正在并发修改/构建，**切勿直接在工作区根目录下并发执行构建**。应将代码复制到独立的沙盒（例如 `/tmp/lr-sandbox`）中进行编译与单测，验证全绿后再复制回本工程目录。
 
 ---
 
 ## 3. 标准命令与操作速查
 
-所有命令在 `/home/yangqi/literouter` 根目录执行：
+所有命令在项目根目录执行：
 
 ### 3.1 构建命令
 ```bash
