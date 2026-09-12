@@ -175,6 +175,12 @@ void runDoctor(Context &ctx) {
                                  ? dim("tls trust store    library defaults (no system "
                                        "bundle found)")
                                  : dim("tls trust store    " + ca));
+#ifdef _WIN32
+        if (ca.empty()) {
+            step.hints.push_back(
+                "if HTTPS requests fail on Windows, set LITEROUTER_CA_BUNDLE to your Git/curl ca-bundle.crt");
+        }
+#endif
         int failures = 0;
         int checked = 0;
         for (const auto &provider : config.providers) {

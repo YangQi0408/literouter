@@ -153,8 +153,18 @@ std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path
 
     std::filesystem::rename(temp, path, ec);
     if (ec) {
-        std::filesystem::remove(temp, ec);
-        return std::unexpected(std::format("cannot replace {}: {}", path.string(), ec.message()));
+#ifdef _WIN32
+        // On Windows, rename may fail if the destination file exists with certain file sharing flags.
+        // Try remove + rename as fallback.
+        ec.clear();
+        std::filesystem::remove(path, ec);
+        ec.clear();
+        std::filesystem::rename(temp, path, ec);
+#endif
+        if (ec) {
+            std::filesystem::remove(temp, ec);
+            return std::unexpected(std::format("cannot replace {}: {}", path.string(), ec.message()));
+        }
     }
 
     // Keys are in here, so the file should not be readable by anyone else.

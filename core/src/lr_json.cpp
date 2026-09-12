@@ -309,6 +309,8 @@ void ensureLocalTimezone() {
                 setenv("TZ", ":/etc/localtime", 0);
                 tzset();
             }
+#else
+            _tzset();
 #endif
         }
     });

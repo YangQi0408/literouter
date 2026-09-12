@@ -44,6 +44,19 @@ std::filesystem::path defaultConfigDir() {
     if (const char *xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && *xdg != '\0') {
         return std::filesystem::path{xdg} / "literouter";
     }
+#ifdef _WIN32
+    // On Windows, if a config already exists in %USERPROFILE%\.config\literouter,
+    // continue using it for backward compatibility.
+    const auto dotConfig = userHome() / ".config" / "literouter";
+    std::error_code ec;
+    if (std::filesystem::exists(dotConfig / "config.json", ec)) {
+        return dotConfig;
+    }
+    // Otherwise, standard Windows configuration directory is %APPDATA%\literouter
+    if (const char *appdata = std::getenv("APPDATA"); appdata != nullptr && *appdata != '\0') {
+        return std::filesystem::path{appdata} / "literouter";
+    }
+#endif
     return userHome() / ".config" / "literouter";
 }
 
@@ -61,6 +74,12 @@ std::filesystem::path defaultStateDir() {
     if (const char *xdg = std::getenv("XDG_STATE_HOME"); xdg != nullptr && *xdg != '\0') {
         return std::filesystem::path{xdg} / "literouter";
     }
+#ifdef _WIN32
+    // On Windows, standard local application state directory is %LOCALAPPDATA%\literouter
+    if (const char *local = std::getenv("LOCALAPPDATA"); local != nullptr && *local != '\0') {
+        return std::filesystem::path{local} / "literouter";
+    }
+#endif
     return userHome() / ".local" / "state" / "literouter";
 }
 
@@ -87,6 +106,33 @@ std::filesystem::path resolveCaBundle() {
         }
     }
 
+#ifdef _WIN32
+    // On Windows, scan common locations where Git, curl, or OpenSSL bundles are installed.
+    const auto fromEnvDir = [](const char *envName, std::string_view subpath) -> std::filesystem::path {
+        const char *base = std::getenv(envName);
+        if (base == nullptr || *base == '\0') {
+            return {};
+        }
+        auto p = std::filesystem::path{base} / subpath;
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(p, ec)) {
+            return p;
+        }
+        return {};
+    };
+
+    for (const auto &[envName, subpath] : {
+             std::pair{"ProgramFiles", "Git/usr/ssl/certs/ca-bundle.crt"},
+             std::pair{"ProgramFiles(x86)", "Git/usr/ssl/certs/ca-bundle.crt"},
+             std::pair{"LocalAppData", "Programs/Git/usr/ssl/certs/ca-bundle.crt"},
+             std::pair{"ProgramData", "curl/bin/curl-ca-bundle.crt"},
+             std::pair{"SystemRoot", "System32/curl-ca-bundle.crt"},
+         }) {
+        if (auto p = fromEnvDir(envName, subpath); !p.empty()) {
+            return p;
+        }
+    }
+#else
     // Ordered by how common the path is, not by distro: a Debian-family bundle
     // is the likeliest hit on any machine that also has an /etc/pki copy.
     static constexpr std::array<std::string_view, 9> candidates{
@@ -106,6 +152,7 @@ std::filesystem::path resolveCaBundle() {
             return std::filesystem::path{candidate};
         }
     }
+#endif
     return {};
 }
 
