@@ -1,0 +1,9 @@
+{
+  // Use the clangd that ships with mcpp's LLVM toolchain, NOT the system one.
+  // C++ module PCMs (std.pcm) are locked to the exact compiler build, so a
+  // different clangd rejects them with "ast_file_different_branch".
+  "clangd.path": "/home/yangqi/.mcpp/registry/data/xpkgs/xim-x-llvm-tools/22.1.8/bin/clangd",
+  "clangd.arguments": [
+    "--experimental-modules-support"
+  ]
+}

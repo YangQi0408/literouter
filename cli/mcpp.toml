@@ -1,0 +1,22 @@
+[package]
+namespace   = "literouter"
+name        = "cli"
+description = "literouter — the command-line front end"
+
+[targets.literouter]
+kind = "bin"
+main = "src/cli_main.cpp"
+
+[dependencies.literouter]
+core = { path = "../core" }
+
+[dependencies.compat]
+# CLI11 is header-only in this index: the include root is `*/include`, so the
+# spelling below is `<CLI/CLI.hpp>`. It is the only direct dependency the CLI
+# needs — `status` and `logs` both go through core's admin client
+# (fetchStatus/fetchLogs), so this front end never reaches for httplib itself.
+CLI11 = { workspace = true }
+
+[build]
+bmi_schedule = "on"
+

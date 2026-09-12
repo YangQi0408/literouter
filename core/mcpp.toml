@@ -1,0 +1,42 @@
+[package]
+namespace   = "literouter"
+name        = "core"
+description = "literouter core — config model, routing/failover engine, OpenAI-compatible proxy"
+# [workspace.package] also supplies these, but they are spelled out because a
+# *path* dependency on this member from outside the workspace has no workspace to
+# inherit from, and mcpp then refuses to load the manifest at all for a missing
+# package.version. Keeping core consumable standalone is worth the duplication.
+version     = "0.1.0"
+license     = "Apache-2.0"
+
+# The module root is spelled out rather than left to the `src/<pkg-tail>.cppm`
+# convention: the package tail is "core", and a file literally called
+# core.cppm is the kind of generic basename that collides in mcpp's flat
+# object directory when a dependency also has one.
+[lib]
+path = "src/literouter_core.cppm"
+
+[dependencies.compat]
+# `tls` is not optional here: every real relay is https, and without
+# CPPHTTPLIB_OPENSSL_SUPPORT the client refuses the scheme outright. `zlib`
+# is the same argument one layer down — a relay that gzips its answer needs a
+# decoder on this side, and doing it here keeps the proxy from having to pass a
+# compressed body through while it inspects it for `usage`.
+httplib = { workspace = true, features = ["tls", "zlib"] }
+
+[dependencies.nlohmann]
+json.workspace = true
+
+# cpp-httplib is header-only and its implementation is compiled into the two
+# units that include it, so this package's own translation units are where the
+# socket code lives. No link-time dependency is added by either entry above.
+
+[build]
+# The proxy holds one worker per in-flight streaming request (the server's
+# thread pumps the downstream sink, the reader thread pulls upstream).
+# 8 workers is ample for a local single-user proxy — enough for a few
+# concurrent SSE streams and admin requests while keeping the thread-local
+# connection pool hit rate high and virtual memory overhead low (~64 MB stack
+# reservation vs ~384 MB at 48).
+cxxflags = ["-DCPPHTTPLIB_THREAD_POOL_COUNT=8"]
+bmi_schedule = "on"

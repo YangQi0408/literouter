@@ -1,0 +1,34 @@
+# literouter — one local AI endpoint that fans out to every relay you configured.
+#
+# Virtual workspace: the root produces no artifact. Three members:
+#   core/  literouter.core  — config, routing, proxy engine (library)
+#   cli/   literouter.cli   — the `literouter` command (binary)
+#   gui/   literouter.gui   — the EUI-NEO console (binary, needs a display)
+#
+# `mcpp build` at the root builds all three; `mcpp test` runs every member's
+# tests; `mcpp run -p cli -- serve` and `mcpp run -p gui` drive the two front
+# ends.
+[workspace]
+members = ["core", "cli", "gui"]
+
+# clang + libc++ is the toolchain mcpp builds the `std` PCM for; clangd consumes
+# that at target/<triple>/<hash>/pcm.cache/std.pcm, so the editor and the build
+# agree on one module graph. eui-neo (a header-compat package) is pinned to the
+# same LLVM major by the index, so there is no second C++ runtime in the link.
+[toolchain]
+default = "llvm@22.1.8"
+
+[workspace.package]
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["literouter contributors"]
+
+# Declared once here; members opt in with `.workspace = true`, so a security
+# bump to httplib or eui-neo is one edit rather than three.
+[workspace.dependencies.compat]
+httplib = "0.53.1"
+CLI11   = "2.7.2"
+eui-neo = "0.5.9"
+
+[workspace.dependencies.nlohmann]
+json = "3.12.0"

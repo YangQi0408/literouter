@@ -1,0 +1,532 @@
+// Unit tests for upstream protocol adapters (Anthropic Claude, Google Gemini,
+// OpenAI Responses, and standard OpenAI compatible).
+#include "lr_test_check.h"
+
+import literouter.core;
+
+namespace {
+
+using literouter::ProviderConfig;
+using literouter::resolveChatPath;
+using literouter::resolveModelsPath;
+using literouter::adaptChatRequest;
+using literouter::adaptChatResponse;
+using literouter::adaptResponsesToChat;
+using literouter::adaptChatToResponses;
+using literouter::adaptAnthropicToChat;
+using literouter::adaptGeminiToChat;
+using literouter::adaptChatToAnthropic;
+using literouter::adaptChatToGemini;
+using literouter::StreamProtocolAdapter;
+
+void testResolvePaths() {
+    LR_GROUP("resolveChatPath and resolveModelsPath");
+
+    ProviderConfig openai;
+    openai.protocol = "openai";
+    openai.chat_path = "/chat/completions";
+    LR_CHECK_EQ(resolveChatPath(openai, "gpt-4o", false), "/chat/completions");
+    LR_CHECK_EQ(resolveChatPath(openai, "gpt-4o", true), "/chat/completions");
+    LR_CHECK_EQ(resolveModelsPath(openai), "/models");
+
+    ProviderConfig anthropic;
+    anthropic.protocol = "anthropic";
+    anthropic.chat_path = "/chat/completions";
+    LR_CHECK_EQ(resolveChatPath(anthropic, "claude-3-5-sonnet", false), "/v1/messages");
+    LR_CHECK_EQ(resolveChatPath(anthropic, "claude-3-5-sonnet", true), "/v1/messages");
+    LR_CHECK_EQ(resolveModelsPath(anthropic), "/v1/models");
+
+    // Anthropic with custom path overridden
+    anthropic.chat_path = "/custom/messages";
+    LR_CHECK_EQ(resolveChatPath(anthropic, "claude-3-5-sonnet", false), "/custom/messages");
+
+    ProviderConfig gemini;
+    gemini.protocol = "gemini";
+    LR_CHECK_EQ(resolveChatPath(gemini, "gemini-1.5-pro", false),
+                "/v1beta/models/gemini-1.5-pro:generateContent");
+    LR_CHECK_EQ(resolveChatPath(gemini, "gemini-1.5-pro", true),
+                "/v1beta/models/gemini-1.5-pro:streamGenerateContent?alt=sse");
+    LR_CHECK_EQ(resolveModelsPath(gemini), "/v1beta/models");
+
+    ProviderConfig responses;
+    responses.protocol = "openai_responses";
+    responses.chat_path = "/chat/completions";
+    LR_CHECK_EQ(resolveChatPath(responses, "gpt-4o", false), "/v1/responses");
+}
+
+void testAnthropicRequestAdaptation() {
+    LR_GROUP("Anthropic request adaptation");
+
+    ProviderConfig provider;
+    provider.protocol = "anthropic";
+
+    // Test system extraction and message concatenation
+    std::string req = R"({
+        "model": "claude-3-5-sonnet-20241022",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+            {"role": "user", "content": "Another greeting"}
+        ],
+        "temperature": 0.7
+    })";
+
+    std::string adapted = adaptChatRequest(provider, "claude-3-5-sonnet-20241022", req, false);
+    LR_CHECK(adapted.find(R"("system":"You are a helpful assistant.")") != std::string::npos);
+    // Consecutive user messages should be merged
+    LR_CHECK(adapted.find("Hello\\n\\nAnother greeting") != std::string::npos);
+    // Default max_tokens should be injected
+    LR_CHECK(adapted.find(R"("max_tokens":4096)") != std::string::npos);
+    LR_CHECK(adapted.find(R"("model":"claude-3-5-sonnet-20241022")") != std::string::npos);
+
+    // Test assistant leading message handling
+    std::string assistant_first = R"({
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {"role": "assistant", "content": "I am already here."}
+        ]
+    })";
+    std::string adapted_asst = adaptChatRequest(provider, "claude-3-5-sonnet", assistant_first, false);
+    // Anthropic requires user message first; our adapter inserts a dummy user message
+    LR_CHECK(adapted_asst.find(R"("role":"user")") != std::string::npos);
+
+    // Test tool conversion
+    std::string tools_req = R"({
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Calculate 2+2"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "calc",
+                    "description": "Calculator",
+                    "parameters": {"type": "object"}
+                }
+            }
+        ]
+    })";
+    std::string adapted_tools = adaptChatRequest(provider, "claude-3-5-sonnet", tools_req, false);
+    LR_CHECK(adapted_tools.find(R"("tools":)") != std::string::npos);
+    LR_CHECK(adapted_tools.find(R"("input_schema":)") != std::string::npos);
+    LR_CHECK(adapted_tools.find(R"("name":"calc")") != std::string::npos);
+}
+
+void testAnthropicResponseAdaptation() {
+    LR_GROUP("Anthropic response adaptation");
+
+    ProviderConfig provider;
+    provider.protocol = "anthropic";
+
+    std::string anthropic_resp = R"({
+        "id": "msg_01XFDUDYJgAACzvnptvVoYEL",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Hello! How can I assist you today?"}
+        ],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 9
+        }
+    })";
+
+    std::string adapted = adaptChatResponse(provider, anthropic_resp, "claude-3-5-sonnet");
+    LR_CHECK(adapted.find(R"("object":"chat.completion")") != std::string::npos);
+    LR_CHECK(adapted.find(R"("model":"claude-3-5-sonnet")") != std::string::npos);
+    LR_CHECK(adapted.find("Hello! How can I assist you today?") != std::string::npos);
+    LR_CHECK(adapted.find(R"("finish_reason":"stop")") != std::string::npos);
+    LR_CHECK(adapted.find(R"("prompt_tokens":12)") != std::string::npos);
+    LR_CHECK(adapted.find(R"("completion_tokens":9)") != std::string::npos);
+    LR_CHECK(adapted.find(R"("total_tokens":21)") != std::string::npos);
+
+    // Test tool_use in response
+    std::string anthropic_tool_resp = R"({
+        "id": "msg_02",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_01A09q90tc1qmvqvvdjsBs43",
+                "name": "calc",
+                "input": {"expr": "2+2"}
+            }
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 5, "output_tokens": 10}
+    })";
+
+    std::string adapted_tool = adaptChatResponse(provider, anthropic_tool_resp, "claude-3-5-sonnet");
+    LR_CHECK(adapted_tool.find(R"("tool_calls":)") != std::string::npos);
+    LR_CHECK(adapted_tool.find("toolu_01A09q90tc1qmvqvvdjsBs43") != std::string::npos);
+    LR_CHECK(adapted_tool.find(R"("name":"calc")") != std::string::npos);
+    LR_CHECK(adapted_tool.find(R"("finish_reason":"tool_calls")") != std::string::npos);
+}
+
+void testGeminiAdaptation() {
+    LR_GROUP("Google Gemini request & response adaptation");
+
+    ProviderConfig provider;
+    provider.protocol = "gemini";
+
+    std::string req = R"({
+        "model": "gemini-1.5-pro",
+        "messages": [
+            {"role": "system", "content": "You are Gemini."},
+            {"role": "user", "content": "Who made you?"},
+            {"role": "assistant", "content": "Google."}
+        ],
+        "temperature": 0.2,
+        "max_tokens": 1000
+    })";
+
+    std::string adapted_req = adaptChatRequest(provider, "gemini-1.5-pro", req, false);
+    LR_CHECK(adapted_req.find(R"("systemInstruction":)") != std::string::npos);
+    LR_CHECK(adapted_req.find("You are Gemini.") != std::string::npos);
+    LR_CHECK(adapted_req.find(R"("role":"model")") != std::string::npos);
+    LR_CHECK(adapted_req.find(R"("role":"user")") != std::string::npos);
+    LR_CHECK(adapted_req.find(R"("maxOutputTokens":1000)") != std::string::npos);
+
+    std::string gemini_resp = R"({
+        "candidates": [
+            {
+                "content": {
+                    "parts": [{"text": "I am a large language model trained by Google."}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 15,
+            "candidatesTokenCount": 10,
+            "totalTokenCount": 25
+        }
+    })";
+
+    std::string adapted_resp = adaptChatResponse(provider, gemini_resp, "gemini-1.5-pro");
+    LR_CHECK(adapted_resp.find(R"("object":"chat.completion")") != std::string::npos);
+    LR_CHECK(adapted_resp.find("I am a large language model trained by Google.") != std::string::npos);
+    LR_CHECK(adapted_resp.find(R"("finish_reason":"stop")") != std::string::npos);
+    LR_CHECK(adapted_resp.find(R"("prompt_tokens":15)") != std::string::npos);
+    LR_CHECK(adapted_resp.find(R"("completion_tokens":10)") != std::string::npos);
+    LR_CHECK(adapted_resp.find(R"("total_tokens":25)") != std::string::npos);
+}
+
+void testOpenAiResponsesAdaptation() {
+    LR_GROUP("OpenAI Responses API adaptation");
+
+    std::string responses_req = R"({
+        "model": "gpt-4o",
+        "input": "Explain relativity in one sentence.",
+        "temperature": 0.5
+    })";
+
+    std::string chat_req = adaptResponsesToChat(responses_req);
+    LR_CHECK(chat_req.find(R"("messages":)") != std::string::npos);
+    LR_CHECK(chat_req.find(R"("role":"user")") != std::string::npos);
+    LR_CHECK(chat_req.find("Explain relativity in one sentence.") != std::string::npos);
+
+    std::string chat_resp = R"({
+        "id": "chatcmpl-999",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Space and time are linked together."
+                },
+                "finish_reason": "stop"
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 8,
+            "total_tokens": 18
+        }
+    })";
+
+    std::string responses_resp = adaptChatToResponses(chat_resp, "gpt-4o");
+    LR_CHECK(responses_resp.find(R"("object":"response")") != std::string::npos);
+    LR_CHECK(responses_resp.find(R"("status":"completed")") != std::string::npos);
+    LR_CHECK(responses_resp.find("Space and time are linked together.") != std::string::npos);
+}
+
+void testStreamProtocolAdapterAnthropic() {
+    LR_GROUP("StreamProtocolAdapter: Anthropic SSE translation");
+
+    ProviderConfig provider;
+    provider.protocol = "anthropic";
+
+    StreamProtocolAdapter adapter(provider, "claude-3-5-sonnet", "req_123");
+
+    std::string chunk1 = "event: message_start\r\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc\"}}\r\n\r\n";
+    std::string out1 = adapter.feed(chunk1);
+    LR_CHECK(out1.find(R"("object":"chat.completion.chunk")") != std::string::npos);
+    LR_CHECK(out1.find(R"("role":"assistant")") != std::string::npos);
+
+    std::string chunk2 = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n";
+    std::string out2 = adapter.feed(chunk2);
+    LR_CHECK(out2.find(R"("content":"Hello")") != std::string::npos);
+
+    std::string chunk3 = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n";
+    std::string out3 = adapter.feed(chunk3);
+    LR_CHECK(out3.find(R"("finish_reason":"stop")") != std::string::npos);
+
+    std::string chunk4 = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    std::string out4 = adapter.feed(chunk4);
+    LR_CHECK(out4.find("data: [DONE]\n\n") != std::string::npos);
+
+    // Calling finish() after stream already cleanly terminated should not emit duplicate [DONE]
+    std::string out5 = adapter.finish();
+    LR_CHECK_EQ(out5, "");
+}
+
+void testStreamProtocolAdapterGemini() {
+    LR_GROUP("StreamProtocolAdapter: Gemini SSE translation");
+
+    ProviderConfig provider;
+    provider.protocol = "gemini";
+
+    StreamProtocolAdapter adapter(provider, "gemini-1.5-pro", "req_gem_1");
+
+    std::string chunk1 = "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"Hi!\"}], \"role\": \"model\"}}]}\r\n\r\n";
+    std::string out1 = adapter.feed(chunk1);
+    LR_CHECK(out1.find(R"("object":"chat.completion.chunk")") != std::string::npos);
+    LR_CHECK(out1.find(R"("role":"assistant")") != std::string::npos);
+    LR_CHECK(out1.find(R"("content":"Hi!")") != std::string::npos);
+
+    std::string chunk2 = "data: {\"candidates\": [{\"finishReason\": \"STOP\"}]}\n\n";
+    std::string out2 = adapter.feed(chunk2);
+    LR_CHECK(out2.find(R"("finish_reason":"stop")") != std::string::npos);
+    LR_CHECK(out2.find("data: [DONE]\n\n") != std::string::npos);
+
+    LR_CHECK_EQ(adapter.finish(), "");
+}
+
+void testStreamProtocolAdapterOpenAiPassthrough() {
+    LR_GROUP("StreamProtocolAdapter: OpenAI passthrough");
+
+    ProviderConfig provider;
+    provider.protocol = "openai";
+
+    StreamProtocolAdapter adapter(provider, "gpt-4o", "req_passthrough");
+
+    std::string raw = "data: {\"choices\":[{\"delta\":{\"content\":\"test\"}}]}\n\n";
+    std::string out = adapter.feed(raw);
+    LR_CHECK_EQ(out, raw);
+    LR_CHECK_EQ(adapter.finish(), "");
+}
+
+void testAnthropicIngressAdaptation() {
+    LR_GROUP("Anthropic ingress adaptation (Anthropic -> Chat -> Anthropic)");
+
+    std::string anthropic_req = R"({
+        "model": "claude-3-5-sonnet",
+        "system": "You are a helpful coding assistant.",
+        "messages": [
+            {"role": "user", "content": "Write a fizzbuzz in C++"}
+        ],
+        "max_tokens": 2048,
+        "temperature": 0.5
+    })";
+
+    std::string canonical_chat = adaptAnthropicToChat(anthropic_req);
+    LR_CHECK(canonical_chat.find(R"("model":"claude-3-5-sonnet")") != std::string::npos);
+    LR_CHECK(canonical_chat.find(R"("role":"system")") != std::string::npos);
+    LR_CHECK(canonical_chat.find("You are a helpful coding assistant.") != std::string::npos);
+    LR_CHECK(canonical_chat.find(R"("role":"user")") != std::string::npos);
+    LR_CHECK(canonical_chat.find("Write a fizzbuzz in C++") != std::string::npos);
+    LR_CHECK(canonical_chat.find(R"("max_tokens":2048)") != std::string::npos);
+
+    // Test tool results and tool use
+    std::string anthropic_tool_req = R"({
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Calling tool"},
+                    {"type": "tool_use", "id": "call_123", "name": "weather", "input": {"city": "Tokyo"}}
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call_123", "content": "Sunny 22C"}
+                ]
+            }
+        ]
+    })";
+
+    std::string chat_with_tools = adaptAnthropicToChat(anthropic_tool_req);
+    LR_CHECK(chat_with_tools.find(R"("role":"assistant")") != std::string::npos);
+    LR_CHECK(chat_with_tools.find(R"("tool_calls":)") != std::string::npos);
+    LR_CHECK(chat_with_tools.find("call_123") != std::string::npos);
+    LR_CHECK(chat_with_tools.find(R"("role":"tool")") != std::string::npos);
+    LR_CHECK(chat_with_tools.find("Sunny 22C") != std::string::npos);
+
+    // Test adapting Chat Completion response to Anthropic Message response
+    std::string chat_resp = R"({
+        "id": "chatcmpl-test456",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "claude-3-5-sonnet",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Tokyo is sunny today."
+                },
+                "finish_reason": "stop"
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 15,
+            "completion_tokens": 6,
+            "total_tokens": 21
+        }
+    })";
+
+    std::string anthropic_resp = adaptChatToAnthropic(chat_resp, "claude-3-5-sonnet");
+    LR_CHECK(anthropic_resp.find(R"("type":"message")") != std::string::npos);
+    LR_CHECK(anthropic_resp.find(R"("role":"assistant")") != std::string::npos);
+    LR_CHECK(anthropic_resp.find(R"("stop_reason":"end_turn")") != std::string::npos);
+    LR_CHECK(anthropic_resp.find("Tokyo is sunny today.") != std::string::npos);
+    LR_CHECK(anthropic_resp.find(R"("input_tokens":15)") != std::string::npos);
+    LR_CHECK(anthropic_resp.find(R"("output_tokens":6)") != std::string::npos);
+}
+
+void testGeminiIngressAdaptation() {
+    LR_GROUP("Gemini ingress adaptation (Gemini -> Chat -> Gemini)");
+
+    std::string gemini_req = R"({
+        "systemInstruction": {
+            "parts": [{"text": "You are Gemini."}]
+        },
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": "What is gravity?"}]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 500
+        }
+    })";
+
+    std::string chat_req = adaptGeminiToChat(gemini_req, "gemini-1.5-pro");
+    LR_CHECK(chat_req.find(R"("model":"gemini-1.5-pro")") != std::string::npos);
+    LR_CHECK(chat_req.find(R"("role":"system")") != std::string::npos);
+    LR_CHECK(chat_req.find("You are Gemini.") != std::string::npos);
+    LR_CHECK(chat_req.find(R"("role":"user")") != std::string::npos);
+    LR_CHECK(chat_req.find("What is gravity?") != std::string::npos);
+    LR_CHECK(chat_req.find(R"("max_tokens":500)") != std::string::npos);
+
+    // Test adapting Chat Completion response to Gemini response
+    std::string chat_resp = R"({
+        "id": "chatcmpl-gemini-test",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gemini-1.5-pro",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Gravity is a fundamental interaction."
+                },
+                "finish_reason": "stop"
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 7,
+            "total_tokens": 19
+        }
+    })";
+
+    std::string gemini_resp = adaptChatToGemini(chat_resp, "gemini-1.5-pro");
+    LR_CHECK(gemini_resp.find(R"("candidates":)") != std::string::npos);
+    LR_CHECK(gemini_resp.find(R"("role":"model")") != std::string::npos);
+    LR_CHECK(gemini_resp.find("Gravity is a fundamental interaction.") != std::string::npos);
+    LR_CHECK(gemini_resp.find(R"("finishReason":"STOP")") != std::string::npos);
+    LR_CHECK(gemini_resp.find(R"("promptTokenCount":12)") != std::string::npos);
+    LR_CHECK(gemini_resp.find(R"("candidatesTokenCount":7)") != std::string::npos);
+}
+
+void testMultiProtocolStreaming() {
+    LR_GROUP("StreamProtocolAdapter: multi-protocol streaming and passthrough");
+
+    // 1. Anthropic -> Anthropic passthrough
+    {
+        StreamProtocolAdapter adapter("anthropic", "anthropic", "claude-3-5-sonnet", "req_1");
+        std::string raw = "event: message_delta\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n";
+        LR_CHECK_EQ(adapter.feed(raw), raw);
+        LR_CHECK_EQ(adapter.finish(), "");
+    }
+
+    // 2. Gemini -> Gemini passthrough
+    {
+        StreamProtocolAdapter adapter("gemini", "gemini", "gemini-1.5-pro", "req_2");
+        std::string raw = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"gemini\"}]}}]}\n\n";
+        LR_CHECK_EQ(adapter.feed(raw), raw);
+        LR_CHECK_EQ(adapter.finish(), "");
+    }
+
+    // 3. OpenAI -> Anthropic
+    {
+        StreamProtocolAdapter adapter("openai", "anthropic", "claude-3-5-sonnet", "req_oa_to_anth");
+        std::string chunk1 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello Anthropic\"},\"finish_reason\":null}]}\n\n";
+        std::string out1 = adapter.feed(chunk1);
+        LR_CHECK(out1.find("event: message_start") != std::string::npos);
+        LR_CHECK(out1.find("event: content_block_delta") != std::string::npos);
+        LR_CHECK(out1.find("Hello Anthropic") != std::string::npos);
+
+        std::string chunk2 = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        std::string out2 = adapter.feed(chunk2);
+        LR_CHECK(out2.find("event: message_delta") != std::string::npos);
+        LR_CHECK(out2.find("event: message_stop") != std::string::npos);
+        LR_CHECK(out2.find("end_turn") != std::string::npos);
+
+        LR_CHECK_EQ(adapter.finish(), "");
+    }
+
+    // 4. OpenAI -> Gemini
+    {
+        StreamProtocolAdapter adapter("openai", "gemini", "gemini-1.5-pro", "req_oa_to_gem");
+        std::string chunk1 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello Gemini\"},\"finish_reason\":null}]}\n\n";
+        std::string out1 = adapter.feed(chunk1);
+        LR_CHECK(out1.find(R"("role":"model")") != std::string::npos);
+        LR_CHECK(out1.find("Hello Gemini") != std::string::npos);
+
+        std::string chunk2 = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        std::string out2 = adapter.feed(chunk2);
+        LR_CHECK(out2.find(R"("finishReason":"STOP")") != std::string::npos);
+
+        LR_CHECK_EQ(adapter.finish(), "");
+    }
+}
+
+} // namespace
+
+int main() {
+    testResolvePaths();
+    testAnthropicRequestAdaptation();
+    testAnthropicResponseAdaptation();
+    testGeminiAdaptation();
+    testOpenAiResponsesAdaptation();
+    testStreamProtocolAdapterAnthropic();
+    testStreamProtocolAdapterGemini();
+    testStreamProtocolAdapterOpenAiPassthrough();
+    testAnthropicIngressAdaptation();
+    testGeminiIngressAdaptation();
+    testMultiProtocolStreaming();
+    return LR_SUMMARY("test_protocol");
+}

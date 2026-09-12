@@ -1,0 +1,17 @@
+# mcpp build outputs. Every workspace member has its own target/ directory, and
+# the pattern below matches them at any depth.
+target/
+.mcpp/
+.cache/
+
+# clangd's index and the compile_commands.json mcpp regenerates on every build.
+.cache/clangd/
+compile_commands.json
+
+# Supervisor dispatch scripts the agent used while building this; not part of
+# the product.
+.dispatch/
+
+# Local scratch configurations someone pointed LITEROUTER_CONFIG at.
+*.local.json
+dev-config.json

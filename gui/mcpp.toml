@@ -1,0 +1,23 @@
+[package]
+namespace   = "literouter"
+name        = "gui"
+description = "literouter console — the EUI-NEO front end"
+
+[targets.literouter-gui]
+kind = "bin"
+main = "src/gui_main.cpp"
+
+[dependencies.compat]
+eui-neo.workspace = true
+# Link compat.zlib as shared to align with libgio's dynamic dependency on libz.so,
+# eliminating the duplicate symbol warning between static zlib and libz.so.
+zlib = { version = "1.3.2", linkage = "shared" }
+
+
+[dependencies.literouter]
+core = { path = "../core" }
+
+[build]
+bmi_schedule = "on"
+
+

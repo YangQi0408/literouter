@@ -1,0 +1,455 @@
+// JSON codecs. One unit owns the shapes on the wire and on disk so the config
+// file, the admin API and the console cannot drift apart — a field added here
+// appears in all three at once.
+//
+// The reader is deliberately tolerant: unknown keys are ignored (a file written
+// by a newer build still loads) and missing keys keep the struct's default (a
+// hand-written minimal file still works). Only structurally wrong input —
+// invalid JSON, a scalar where an object is expected — is refused.
+module;
+
+// `import std;` does not bring the C library's calendar declarations in, and
+// `localtime_r` is not in the `std` namespace in any spelling the standard
+// gives it. The one timestamp conversion in this unit therefore reaches the
+// real header, from the global module fragment where it belongs.
+#include <time.h>
+
+module literouter.core;
+
+import std;
+import nlohmann.json;
+
+namespace literouter {
+
+namespace {
+
+using json = nlohmann::json;
+
+const json &nullJson() {
+    static const json value = json::object();
+    return value;
+}
+
+// `get` with a fallback, for the three scalar types the config uses.
+std::string readString(const json &node, const char *key, std::string fallback = {}) {
+    if (!node.is_object()) {
+        return fallback;
+    }
+    const auto it = node.find(key);
+    if (it == node.end() || !it->is_string()) {
+        return fallback;
+    }
+    return it->get<std::string>();
+}
+
+bool readBool(const json &node, const char *key, bool fallback) {
+    if (!node.is_object()) {
+        return fallback;
+    }
+    const auto it = node.find(key);
+    if (it == node.end() || !it->is_boolean()) {
+        return fallback;
+    }
+    return it->get<bool>();
+}
+
+int readInt(const json &node, const char *key, int fallback) {
+    if (!node.is_object()) {
+        return fallback;
+    }
+    const auto it = node.find(key);
+    if (it == node.end() || !it->is_number()) {
+        return fallback;
+    }
+    return it->get<int>();
+}
+
+double readDouble(const json &node, const char *key, double fallback) {
+    if (!node.is_object()) {
+        return fallback;
+    }
+    const auto it = node.find(key);
+    if (it == node.end() || !it->is_number()) {
+        return fallback;
+    }
+    return it->get<double>();
+}
+
+std::vector<std::string> readStringArray(const json &node, const char *key) {
+    std::vector<std::string> out;
+    if (!node.is_object()) {
+        return out;
+    }
+    const auto it = node.find(key);
+    if (it == node.end() || !it->is_array()) {
+        return out;
+    }
+    for (const auto &item : *it) {
+        if (item.is_string()) {
+            out.push_back(item.get<std::string>());
+        }
+    }
+    return out;
+}
+
+std::map<std::string, std::string> readStringMap(const json &node, const char *key) {
+    std::map<std::string, std::string> out;
+    if (!node.is_object()) {
+        return out;
+    }
+    const auto it = node.find(key);
+    if (it == node.end() || !it->is_object()) {
+        return out;
+    }
+    // Iterated with explicit iterators rather than `items()` + a structured
+    // binding: nlohmann's `iteration_proxy_value` gets its `tuple_size` /
+    // `tuple_element` specialisations declared inside the `nlohmann.json`
+    // module, and those are not visible here — so the binding would not compile
+    // in this translation unit even though the same line works in a header-only
+    // build of the library.
+    for (auto entry = it->begin(); entry != it->end(); ++entry) {
+        if (entry.value().is_string()) {
+            out.emplace(entry.key(), entry.value().get<std::string>());
+        }
+    }
+    return out;
+}
+
+ProviderConfig providerFromJson(const json &node) {
+    ProviderConfig out;
+    out.id = readString(node, "id");
+    out.name = readString(node, "name");
+    out.base_url = readString(node, "base_url");
+    out.api_key = readString(node, "api_key");
+    out.enabled = readBool(node, "enabled", true);
+    out.priority = readInt(node, "priority", 100);
+    out.weight = readInt(node, "weight", 1);
+    out.timeout_sec = readInt(node, "timeout_sec", 120);
+    out.connect_timeout_sec = readInt(node, "connect_timeout_sec", 15);
+    out.supports_stream = readBool(node, "supports_stream", true);
+    out.models = readStringArray(node, "models");
+    out.headers = readStringMap(node, "headers");
+    out.chat_path = readString(node, "chat_path", "/chat/completions");
+    out.embeddings_path = readString(node, "embeddings_path", "/embeddings");
+    out.protocol = readString(node, "protocol", "openai");
+    out.note = readString(node, "note");
+    if (out.name.empty()) {
+        out.name = out.id;
+    }
+    return out;
+}
+
+json providerToJson(const ProviderConfig &value) {
+    json node = json::object();
+    node["id"] = value.id;
+    node["name"] = value.name;
+    node["base_url"] = value.base_url;
+    // Written back exactly as it was read: a "${TOKEN}" reference stays a
+    // reference, which is the whole point of supporting the form.
+    node["api_key"] = value.api_key;
+    node["enabled"] = value.enabled;
+    node["priority"] = value.priority;
+    node["weight"] = value.weight;
+    node["timeout_sec"] = value.timeout_sec;
+    node["connect_timeout_sec"] = value.connect_timeout_sec;
+    node["supports_stream"] = value.supports_stream;
+    node["models"] = value.models;
+    if (!value.headers.empty()) {
+        node["headers"] = value.headers;
+    }
+    node["chat_path"] = value.chat_path;
+    node["embeddings_path"] = value.embeddings_path;
+    if (!value.protocol.empty() && value.protocol != "openai") {
+        node["protocol"] = value.protocol;
+    }
+    if (!value.note.empty()) {
+        node["note"] = value.note;
+    }
+    return node;
+}
+
+RouteConfig routeFromJson(const json &node) {
+    RouteConfig out;
+    out.model = readString(node, "model");
+    out.enabled = readBool(node, "enabled", true);
+    if (const auto it = node.find("targets"); it != node.end() && it->is_array()) {
+        for (const auto &item : *it) {
+            RouteTarget target;
+            if (item.is_string()) {
+                // Shorthand: "provider" means "same model name upstream".
+                target.provider = item.get<std::string>();
+            } else if (item.is_object()) {
+                target.provider = readString(item, "provider");
+                target.model = readString(item, "model");
+            }
+            if (!target.provider.empty()) {
+                out.targets.push_back(std::move(target));
+            }
+        }
+    }
+    return out;
+}
+
+json routeToJson(const RouteConfig &value) {
+    json targets = json::array();
+    for (const auto &target : value.targets) {
+        json node = json::object();
+        node["provider"] = target.provider;
+        if (!target.model.empty()) {
+            node["model"] = target.model;
+        }
+        targets.push_back(std::move(node));
+    }
+    json node = json::object();
+    node["model"] = value.model;
+    node["enabled"] = value.enabled;
+    node["targets"] = std::move(targets);
+    return node;
+}
+
+ServerConfig serverFromJson(const json &node) {
+    ServerConfig out;
+    out.host = readString(node, "host", out.host);
+    out.port = readInt(node, "port", out.port);
+    out.api_key = readString(node, "api_key");
+    out.pass_through_unknown = readBool(node, "pass_through_unknown", out.pass_through_unknown);
+    out.max_attempts = readInt(node, "max_attempts", out.max_attempts);
+    out.circuit_failure_threshold =
+        readInt(node, "circuit_failure_threshold", out.circuit_failure_threshold);
+    out.circuit_cooldown_sec = readInt(node, "circuit_cooldown_sec", out.circuit_cooldown_sec);
+    out.skip_open_circuits = readBool(node, "skip_open_circuits", out.skip_open_circuits);
+    out.log_capacity = readInt(node, "log_capacity", out.log_capacity);
+    out.log_bodies = readBool(node, "log_bodies", out.log_bodies);
+    out.log_body_limit = readInt(node, "log_body_limit", out.log_body_limit);
+    out.language = readString(node, "language", out.language);
+    out.ui_scale = readDouble(node, "ui_scale", out.ui_scale);
+    return out;
+}
+
+json serverToJson(const ServerConfig &value) {
+    json node = json::object();
+    node["host"] = value.host;
+    node["port"] = value.port;
+    node["api_key"] = value.api_key;
+    node["pass_through_unknown"] = value.pass_through_unknown;
+    node["max_attempts"] = value.max_attempts;
+    node["circuit_failure_threshold"] = value.circuit_failure_threshold;
+    node["circuit_cooldown_sec"] = value.circuit_cooldown_sec;
+    node["skip_open_circuits"] = value.skip_open_circuits;
+    node["log_capacity"] = value.log_capacity;
+    node["log_bodies"] = value.log_bodies;
+    node["log_body_limit"] = value.log_body_limit;
+    node["language"] = value.language;
+    node["ui_scale"] = value.ui_scale;
+    return node;
+}
+
+json healthToJson(const ProviderHealth &value) {
+    json node = json::object();
+    node["provider"] = value.provider;
+    node["state"] = value.stateName();
+    node["consecutive_failures"] = value.consecutive_failures;
+    node["total_failures"] = value.total_failures;
+    node["last_error"] = value.last_error;
+    node["cooldown_remaining"] = value.cooldown_remaining;
+    return node;
+}
+
+json statToJson(const ProviderStat &value) {
+    json node = json::object();
+    node["provider"] = value.provider;
+    node["requests"] = value.requests;
+    node["successes"] = value.successes;
+    node["failures"] = value.failures;
+    node["aborted"] = value.aborted;
+    node["retries_in"] = value.retries_in;
+    node["bytes_out"] = value.bytes_out;
+    node["bytes_in"] = value.bytes_in;
+    node["tokens_prompt"] = value.tokens_prompt;
+    node["tokens_completion"] = value.tokens_completion;
+    node["latency_ms_last"] = value.latency_ms_last;
+    node["latency_ms_avg"] = value.latency_ms_avg;
+    node["latency_ms_p95"] = value.latency_ms_p95;
+    node["last_used_unix"] = value.last_used_unix;
+    return node;
+}
+
+} // namespace
+
+std::string ValidationIssue::levelName() const {
+    switch (level) {
+    case Level::Info: return "info";
+    case Level::Warning: return "warning";
+    case Level::Error: return "error";
+    }
+    return "error";
+}
+
+std::string ProviderHealth::stateName() const {
+    switch (state) {
+    case State::Unknown: return "unknown";
+    case State::Healthy: return "healthy";
+    case State::Degraded: return "degraded";
+    case State::Open: return "open";
+    }
+    return "unknown";
+}
+
+std::string LogEntry::timeText() const {
+    const auto seconds = static_cast<std::time_t>(time_unix);
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &seconds);
+#else
+    localtime_r(&seconds, &local);
+#endif
+    const auto millis = static_cast<int>((time_unix - static_cast<double>(seconds)) * 1000.0);
+    return std::format("{:02d}:{:02d}:{:02d}.{:03d}", local.tm_hour, local.tm_min, local.tm_sec,
+                       millis);
+}
+
+// ── AppConfig ────────────────────────────────────────────────────────────────
+
+std::string toJsonString(const AppConfig &config) {
+    json root = json::object();
+    root["schema"] = config.schema;
+    root["server"] = serverToJson(config.server);
+
+    json providers = json::array();
+    for (const auto &entry : config.providers) {
+        providers.push_back(providerToJson(entry));
+    }
+    root["providers"] = std::move(providers);
+
+    json routes = json::array();
+    for (const auto &entry : config.routes) {
+        routes.push_back(routeToJson(entry));
+    }
+    root["routes"] = std::move(routes);
+
+    return root.dump(2);
+}
+
+std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text) {
+    const json root = json::parse(text, nullptr, false);
+    if (root.is_discarded()) {
+        return std::unexpected(std::string{"config is not valid JSON"});
+    }
+    if (!root.is_object()) {
+        return std::unexpected(std::string{"config root must be a JSON object"});
+    }
+
+    AppConfig out;
+    out.schema = readInt(root, "schema", out.schema);
+
+    if (const auto it = root.find("server"); it != root.end()) {
+        if (!it->is_object()) {
+            return std::unexpected(std::string{"`server` must be an object"});
+        }
+        out.server = serverFromJson(*it);
+    }
+
+    if (const auto it = root.find("providers"); it != root.end()) {
+        if (!it->is_array()) {
+            return std::unexpected(std::string{"`providers` must be an array"});
+        }
+        for (const auto &item : *it) {
+            if (!item.is_object()) {
+                return std::unexpected(std::string{"every entry in `providers` must be an object"});
+            }
+            out.providers.push_back(providerFromJson(item));
+        }
+    }
+
+    if (const auto it = root.find("routes"); it != root.end()) {
+        if (!it->is_array()) {
+            return std::unexpected(std::string{"`routes` must be an array"});
+        }
+        for (const auto &item : *it) {
+            if (!item.is_object()) {
+                return std::unexpected(std::string{"every entry in `routes` must be an object"});
+            }
+            out.routes.push_back(routeFromJson(item));
+        }
+    }
+
+    return out;
+}
+
+// ── Snapshot ─────────────────────────────────────────────────────────────────
+
+std::string toJsonString(const Snapshot &snapshot) {
+    json node = json::object();
+    node["running"] = snapshot.running;
+    node["host"] = snapshot.host;
+    node["port"] = snapshot.port;
+    node["base_url"] = snapshot.base_url;
+    node["started_unix"] = snapshot.started_unix;
+    node["uptime_sec"] = snapshot.uptime_sec;
+    node["config_path"] = snapshot.config_path;
+    node["version"] = snapshot.version;
+    node["total_requests"] = snapshot.total_requests;
+    node["total_success"] = snapshot.total_success;
+    node["total_failure"] = snapshot.total_failure;
+    node["active_requests"] = snapshot.active_requests;
+    node["bytes_out"] = snapshot.bytes_out;
+    node["tokens_prompt"] = snapshot.tokens_prompt;
+    node["tokens_completion"] = snapshot.tokens_completion;
+    node["latency_ms_avg"] = snapshot.latency_ms_avg;
+    node["log_seq"] = snapshot.log_seq;
+    node["breakers_open"] = snapshot.breakers_open;
+
+    json providers = json::array();
+    for (const auto &entry : snapshot.providers) {
+        providers.push_back(statToJson(entry));
+    }
+    node["providers"] = std::move(providers);
+
+    json health = json::array();
+    for (const auto &entry : snapshot.health) {
+        health.push_back(healthToJson(entry));
+    }
+    node["health"] = std::move(health);
+
+    return node.dump(2);
+}
+
+std::string toJsonString(const LogEntry &entry) {
+    json node = json::object();
+    node["seq"] = entry.seq;
+    node["time_unix"] = entry.time_unix;
+    node["time"] = entry.timeText();
+    node["level"] = entry.level;
+    node["request_id"] = entry.request_id;
+    node["kind"] = entry.kind;
+    node["model"] = entry.model;
+    node["provider"] = entry.provider;
+    node["upstream_model"] = entry.upstream_model;
+    node["status"] = entry.status;
+    node["stream"] = entry.stream;
+    node["failover"] = entry.failover;
+    node["attempt"] = entry.attempt;
+    node["attempts_total"] = entry.attempts_total;
+    node["latency_ms"] = entry.latency_ms;
+    node["bytes"] = entry.bytes;
+    node["message"] = entry.message;
+    if (!entry.request_body.empty()) {
+        node["request_body"] = entry.request_body;
+    }
+    if (!entry.response_body.empty()) {
+        node["response_body"] = entry.response_body;
+    }
+    return node.dump();
+}
+
+std::string toJsonString(const ProviderProbe &probe) {
+    json node = json::object();
+    node["reachable"] = probe.reachable;
+    node["status"] = probe.status;
+    node["latency_ms"] = probe.latency_ms;
+    node["detail"] = probe.detail;
+    node["models"] = probe.models;
+    return node.dump(2);
+}
+
+} // namespace literouter
