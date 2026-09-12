@@ -14,6 +14,11 @@
 literouter/
 ├── mcpp.toml                   # 虚拟工作区总清单，锁定工具链与第三方依赖
 ├── AGENTS.md                   # 【当前文件】Agent 操作指南与开发规范
+├── README.md                   # 中文项目总览（默认）
+├── README_en.md                # 英文项目总览
+├── docs/                       # 专题技术与使用文档
+│   ├── zh/                     # 中文详细文档（configuration, routing-failover, protocols-api 等）
+│   └── en/                     # 英文详细文档
 ├── core/                       # 核心库：literouter.core（C++23 静态库模块）
 │   ├── src/literouter_core.cppm# 唯一对外公开接口（契约层）
 │   ├── src/*.cpp               # 内部实现单元（未导出第三方依赖）
