@@ -8,6 +8,7 @@
 import literouter.core;
 
 int main(int argc, char **argv) {
+    literouter::ensureLocalTimezone();
     std::string explicitLang;
     for (int i = 1; i < argc; ++i) {
         std::string_view arg{argv[i]};

@@ -8,10 +8,10 @@
 // invalid JSON, a scalar where an object is expected — is refused.
 module;
 
-// `import std;` does not bring the C library's calendar declarations in, and
-// `localtime_r` is not in the `std` namespace in any spelling the standard
-// gives it. The one timestamp conversion in this unit therefore reaches the
-// real header, from the global module fragment where it belongs.
+#ifndef _WIN32
+#include <unistd.h>
+#include <stdlib.h>
+#endif
 #include <time.h>
 
 module literouter.core;
@@ -295,7 +295,28 @@ std::string ProviderHealth::stateName() const {
     return "unknown";
 }
 
-std::string LogEntry::timeText() const {
+void ensureLocalTimezone() {
+    static std::once_flag flag;
+    std::call_once(flag, [] {
+        const char *tz = std::getenv("TZ");
+        if (tz == nullptr || *tz == '\0') {
+#ifndef _WIN32
+            // If TZ is unset, glibc tries to open /etc/localtime.
+            // On hermetic toolchains with custom sysroots or rpaths, glibc's hardcoded
+            // default prefix may not exist, which causes localtime_r to fall back to UTC.
+            // Explicitly pointing TZ to ":/etc/localtime" tells glibc to resolve the file directly.
+            if (access("/etc/localtime", R_OK) == 0) {
+                setenv("TZ", ":/etc/localtime", 0);
+                tzset();
+            }
+#endif
+        }
+    });
+}
+
+namespace {
+std::tm toLocalTm(double time_unix, int &millisOut) {
+    ensureLocalTimezone();
     const auto seconds = static_cast<std::time_t>(time_unix);
     std::tm local{};
 #ifdef _WIN32
@@ -303,9 +324,45 @@ std::string LogEntry::timeText() const {
 #else
     localtime_r(&seconds, &local);
 #endif
-    const auto millis = static_cast<int>((time_unix - static_cast<double>(seconds)) * 1000.0);
+    double frac = time_unix - static_cast<double>(seconds);
+    if (frac < 0.0) {
+        frac = 0.0;
+    }
+    millisOut = static_cast<int>(frac * 1000.0);
+    if (millisOut > 999) {
+        millisOut = 999;
+    }
+    return local;
+}
+} // namespace
+
+std::string LogEntry::timeText() const {
+    int millis = 0;
+    const std::tm local = toLocalTm(time_unix, millis);
     return std::format("{:02d}:{:02d}:{:02d}.{:03d}", local.tm_hour, local.tm_min, local.tm_sec,
                        millis);
+}
+
+std::string LogEntry::dateText() const {
+    int millis = 0;
+    const std::tm local = toLocalTm(time_unix, millis);
+    return std::format("{:04d}-{:02d}-{:02d}", local.tm_year + 1900, local.tm_mon + 1,
+                       local.tm_mday);
+}
+
+std::string LogEntry::dateTimeText() const {
+    int millis = 0;
+    const std::tm local = toLocalTm(time_unix, millis);
+    return std::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}", local.tm_year + 1900,
+                       local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec,
+                       millis);
+}
+
+std::string LogEntry::shortDateTimeText() const {
+    int millis = 0;
+    const std::tm local = toLocalTm(time_unix, millis);
+    return std::format("{:02d}-{:02d} {:02d}:{:02d}:{:02d}", local.tm_mon + 1, local.tm_mday,
+                       local.tm_hour, local.tm_min, local.tm_sec);
 }
 
 // ── AppConfig ────────────────────────────────────────────────────────────────
@@ -419,6 +476,8 @@ std::string toJsonString(const LogEntry &entry) {
     node["seq"] = entry.seq;
     node["time_unix"] = entry.time_unix;
     node["time"] = entry.timeText();
+    node["date"] = entry.dateText();
+    node["datetime"] = entry.dateTimeText();
     node["level"] = entry.level;
     node["request_id"] = entry.request_id;
     node["kind"] = entry.kind;

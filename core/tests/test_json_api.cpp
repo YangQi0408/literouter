@@ -179,6 +179,19 @@ void testLogEntryJson() {
     LR_CHECK_EQ(time.size(), std::size_t{12});
     LR_CHECK(time[2] == ':' && time[5] == ':' && time[8] == '.');
 
+    const std::string date = parsed.at("date").get<std::string>();
+    LR_CHECK_EQ(date.size(), std::size_t{10});
+    LR_CHECK(date[4] == '-' && date[7] == '-');
+
+    const std::string datetime = parsed.at("datetime").get<std::string>();
+    LR_CHECK_EQ(datetime.size(), std::size_t{23});
+    LR_CHECK(datetime[4] == '-' && datetime[7] == '-' && datetime[10] == ' ' &&
+             datetime[13] == ':' && datetime[16] == ':' && datetime[19] == '.');
+
+    LR_CHECK_EQ(entry.shortDateTimeText().size(), std::size_t{14});
+    LR_CHECK(entry.shortDateTimeText()[2] == '-' && entry.shortDateTimeText()[5] == ' ' &&
+             entry.shortDateTimeText()[8] == ':' && entry.shortDateTimeText()[11] == ':');
+
     entry.request_body = "{\"model\":\"fast\"}";
     entry.response_body = "{\"ok\":true}";
     const json withBodies = json::parse(literouter::toJsonString(entry), nullptr, false);
@@ -190,6 +203,9 @@ void testLogEntryJson() {
     // in the fixed shape.
     literouter::LogEntry zero;
     LR_CHECK_EQ(zero.timeText().size(), std::size_t{12});
+    LR_CHECK_EQ(zero.dateText().size(), std::size_t{10});
+    LR_CHECK_EQ(zero.dateTimeText().size(), std::size_t{23});
+    LR_CHECK_EQ(zero.shortDateTimeText().size(), std::size_t{14});
 }
 
 void testProviderProbeJson() {
@@ -332,6 +348,21 @@ void testSeedConfigJsonKeepsSecretReferences() {
     }
 }
 
+void testEnsureLocalTimezone() {
+    LR_GROUP("ensureLocalTimezone");
+    literouter::ensureLocalTimezone();
+#ifndef _WIN32
+    if (std::filesystem::exists("/etc/localtime")) {
+        const char *tz = std::getenv("TZ");
+        LR_CHECK(tz != nullptr);
+    }
+#endif
+    literouter::LogEntry entry;
+    entry.time_unix = 1700000000.0;
+    LR_CHECK(!entry.dateText().empty());
+    LR_CHECK(!entry.timeText().empty());
+}
+
 } // namespace
 
 int main() {
@@ -340,5 +371,6 @@ int main() {
     testProviderProbeJson();
     testAccumulateUsage();
     testSeedConfigJsonKeepsSecretReferences();
+    testEnsureLocalTimezone();
     return LR_SUMMARY("test_json_api");
 }

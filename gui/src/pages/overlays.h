@@ -680,7 +680,7 @@ inline void composeLogDetail(eui::Ui& ui, const eui::Screen& screen) {
             ui.text("overlays.logdetail.sub")
                 .position(28.0f, 46.0f)
                 .size(panelWidth - 56.0f, 20.0f)
-                .text(entry.timeText() + " · " +
+                .text(entry.dateTimeText() + " · " +
                       (entry.request_id.empty() ? std::string(literouter::i18n::tr("no request id"))
                                                 : std::string(literouter::i18n::tr("request ")) + entry.request_id))
                 .fontSize(12.0f)

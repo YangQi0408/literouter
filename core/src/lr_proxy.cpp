@@ -1303,6 +1303,7 @@ void ProxyServer::setConfigPath(std::string path) {
 }
 
 std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
+    ensureLocalTimezone();
     if (impl_->running.load()) {
         return std::unexpected(std::string{"server is already running"});
     }

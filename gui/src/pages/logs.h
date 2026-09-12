@@ -258,7 +258,7 @@ inline void composeLogs(eui::Ui& ui, float x, float y, float width, float height
     const float colGap = compact ? 6.0f : 12.0f;
 
     const float offTime = 12.0f;
-    const float wTime = compact ? 70.0f : 92.0f;
+    const float wTime = compact ? 96.0f : 136.0f;
 
     const float offLevel = offTime + wTime + colGap;
     const float wLevel = compact ? 50.0f : 62.0f;
@@ -424,7 +424,8 @@ inline void composeLogs(eui::Ui& ui, float x, float y, float width, float height
             rowUi.text(rowId + ".time")
                 .position(offTime + 10.0f, 0.0f)
                 .size(wTime - 10.0f, rowHeight)
-                .text(entry.timeText())
+                .text(compact ? entry.shortDateTimeText()
+                              : (entry.dateText() + " " + entry.timeText().substr(0, 8)))
                 .fontSize(11.0f)
                 .lineHeight(rowHeight)
                 .color(rowPalette.textFaint)

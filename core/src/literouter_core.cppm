@@ -335,7 +335,10 @@ struct LogEntry {
     std::string message;
     std::string request_body;     // only when server.log_bodies
     std::string response_body;    // only when server.log_bodies
-    std::string timeText() const;  // "HH:MM:SS.mmm"
+    std::string timeText() const;          // "HH:MM:SS.mmm"
+    std::string dateText() const;          // "YYYY-MM-DD"
+    std::string dateTimeText() const;      // "YYYY-MM-DD HH:MM:SS.mmm"
+    std::string shortDateTimeText() const; // "MM-DD HH:MM:SS"
 };
 
 struct Snapshot {
@@ -681,6 +684,7 @@ std::string humanDuration(double seconds);
 
 std::string hexId(std::size_t bytes = 8);
 double nowUnix();
+void ensureLocalTimezone();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internationalisation (i18n)

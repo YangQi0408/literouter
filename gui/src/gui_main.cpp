@@ -281,5 +281,6 @@ int runWindow() {
 } // namespace
 
 int main() {
+    literouter::ensureLocalTimezone();
     return runWindow();
 }

@@ -76,7 +76,7 @@ void renderEntries(const std::vector<literouter::LogEntry> &entries) {
     table.column("BYTES", Align::Right);
     table.column("MESSAGE");
     for (const auto &entry : entries) {
-        table.row({entry.timeText(),
+        table.row({std::format("{} {}", entry.dateText(), entry.timeText()),
                    colorLevel(entry.level, entry.level),
                    entry.request_id.empty() ? "—" : entry.request_id,
                    entry.kind.empty() ? "—" : entry.kind,
