@@ -13,7 +13,6 @@
 ```text
 literouter/
 ├── mcpp.toml                   # 虚拟工作区总清单，锁定工具链与第三方依赖
-├── HANDOFF.md                  # 项目转交与交接说明
 ├── AGENTS.md                   # 【当前文件】Agent 操作指南与开发规范
 ├── core/                       # 核心库：literouter.core（C++23 静态库模块）
 │   ├── src/literouter_core.cppm# 唯一对外公开接口（契约层）
