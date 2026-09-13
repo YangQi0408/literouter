@@ -1,0 +1,93 @@
+# Linux CI — the reference lane: build the whole workspace with the project's
+# pinned LLVM/libc++ toolchain, run core's test suite, then exercise both front
+# ends (CLI directly, GUI through its headless smoke mode under Xvfb).
+name: ci-linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build + test (linux x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # The runner has no GPU: force Mesa's software rasterizer so the GUI's
+      # GLFW/OpenGL startup does not depend on a hardware GLX context.
+      LIBGL_ALWAYS_SOFTWARE: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      # The one-line installer is the documented route for Linux/macOS: mcpp
+      # and its pinned xlings land in ~/.mcpp. MCPP_NO_PATH keeps it from
+      # editing shell rc files that CI never sources.
+      - name: Install mcpp
+        run: |
+          curl -fsSL https://github.com/mcpp-community/mcpp/releases/latest/download/install.sh \
+            | MCPP_NO_PATH=1 bash
+          echo "$HOME/.mcpp/bin" >> "$GITHUB_PATH"
+
+      # Toolchains and the cross-project BMI/dependency cache live under
+      # ~/.mcpp; without this every run re-downloads LLVM (~1.5 GB) and every
+      # dependency archive. Keyed on the manifests so a dependency bump
+      # invalidates it, with a prefix fallback so the toolchains survive.
+      - name: Cache mcpp toolchains and dependency cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.mcpp/registry
+            ~/.mcpp/build-cache
+          key: mcpp-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mcpp.toml', '**/mcpp.toml', '**/mcpp.lock') }}
+          restore-keys: |
+            mcpp-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Version and toolchain report
+        run: |
+          mcpp --version
+          mcpp self env
+
+      # Built per member rather than with --workspace so a failure names the
+      # member that produced it instead of stopping at whatever ran first.
+      - name: Build core
+        run: mcpp build -p core
+      - name: Build cli
+        run: mcpp build -p cli
+      - name: Build gui
+        run: mcpp build -p gui
+
+      - name: Test core
+        run: mcpp test -p core
+
+      - name: CLI smoke test
+        run: |
+          mcpp run -p cli -- --version
+          mcpp run -p cli -- config init --force
+          mcpp run -p cli -- config validate
+
+      - name: GUI smoke test (headless)
+        run: |
+          command -v xvfb-run >/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq xvfb
+          }
+          xvfb-run -a -s "-screen 0 1600x900x24" \
+            env LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: literouter-linux-x86_64
+          if-no-files-found: error
+          path: |
+            cli/target/**/bin/literouter
+            gui/target/**/bin/literouter-gui

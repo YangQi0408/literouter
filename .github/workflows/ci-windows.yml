@@ -1,0 +1,99 @@
+# Windows CI — native x86_64. mcpp's Unix one-line installer does not cover
+# Windows, so this lane uses the documented Windows route (xlings), and mcpp
+# then honours the project's pinned `[toolchain] default = "llvm@22.1.8"`.
+#
+# Note on the toolchain: on Windows, LLVM targets the MSVC ABI and therefore
+# needs a Visual Studio / BuildTools install — `windows-latest` ships one. On a
+# machine without Visual Studio, mcpp would instead fall back to its bundled
+# MinGW-w64 GCC (`x86_64-windows-gnu`), a different compiler with its own
+# quirks; the "Toolchain report" step below prints which one this run resolved
+# so a failure is unambiguous about it.
+name: ci-windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build + test (windows x86_64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xlings and mcpp
+        shell: pwsh
+        run: |
+          irm https://d2learn.org/xlings-install.ps1.txt | iex
+          # The installer puts xlings under %USERPROFILE%\.xlings and edits the
+          # *user* PATH, which this already-running shell does not re-read, so
+          # wire it up for this step and for every later one.
+          $xlingsBin = "$env:USERPROFILE\.xlings\subos\default\bin"
+          $env:PATH = "$xlingsBin;$env:PATH"
+          $xlingsBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          xlings --version
+          xlings install mcpp -y
+          mcpp --version
+
+      - name: Cache mcpp toolchains and dependency cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.mcpp/registry
+            ~/.mcpp/build-cache
+          key: mcpp-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mcpp.toml', '**/mcpp.toml', '**/mcpp.lock') }}
+          restore-keys: |
+            mcpp-${{ runner.os }}-${{ runner.arch }}-
+
+      # Git Bash is what mcpp's own Windows CI drives the build from.
+      - name: Toolchain report
+        shell: bash
+        run: |
+          mcpp --version
+          mcpp self env
+          mcpp toolchain list
+
+      - name: Build core
+        shell: bash
+        run: mcpp build -p core
+      - name: Build cli
+        shell: bash
+        run: mcpp build -p cli
+      - name: Build gui
+        shell: bash
+        run: mcpp build -p gui
+
+      # Native PE binaries, so the suite runs on the runner itself — no Wine,
+      # no cross-compilation.
+      - name: Test core
+        shell: bash
+        run: mcpp test -p core
+
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          mcpp run -p cli -- --version
+          mcpp run -p cli -- config init --force
+          mcpp run -p cli -- config validate
+
+      # The GUI is built but not launched: a CI runner has no interactive
+      # desktop for it to open a window into.
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: literouter-windows-x86_64
+          if-no-files-found: error
+          path: |
+            cli/target/**/bin/literouter.exe
+            gui/target/**/bin/literouter-gui.exe
+            gui/target/**/bin/*.dll
