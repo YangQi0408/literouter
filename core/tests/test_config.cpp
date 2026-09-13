@@ -94,6 +94,7 @@ AppConfig fullyPopulated() {
     config.server.log_capacity = 128;
     config.server.log_bodies = true;
     config.server.log_body_limit = 512;
+    config.server.web_ui = false;
     config.server.language = "zh";
     config.server.ui_scale = 1.25;
 
@@ -165,6 +166,7 @@ void checkServerEqual(const literouter::ServerConfig &actual,
     LR_CHECK_EQ(actual.log_capacity, expected.log_capacity);
     LR_CHECK_EQ(actual.log_bodies, expected.log_bodies);
     LR_CHECK_EQ(actual.log_body_limit, expected.log_body_limit);
+    LR_CHECK_EQ(actual.web_ui, expected.web_ui);
     LR_CHECK_EQ(actual.language, expected.language);
     LR_CHECK_EQ(actual.ui_scale, expected.ui_scale);
 }

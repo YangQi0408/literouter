@@ -465,6 +465,29 @@ Hit postJson(int port, const std::string &path, const std::string &body,
     return hit;
 }
 
+Hit putJson(int port, const std::string &path, const std::string &body,
+            const std::string &key = {}) {
+    httplib::Client client{"127.0.0.1", port};
+    client.set_connection_timeout(2, 0);
+    client.set_read_timeout(5, 0);
+    client.set_write_timeout(5, 0);
+    httplib::Headers headers{{"Content-Type", "application/json"}};
+    if (!key.empty()) {
+        headers.emplace("Authorization", "Bearer " + key);
+    }
+    auto result = client.Put(path, headers, body, "application/json");
+    Hit hit;
+    if (!result) {
+        return hit;
+    }
+    hit.transport_ok = true;
+    hit.status = result->status;
+    hit.body = result->body;
+    hit.content_type = result->get_header_value("Content-Type");
+    hit.acao = result->get_header_value("Access-Control-Allow-Origin");
+    return hit;
+}
+
 Hit getPath(int port, const std::string &path, const std::string &key = {}) {
     httplib::Client client{"127.0.0.1", port};
     client.set_connection_timeout(2, 0);
@@ -1163,8 +1186,9 @@ void group15WebConsole(StubRelay &relay_a, literouter::ProxyServer &proxy) {
 
     const Hit script = getPath(port, "/ui/app.js");
     LR_CHECK_EQ(script.status, 200);
-    LR_CHECK_MSG(script.body.find("literouter web console") != std::string::npos,
+    LR_CHECK_MSG(script.body.find("/__literouter/status") != std::string::npos,
                  "…and so is its script");
+    LR_CHECK_MSG(script.content_type.starts_with("text/javascript"), "…as JS");
 
     const Hit missing = getPath(port, "/ui/does-not-exist.js");
     LR_CHECK_EQ(missing.status, 404);
@@ -1234,6 +1258,93 @@ void group15WebConsole(StubRelay &relay_a, literouter::ProxyServer &proxy) {
     }
     LR_CHECK_EQ(relay_a.modelRequests() > 0, true); // the probe really left the process
     LR_CHECK_EQ(postJson(port, "/__literouter/probe", R"({"provider":"nope"})").status, 404);
+
+    // ── PUT /__literouter/config & server.web_ui ─────────────────────────────────
+
+    // 1. Invalid payload / semantic failure -> 400 / 422, running config unchanged
+    {
+        const Hit bad_body = putJson(port, "/__literouter/config", "not-json");
+        LR_CHECK_EQ(bad_body.status, 400);
+
+        // Break a provider: base_url empty is invalid
+        json bad_doc = doc.at("config");
+        bad_doc["providers"][0]["base_url"] = "";
+        const Hit bad_sem = putJson(port, "/__literouter/config", bad_doc.dump());
+        LR_CHECK_EQ(bad_sem.status, 422);
+        const json bad_res = json::parse(bad_sem.body, nullptr, false);
+        LR_CHECK(!bad_res.is_discarded() && !bad_res.at("ok").get<bool>());
+
+        // Verify config in proxy memory was preserved
+        const Hit check_hit = getPath(port, "/__literouter/config");
+        const json check_doc = json::parse(check_hit.body, nullptr, false);
+        LR_CHECK(!check_doc.at("config").at("providers")[0].at("base_url").get<std::string>().empty());
+    }
+
+    // 2. Secret preservation: PUT with redacted api_key: "" keeps stored secret
+    {
+        json valid_doc = doc.at("config");
+        // alpha's api_key is "" in redacted doc
+        LR_CHECK(valid_doc.at("providers")[0].at("api_key").get<std::string>().empty());
+        json wrapped;
+        wrapped["config"] = valid_doc;
+        const Hit put_ok = putJson(port, "/__literouter/config", wrapped.dump());
+        LR_CHECK_EQ(put_ok.status, 200);
+        const json put_res = json::parse(put_ok.body, nullptr, false);
+        LR_CHECK(put_res.at("ok").get<bool>());
+        LR_CHECK_EQ(put_res.at("saved").get<bool>(), false);
+
+        // Alpha's key is still literal
+        const Hit check_hit = getPath(port, "/__literouter/config");
+        const json check_doc = json::parse(check_hit.body, nullptr, false);
+        bool alpha_literal = false;
+        for (const auto &p : check_doc.at("config").at("providers")) {
+            if (p.at("id").get<std::string>() == "alpha") {
+                alpha_literal = p.value("api_key_source", "") == "literal";
+            }
+        }
+        LR_CHECK_MSG(alpha_literal, "alpha's literal key was preserved on round-trip");
+    }
+
+    // 3. Explicit api_key_clear: true clears the secret
+    {
+        json clear_doc = doc.at("config");
+        clear_doc.at("providers")[0]["api_key_clear"] = true;
+        const Hit put_clear = putJson(port, "/__literouter/config", clear_doc.dump());
+        LR_CHECK_EQ(put_clear.status, 200);
+
+        const Hit check_hit = getPath(port, "/__literouter/config");
+        const json check_doc = json::parse(check_hit.body, nullptr, false);
+        bool alpha_cleared = false;
+        for (const auto &p : check_doc.at("config").at("providers")) {
+            if (p.at("id").get<std::string>() == "alpha") {
+                alpha_cleared = !p.contains("api_key_source") && p.at("api_key").get<std::string>().empty();
+            }
+        }
+        LR_CHECK_MSG(alpha_cleared, "alpha's key was explicitly cleared");
+    }
+
+    // 4. server.web_ui = false disables /ui/ immediately without proxy restart
+    {
+        json no_web = doc.at("config");
+        no_web["server"]["web_ui"] = false;
+        const Hit put_no_web = putJson(port, "/__literouter/config", no_web.dump());
+        LR_CHECK_EQ(put_no_web.status, 200);
+
+        const Hit ui_off = getPath(port, "/ui/");
+        LR_CHECK_EQ(ui_off.status, 404);
+        LR_CHECK(ui_off.body.find("console_disabled") != std::string::npos);
+
+        const Hit root_off = getPath(port, "/");
+        LR_CHECK_EQ(root_off.status, 404);
+
+        // Turn web_ui back on
+        no_web["server"]["web_ui"] = true;
+        const Hit put_on = putJson(port, "/__literouter/config", no_web.dump());
+        LR_CHECK_EQ(put_on.status, 200);
+
+        const Hit ui_on = getPath(port, "/ui/");
+        LR_CHECK_EQ(ui_on.status, 200);
+    }
 }
 
 int main() {
