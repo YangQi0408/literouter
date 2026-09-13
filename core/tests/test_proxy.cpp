@@ -375,12 +375,16 @@ literouter::AppConfig buildProxyConfig(const std::string &alpha, const std::stri
     first.name = "Alpha stub relay";
     first.base_url = alpha;
     first.priority = 10;
+    // One literal key and one reference, so the config endpoint's redaction can
+    // be asserted instead of described.
+    first.api_key = "sk-literal-in-file";
     first.models = {kPassModel};
 
     ProviderConfig second;
     second.id = "beta";
     second.name = "Beta stub relay";
     second.base_url = beta;
+    second.api_key = "${LR_TEST_KEY}";
     second.priority = 20;
     second.models = {kPassModel};
 
@@ -435,6 +439,7 @@ struct Hit {
     int status = 0;
     std::string body;
     std::string content_type;
+    std::string acao; // Access-Control-Allow-Origin, empty when absent
 };
 
 Hit postJson(int port, const std::string &path, const std::string &body,
@@ -456,6 +461,7 @@ Hit postJson(int port, const std::string &path, const std::string &body,
     hit.status = result->status;
     hit.body = result->body;
     hit.content_type = result->get_header_value("Content-Type");
+    hit.acao = result->get_header_value("Access-Control-Allow-Origin");
     return hit;
 }
 
@@ -476,6 +482,7 @@ Hit getPath(int port, const std::string &path, const std::string &key = {}) {
     hit.status = result->status;
     hit.body = result->body;
     hit.content_type = result->get_header_value("Content-Type");
+    hit.acao = result->get_header_value("Access-Control-Allow-Origin");
     return hit;
 }
 
@@ -1142,6 +1149,93 @@ void group14MultiProtocolIngress(StubRelay &relay_a, int port) {
 
 } // namespace
 
+void group15WebConsole(StubRelay &relay_a, literouter::ProxyServer &proxy) {
+    LR_GROUP("15. the built-in console and the admin API behind it");
+    const int port = proxy.boundPort();
+
+    // The console is served by the proxy itself, so a headless machine needs no
+    // second process, no static-file daemon and no CORS configuration.
+    const Hit index = getPath(port, "/ui/");
+    LR_CHECK_EQ(index.status, 200);
+    LR_CHECK_MSG(index.body.find("literouter console") != std::string::npos,
+                 "the console shell is served");
+    LR_CHECK_MSG(index.content_type.starts_with("text/html"), "…as HTML");
+
+    const Hit script = getPath(port, "/ui/app.js");
+    LR_CHECK_EQ(script.status, 200);
+    LR_CHECK_MSG(script.body.find("literouter web console") != std::string::npos,
+                 "…and so is its script");
+
+    const Hit missing = getPath(port, "/ui/does-not-exist.js");
+    LR_CHECK_EQ(missing.status, 404);
+
+    // `/` redirects rather than duplicating the page, so a bookmark on either
+    // spelling keeps working.
+    {
+        httplib::Client client{"127.0.0.1", port};
+        client.set_follow_location(false);
+        client.set_connection_timeout(2, 0);
+        client.set_read_timeout(5, 0);
+        auto result = client.Get("/");
+        LR_CHECK(result && result->status == 302);
+        if (result) {
+            LR_CHECK_EQ(result->get_header_value("Location"), "/ui/");
+        }
+    }
+
+    // The config view never ships a literal secret; a `${VAR}` reference is not
+    // a secret and passes through as written.
+    const Hit config_hit = getPath(port, "/__literouter/config");
+    LR_CHECK_EQ(config_hit.status, 200);
+    LR_CHECK_MSG(config_hit.body.find("sk-literal-in-file") == std::string::npos,
+                 "a literal api_key must not appear in the admin config response");
+    const json doc = json::parse(config_hit.body, nullptr, false);
+    LR_CHECK_MSG(!doc.is_discarded(), "the config view is JSON");
+    if (!doc.is_discarded()) {
+        // Started without a path in this fixture, so the view says so instead
+        // of inventing one.
+        LR_CHECK_EQ(doc.at("path").get<std::string>(), "");
+        LR_CHECK_EQ(doc.at("exists").get<bool>(), false);
+        bool saw_literal = false;
+        bool saw_env = false;
+        for (const auto &provider : doc.at("config").at("providers")) {
+            const std::string id = provider.at("id").get<std::string>();
+            if (id == "alpha") {
+                saw_literal = provider.at("api_key").get<std::string>().empty() &&
+                              provider.at("api_key_source").get<std::string>() == "literal";
+            }
+            if (id == "beta") {
+                saw_env = provider.at("api_key").get<std::string>() == "${LR_TEST_KEY}" &&
+                          provider.at("api_key_source").get<std::string>() == "env";
+            }
+        }
+        LR_CHECK_MSG(saw_literal, "a literal key is blanked and labelled");
+        LR_CHECK_MSG(saw_env, "an env reference is passed through");
+        LR_CHECK(doc.at("validation").contains("summary"));
+    }
+
+    // CORS is for the client-facing API. The management surface is same-origin
+    // for the console, and must not be readable by an arbitrary page — the log
+    // it exposes can carry prompts.
+    LR_CHECK_MSG(getPath(port, "/__literouter/status").acao.empty(),
+                 "the admin API advertises no CORS origin");
+    LR_CHECK_EQ(getPath(port, "/v1/models").acao, "*");
+
+    // Probing a configured relay by id resolves the secret server-side, on the
+    // machine that holds it; the stub advertises one model, so a true answer is
+    // a real relay response rather than a fabricated one.
+    const Hit probe = postJson(port, "/__literouter/probe", R"({"provider":"alpha"})");
+    LR_CHECK_EQ(probe.status, 200);
+    const json probed = json::parse(probe.body, nullptr, false);
+    LR_CHECK_MSG(!probed.is_discarded(), "a probe answer is JSON");
+    if (!probed.is_discarded()) {
+        LR_CHECK(probed.at("reachable").get<bool>());
+        LR_CHECK_EQ(probed.at("models").size(), 1u);
+    }
+    LR_CHECK_EQ(relay_a.modelRequests() > 0, true); // the probe really left the process
+    LR_CHECK_EQ(postJson(port, "/__literouter/probe", R"({"provider":"nope"})").status, 404);
+}
+
 int main() {
     // Non-ASCII in alpha's answer, so "byte-identical" would catch a codec or a
     // re-encoding that a pure-ASCII body would hide.
@@ -1197,6 +1291,7 @@ int main() {
         group12HangingRelay(hanger, relay_b, proxy);
 #endif
         group14MultiProtocolIngress(relay_a, proxy.boundPort());
+        group15WebConsole(relay_a, proxy);
         // Runs last on purpose: it deliberately leaves the proxy stopped.
         group10Restart(proxy, config);
 

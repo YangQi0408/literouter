@@ -21,6 +21,7 @@ This document covers `literouter`'s inbound client endpoints, supported upstream
   - [Same-Protocol Fast Path](#same-protocol-fast-path)
   - [Cross-Protocol Bidirectional Translation](#cross-protocol-bidirectional-translation)
 - [Admin API (`/__literouter`)](#admin-api-__literouter)
+- [Built-in Web Console](#built-in-web-console)
 
 ---
 
@@ -174,6 +175,8 @@ Key features supported across transformations:
 
 Administrative endpoints are prefixed with `/__literouter`. If `server.api_key` is set, Bearer authorization is required.
 
+Neither the admin API nor the web console sends CORS headers; only the client-facing endpoints keep `Access-Control-Allow-Origin: *`. The request log can hold prompts, and letting any page read it cross-origin would hand those prompts out. Every admin response carries `Cache-Control: no-store`.
+
 ### 1. Snapshot Status
 
 - **Request**: `GET /__literouter/status`
@@ -199,10 +202,44 @@ Administrative endpoints are prefixed with `/__literouter`. If `server.api_key` 
 ### 5. Probe Provider & Scan Models
 
 - **Request**: `POST /__literouter/probe`
-- **Body**: Provider configuration JSON (`base_url`, `api_key`, `protocol`)
+- **Body** (either form):
+  - `{"provider": "<id>"}` — probes a **configured** relay; the secret is resolved server-side (`resolveSecret`) and never travels over the wire;
+  - a provider object (`base_url`, `api_key`, `protocol`, `headers`, `timeout_sec`) — probes an unsaved entry, which is what a form wants.
 - **Action**: Runs a live connectivity probe and fetches available model names from upstream.
 
 ### 6. Graceful Shutdown
 
 - **Request**: `POST /__literouter/shutdown`
 - **Action**: Gracefully drains connections and terminates the proxy process.
+
+### 7. Read the running config (redacted)
+
+- **Request**: `GET /__literouter/config`
+- **Response**:
+  ```json
+  {
+    "path": "/home/me/.config/literouter/config.json",
+    "exists": true,
+    "config": { "server": { "...": "..." }, "providers": [ "..." ], "routes": [ "..." ] },
+    "validation": { "ok": false, "summary": "0 errors, 1 warning", "issues": [ "..." ] }
+  }
+  ```
+- **Redaction**: an `api_key` that is a `${VAR}` reference is returned as written — it names a variable, not a key. A literal key is replaced by an empty string and marked `"api_key_source": "literal"`. **A real secret never crosses the network.**
+
+---
+
+## Built-in Web Console
+
+While `literouter serve` runs, the same port carries a web console that needs **no external assets**, for headless servers and containers.
+
+| Path | Purpose |
+|---|---|
+| `GET /` | 302 to `/ui/` |
+| `GET /ui/` | the console (overview / logs / config) |
+| `GET /ui/app.js`, `/ui/app.css`, `/ui/favicon.svg` | static assets |
+| `GET /favicon.ico` | 302 to `/ui/favicon.svg` |
+
+- **Auth**: the shell holds no data, so it loads without a key; every `/__literouter/*` call the page then makes is protected by `server.api_key`, exactly like `/v1/*`. The first visit opens a key prompt and the key stays in that browser's localStorage.
+- **Packaging**: the four assets are compiled into the binary with C++23 `#embed`, so a server needs nothing but `literouter`. Where `#embed` is unavailable (an ISO-strict GCC, for instance), set `LITEROUTER_WEB_DIR` to a directory holding the same four files.
+- **What it does**: live metric tiles, a per-relay health matrix with one-click probing, an incremental request log (filter by level, kind or text), a read-only config view with validation results, config reload, stats reset, shutdown.
+- **Security**: same-origin only, no cross-origin access, and the key is used solely for browser-to-localhost calls.

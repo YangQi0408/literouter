@@ -25,8 +25,10 @@ literouter/
 │   └── tests/                  # 测试套件（test_*.cpp）
 ├── cli/                        # 命令行前端：literouter 可执行文件 (CLI11)
 │   └── src/                    # cli_main.cpp 及各类 cli_cmd_*.cpp
-└── gui/                        # 桌面控制台前端：literouter-gui 可执行文件 (EUI-NEO)
-    └── src/                    # gui_main.cpp, app_state.h, pages/, components/
+├── gui/                        # 桌面控制台前端：literouter-gui 可执行文件 (EUI-NEO)
+│   └── src/                    # gui_main.cpp, app_state.h, pages/, components/
+└── web/                        # 内置 Web 控制台资源（index.html / app.css / app.js / favicon.svg）
+                                # 由 core 用 C++23 #embed 编译进二进制，经 `serve` 的同端口 /ui 提供
 ```
 
 ---
@@ -182,6 +184,14 @@ mcpp run -p gui
 2. 页面采用 EUI-NEO 的 DSL 声明式 UI，通过 `app_state.h` 中的 `AppState` 访问运行中数据；
 3. **不要在 UI 渲染主循环帧（`compose`）中执行任何耗时阻塞操作或网络 I/O**。网络请求或配置保存应放入 `AppState` 的后台线程池或异步队列中执行。
 4. 运行 `mcpp build -p gui` 确认编译成功。
+
+### 任务 D：修改内置 Web 控制台
+1. 前端资源只有四个文件，全部位于 `web/`：`index.html`、`app.css`、`app.js`、`favicon.svg`；
+2. 它们通过 `#embed` 在**编译期**嵌进 `core`（见 `core/src/lr_proxy.cpp` 顶部），因此改完必须重新构建（`mcpp build -p cli`）并强制刷新浏览器；不支持 `#embed` 的编译器会改从 `$LITEROUTER_WEB_DIR` 读取同名文件，新增/改名文件时要同步更新 `kWebAssets` 白名单；
+3. **禁止引入任何外部资源或 CDN**（无外链字体/脚本/图标），控制台要在断网的内网服务器上可用；保持零构建工具链，纯原生 HTML/CSS/JS；
+4. 数据只来自同源的管理 API（`/__literouter/*`）与 `/v1/models`：**不要把密钥或明文 api_key 送进浏览器**，配置视图依赖 `GET /__literouter/config` 的脱敏规则；新增管理端点时同步更新 `docs/{zh,en}/protocols-api.md`；
+5. 控制台外壳可免密钥加载，但所有数据接口仍受 `server.api_key` 保护；不要给 `/__literouter/*` 或 `/ui/*` 添加 CORS 头（请求日志含提示词）；
+6. 在 `core/tests/test_proxy.cpp` 的 15 号分组补充断言（页面可取、未知资源 404、脱敏、CORS 边界、按 id 探测），并运行 `mcpp test -p core`。
 
 ---
 

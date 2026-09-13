@@ -35,8 +35,9 @@ Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate
 - 🔌 **Circuit Breaker with Auto-Probing**: Consecutive failures trip down relays into cooldown. Once cooldown expires, a single-request probe tests recovery automatically without overwhelming services.
 - 🔄 **Multi-Protocol Gateway & Zero-Overhead Fast Path**: Supports inbound OpenAI, Claude Messages, Google Gemini, and OpenAI Responses requests. Matching protocols enjoy **zero JSON parsing and zero-copy streaming passthrough**, while mismatched protocols are converted bi-directionally on the fly.
 - 🔐 **Zero-Leak Secret Placeholders**: Store `${OPENAI_API_KEY}` or `${VAR:-fallback}` placeholders in your config. Secrets are resolved in memory strictly when dispatching requests and are never written back to disk.
-- 💻 **Dual Frontends**:
+- 💻 **Three Frontends**:
   - **CLI**: Supports foreground server mode, `tail -f` live log streaming, status dashboards, and system diagnostics (`doctor`).
+  - **Web Console**: `serve` carries a `/ui` console on the same port, so a headless server still gets live metrics, logs and relay health; the assets are embedded in the binary, nothing else to deploy.
   - **GUI Console**: Native hardware-accelerated OpenGL desktop dashboard featuring real-time telemetry tiles, provider health matrices, visual route ordering, and one-click model auto-discovery.
 - 🌐 **Cross-Platform & Internationalization**: Native support for Linux, macOS, and Windows. Includes English and Simplified Chinese localization, alongside dynamic vector UI scaling (80% ~ 150%).
 
@@ -72,7 +73,10 @@ mcpp run -p cli -- serve
 mcpp run -p gui
 ```
 
-### 4. Verify with a Request
+### 4. Open the built-in Web Console
+Browse to `http://127.0.0.1:8787/ui/` — live metrics, per-relay health and probing, an incremental request log and a config view, with nothing extra to deploy (see [Protocols & API](docs/en/protocols-api.md#built-in-web-console)).
+
+### 5. Verify with a Request
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Content-Type: application/json" \

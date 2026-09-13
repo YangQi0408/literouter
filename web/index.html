@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>literouter console</title>
+<link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 14.5 8 8 14.5 1.5 8Z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+    <strong>literouter</strong>
+    <span class="ver" id="version">—</span>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="overview" data-i18n="tabOverview">Overview</button>
+    <button class="tab" data-tab="logs" data-i18n="tabLogs">Logs</button>
+    <button class="tab" data-tab="config" data-i18n="tabConfig">Config</button>
+  </nav>
+
+  <div class="actions">
+    <span class="dot" id="conn-dot" title="disconnected"></span>
+    <button class="ghost" id="lang-btn" title="language">中/EN</button>
+    <button class="ghost" id="key-btn" title="API key" data-i18n-title="keyTitle">Key</button>
+    <button class="ghost" id="reload-btn" data-i18n="reload">Reload</button>
+    <button class="ghost" id="reset-btn" data-i18n="resetStats">Reset stats</button>
+    <button class="danger" id="shutdown-btn" data-i18n="shutdown">Shutdown</button>
+  </div>
+</header>
+
+<main>
+  <!-- ── overview ───────────────────────────────────────────────────────── -->
+  <section class="view active" id="view-overview">
+    <div class="tiles" id="tiles"></div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2 data-i18n="providers">Providers</h2>
+        <span class="hint" id="breakers"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="providers-table">
+          <thead>
+            <tr>
+              <th data-i18n="colProvider">Provider</th>
+              <th data-i18n="colState">State</th>
+              <th class="num" data-i18n="colRequests">Requests</th>
+              <th class="num" data-i18n="colSuccess">Success</th>
+              <th class="num" data-i18n="colLatency">Latency</th>
+              <th class="num" data-i18n="colTokens">Tokens</th>
+              <th data-i18n="colLastError">Last error</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="providers-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2 data-i18n="models">Models</h2>
+        <span class="hint" id="models-hint"></span>
+      </div>
+      <div class="chips" id="models"></div>
+    </div>
+  </section>
+
+  <!-- ── logs ───────────────────────────────────────────────────────────── -->
+  <section class="view" id="view-logs">
+    <div class="panel">
+      <div class="panel-head">
+        <h2 data-i18n="tabLogs">Logs</h2>
+        <div class="filters">
+          <input id="log-search" type="search" data-i18n-placeholder="search" placeholder="search…">
+          <select id="log-level">
+            <option value="" data-i18n="allLevels">all levels</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="error">error</option>
+          </select>
+          <select id="log-kind">
+            <option value="" data-i18n="allKinds">all kinds</option>
+            <option value="chat">chat</option>
+            <option value="embeddings">embeddings</option>
+            <option value="models">models</option>
+            <option value="admin">admin</option>
+            <option value="system">system</option>
+          </select>
+          <button class="ghost" id="log-pause" data-i18n="pause">Pause</button>
+          <button class="ghost" id="log-clear" data-i18n="clear">Clear</button>
+        </div>
+      </div>
+      <div class="table-wrap tall">
+        <table id="logs-table">
+          <thead>
+            <tr>
+              <th data-i18n="colTime">Time</th>
+              <th data-i18n="colLevel">Level</th>
+              <th data-i18n="colKind">Kind</th>
+              <th data-i18n="colModel">Model</th>
+              <th data-i18n="colProvider">Provider</th>
+              <th class="num" data-i18n="colStatus">Status</th>
+              <th class="num" data-i18n="colLatencyShort">ms</th>
+              <th data-i18n="colMessage">Message</th>
+            </tr>
+          </thead>
+          <tbody id="logs-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── config ─────────────────────────────────────────────────────────── -->
+  <section class="view" id="view-config">
+    <div class="panel">
+      <div class="panel-head">
+        <h2 data-i18n="tabConfig">Config</h2>
+        <span class="hint" id="config-path"></span>
+        <button class="ghost" id="config-copy" data-i18n="copy">Copy</button>
+      </div>
+      <div id="config-issues" class="issues"></div>
+      <pre class="code" id="config-json"></pre>
+      <p class="hint" id="config-note" data-i18n="configNote"></p>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal hidden" id="key-modal">
+  <div class="modal-box">
+    <h3 data-i18n="keyTitle">API key</h3>
+    <p class="hint" data-i18n="keyHint">The server answered 401. Paste the key from <code>server.api_key</code>; it is kept in this browser only.</p>
+    <input id="key-input" type="password" autocomplete="off" spellcheck="false">
+    <div class="modal-actions">
+      <button class="ghost" id="key-clear" data-i18n="keyClear">Clear key</button>
+      <button id="key-save" data-i18n="save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

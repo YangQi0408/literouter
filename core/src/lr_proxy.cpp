@@ -27,6 +27,128 @@ namespace {
 using json = nlohmann::json;
 namespace h = httplib;
 
+// ── the built-in web console ─────────────────────────────────────────────────
+//
+// Plain HTML/CSS/JS, embedded in the binary so a headless machine needs nothing
+// beside the executable. `__has_embed` is the standard preprocessor feature
+// test: where `#embed` is unavailable the assets are read from
+// $LITEROUTER_WEB_DIR per request instead, which keeps an ISO-strict compiler
+// building at the cost of one directory to carry.
+#if defined(__has_embed)
+#  if __has_embed("../../web/index.html") && __has_embed("../../web/app.css") && \
+      __has_embed("../../web/app.js") && __has_embed("../../web/favicon.svg")
+#    define LR_WEB_EMBEDDED 1
+#  endif
+#endif
+
+#ifdef LR_WEB_EMBEDDED
+#  if defined(__clang__)
+#    pragma clang diagnostic push
+#    pragma clang diagnostic ignored "-Wc23-extensions"
+#  endif
+constexpr unsigned char kWebIndexHtml[] = {
+#embed "../../web/index.html"
+, 0u};
+constexpr unsigned char kWebAppCss[] = {
+#embed "../../web/app.css"
+, 0u};
+constexpr unsigned char kWebAppJs[] = {
+#embed "../../web/app.js"
+, 0u};
+constexpr unsigned char kWebFaviconSvg[] = {
+#embed "../../web/favicon.svg"
+, 0u};
+#  if defined(__clang__)
+#    pragma clang diagnostic pop
+#  endif
+
+std::string_view embeddedText(const unsigned char *data, std::size_t size) {
+    // The trailing 0 appended at each declaration is a terminator, not content.
+    return {reinterpret_cast<const char *>(data), size - 1};
+}
+#endif
+
+struct WebAsset {
+    std::string_view name;
+    std::string_view content_type;
+};
+
+// A whitelist rather than a lookup on the request path: these four names are
+// every file the console ships, and the fallback branch joins one of them onto
+// a directory, so nothing a caller types can reach outside it.
+constexpr std::array<WebAsset, 4> kWebAssets{{
+    {"index.html", "text/html; charset=utf-8"},
+    {"app.css", "text/css; charset=utf-8"},
+    {"app.js", "text/javascript; charset=utf-8"},
+    {"favicon.svg", "image/svg+xml"},
+}};
+
+const WebAsset *webAssetFor(std::string_view name) {
+    for (const auto &asset : kWebAssets) {
+        if (asset.name == name) {
+            return &asset;
+        }
+    }
+    return nullptr;
+}
+
+// Writes one console file into `res`; false when the name is not one we serve.
+bool serveWebAsset(std::string_view name, h::Response &res) {
+    const WebAsset *asset = webAssetFor(name);
+    if (asset == nullptr) {
+        return false;
+    }
+#ifdef LR_WEB_EMBEDDED
+    std::string_view body;
+    if (name == "index.html") {
+        body = embeddedText(kWebIndexHtml, sizeof(kWebIndexHtml));
+    } else if (name == "app.css") {
+        body = embeddedText(kWebAppCss, sizeof(kWebAppCss));
+    } else if (name == "app.js") {
+        body = embeddedText(kWebAppJs, sizeof(kWebAppJs));
+    } else {
+        body = embeddedText(kWebFaviconSvg, sizeof(kWebFaviconSvg));
+    }
+    res.status = 200;
+    res.set_content(std::string{body}, std::string{asset->content_type});
+    return true;
+#else
+    const char *dir = std::getenv("LITEROUTER_WEB_DIR");
+    if (dir == nullptr || *dir == '\0') {
+        return false;
+    }
+    std::ifstream in{std::filesystem::path{dir} / asset->name, std::ios::binary};
+    if (!in) {
+        return false;
+    }
+    std::string body{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+    res.status = 200;
+    res.set_content(std::move(body), std::string{asset->content_type});
+    return true;
+#endif
+}
+
+// Paths that belong to the console rather than to the client-facing API. The
+// shell is static and holds no data, so it loads before the operator has typed
+// a key; every byte it then fetches from the admin API still passes the check.
+bool isConsolePath(std::string_view path) {
+    return path == "/" || path == "/favicon.ico" || path == "/ui" || startsWith(path, "/ui/");
+}
+
+json validationJson(const ValidationReport &report) {
+    json issues = json::array();
+    for (const auto &issue : report.issues) {
+        issues.push_back({{"level", issue.levelName()},
+                          {"path", issue.path},
+                          {"message", issue.message}});
+    }
+    json out = json::object();
+    out["ok"] = report.ok();
+    out["summary"] = report.summary();
+    out["issues"] = std::move(issues);
+    return out;
+}
+
 constexpr std::size_t kMaxRequestBody = 16ull * 1024 * 1024;
 // How much un-drained upstream data may sit in a bridge before the reader stops
 // pulling. Bounded so a fast relay cannot balloon the process, high enough that
@@ -1327,10 +1449,23 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     server.set_write_timeout(0, 0);
 
     server.set_pre_routing_handler([this](const h::Request &req, h::Response &res) {
-        Impl::applyCors(res);
+        // CORS belongs to the client-facing API only. `Access-Control-Allow-Origin: *`
+        // on the management surface would let any page the operator visits read
+        // this proxy's log — which can hold prompts — and POST /shutdown.
+        if (isConsolePath(req.path) || startsWith(req.path, kAdminPrefix)) {
+            res.set_header("Cache-Control", "no-store");
+        } else {
+            Impl::applyCors(res);
+        }
         if (req.method == "OPTIONS") {
             res.status = 204;
             return h::Server::HandlerResponse::Handled;
+        }
+        // The console shell is static and holds no data: it has to load before
+        // the operator can type a key. Every byte it then fetches from the
+        // admin API still passes the check below.
+        if (isConsolePath(req.path) && req.method == "GET") {
+            return h::Server::HandlerResponse::Unhandled;
         }
         if (Impl::authorized(req, impl_->snapshotConfig())) {
             return h::Server::HandlerResponse::Unhandled;
@@ -1485,9 +1620,77 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         res.set_content(R"({"status":"ok"})", "application/json");
     });
 
+    // ── the built-in web console ────────────────────────────────────────────────
+    //
+    // Served from the same listener as everything else: a headless machine needs
+    // no second process, no static-file daemon and no CORS configuration.
+
+    server.Get("/", [](const h::Request &, h::Response &res) {
+        res.status = 302;
+        res.set_header("Location", "/ui/");
+    });
+    server.Get("/favicon.ico", [](const h::Request &, h::Response &res) {
+        res.status = 302;
+        res.set_header("Location", "/ui/favicon.svg");
+    });
+    const auto consoleIndex = [](const h::Request &, h::Response &res) {
+        serveWebAsset("index.html", res);
+    };
+    server.Get("/ui", consoleIndex);
+    server.Get("/ui/", consoleIndex);
+    server.Get(R"(/ui/([A-Za-z0-9._-]+))", [](const h::Request &req, h::Response &res) {
+        const std::string name = req.matches.size() > 1 ? req.matches[1].str() : std::string{};
+        if (!serveWebAsset(name, res)) {
+            sendError(res, 404, std::format("no such console asset `{}`", name),
+                      "not_found", "no_such_asset");
+        }
+    });
+
     // ── management surface ──────────────────────────────────────────────────
 
     const std::string admin{kAdminPrefix};
+
+    // The console's config view. A secret written literally into the file never
+    // leaves the machine: it is blanked and labelled, while a `${VAR}` reference
+    // passes through untouched — it names a variable, not a key.
+    server.Get(admin + "/config", [this](const h::Request &, h::Response &res) {
+        const AppConfig cfg = impl_->snapshotConfig();
+        json doc = json::parse(toJsonString(cfg), nullptr, false);
+        if (doc.is_discarded() || !doc.is_object()) {
+            doc = json::object();
+        }
+        if (auto providers = doc.find("providers");
+            providers != doc.end() && providers->is_array()) {
+            for (auto &entry : *providers) {
+                if (!entry.is_object()) {
+                    continue;
+                }
+                auto key = entry.find("api_key");
+                if (key == entry.end() || !key->is_string()) {
+                    continue;
+                }
+                const std::string raw = key->get<std::string>();
+                if (raw.empty()) {
+                    continue;
+                }
+                if (isSecretReference(raw)) {
+                    entry["api_key_source"] = "env";
+                    continue;
+                }
+                entry["api_key"] = "";
+                entry["api_key_source"] = "literal";
+            }
+        }
+        const std::string path = impl_->configPath();
+        std::error_code ec;
+        json root = json::object();
+        root["path"] = path;
+        root["exists"] = !path.empty() && std::filesystem::is_regular_file(path, ec);
+        root["config"] = std::move(doc);
+        root["validation"] = validationJson(validate(cfg));
+        res.status = 200;
+        res.set_content(root.dump(2), "application/json");
+    });
 
     server.Get(admin + "/status", [this](const h::Request &, h::Response &res) {
         res.status = 200;
@@ -1537,16 +1740,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         const ValidationReport report = validate(loaded->config());
         updateConfig(loaded->config());
 
-        json issues = json::array();
-        for (const auto &issue : report.issues) {
-            issues.push_back({{"level", issue.levelName()},
-                              {"path", issue.path},
-                              {"message", issue.message}});
-        }
-        json root = json::object();
-        root["ok"] = report.ok();
-        root["summary"] = report.summary();
-        root["issues"] = std::move(issues);
+        json root = validationJson(report);
         res.status = report.ok() ? 200 : 422;
         res.set_content(root.dump(2), "application/json");
         impl_->recordSystem(report.ok() ? "config reloaded from disk"
@@ -1571,15 +1765,36 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         }).detach();
     });
 
-    // Probes an unsaved relay straight from the console's form, so "Test" can
-    // work before the entry is written to disk.
-    server.Post(admin + "/probe", [](const h::Request &req, h::Response &res) {
+    // Probes a relay two ways: by id, for a configured entry the console's
+    // "Test" button points at, or from an inline object, so the same button
+    // works on a form entry that has not been written to disk yet.
+    server.Post(admin + "/probe", [this](const h::Request &req, h::Response &res) {
         const json body = json::parse(req.body, nullptr, false);
         if (body.is_discarded() || !body.is_object()) {
-            sendError(res, 400, "expected a provider object");
+            sendError(res, 400, R"(expected a provider object, or {"provider": "<id>"})");
             return;
         }
         ProviderConfig provider;
+        // Probe a configured relay by id: the secret is resolved here, on the
+        // machine that holds it, and never travels over the wire.
+        if (const auto by_id = body.find("provider");
+            by_id != body.end() && by_id->is_string()) {
+            const std::string id = by_id->get<std::string>();
+            const AppConfig cfg = impl_->snapshotConfig();
+            const ProviderConfig *stored = cfg.provider(id);
+            if (stored == nullptr) {
+                sendError(res, 404, std::format("no provider `{}` in the running config", id),
+                          "not_found", "no_such_provider");
+                return;
+            }
+            provider = *stored;
+            provider.api_key = resolveSecret(provider.api_key);
+            provider.timeout_sec = std::clamp(provider.timeout_sec, 3, 30);
+            res.status = 200;
+            res.set_content(toJsonString(probeProvider(provider, provider.timeout_sec)),
+                            "application/json");
+            return;
+        }
         provider.base_url = body.value("base_url", std::string{});
         provider.api_key = body.value("api_key", std::string{});
         provider.timeout_sec = std::max(3, body.value("timeout_sec", 20));

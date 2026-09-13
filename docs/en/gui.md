@@ -1,5 +1,7 @@
 # Desktop GUI Console Guide
 
+> Running on a headless server or in a container? Use the built-in [Web Console](protocols-api.md#built-in-web-console) — open `/ui` in a browser, no graphics stack needed.
+
 `literouter-gui` is a native OpenGL desktop dashboard frontend designed for developers. Built with a lightweight declarative UI framework, it offers minimal CPU/memory footprint while providing real-time telemetry, provider health matrices, visual route adjustments, and log exploration.
 
 ---

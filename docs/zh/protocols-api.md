@@ -21,6 +21,7 @@
   - [同协议零开销直通 (Fast Path)](#同协议零开销直通-fast-path)
   - [跨协议双向转换 (Cross-Protocol Translation)](#跨协议双向转换-cross-protocol-translation)
 - [内部管理端点 (Admin API)](#内部管理端点-admin-api)
+- [内置 Web 控制台 (Web Console)](#内置-web-控制台-web-console)
 
 ---
 
@@ -175,6 +176,8 @@ curl http://127.0.0.1:8787/v1/messages \
 
 管理端点统一以 `/__literouter` 为路径前缀，供 CLI、GUI 或自动化运维脚本调用。当配置了 `server.api_key` 时，管理接口同样要求携带 Bearer 鉴权头。
 
+管理接口与 Web 控制台**不会发送 CORS 头**，只有面向客户端的端点保留 `Access-Control-Allow-Origin: *`——请求日志可能包含用户的提示词，允许任意网页跨域读取等于把它们交出去。所有管理响应一律带 `Cache-Control: no-store`。
+
 ### 1. 获取系统状态快照
 
 - **请求**：`GET /__literouter/status`
@@ -222,10 +225,44 @@ curl http://127.0.0.1:8787/v1/messages \
 ### 5. 存活探测与模型扫描
 
 - **请求**：`POST /__literouter/probe`
-- **请求体**：中转站配置 JSON（包含 `base_url`, `api_key`, `protocol`）
+- **请求体**（二选一）：
+  - `{"provider": "<id>"}`：探测**已配置**的中转站；密钥在服务端解析（`resolveSecret`），不会经由网络传输；
+  - 中转站配置 JSON（`base_url`, `api_key`, `protocol`, `headers`, `timeout_sec`）：探测尚未保存的临时条目，供表单使用。
 - **作用**：即时向该中转站发起探测，测试网络连通性，并自动拉取上游所支持的模型列表。
 
 ### 6. 安全关闭服务
 
 - **请求**：`POST /__literouter/shutdown`
 - **作用**：通知正在运行的后台服务安全释放资源并优雅退出进程。
+
+### 7. 读取运行配置（脱敏）
+
+- **请求**：`GET /__literouter/config`
+- **响应**：
+  ```json
+  {
+    "path": "/home/me/.config/literouter/config.json",
+    "exists": true,
+    "config": { "server": { "...": "..." }, "providers": [ "..." ], "routes": [ "..." ] },
+    "validation": { "ok": false, "summary": "0 errors, 1 warning", "issues": [ "..." ] }
+  }
+  ```
+- **脱敏规则**：`api_key` 是 `${VAR}` 引用时原样返回（它只是变量名，不是密钥）；是字面量密钥时替换为空字符串，并以 `"api_key_source": "literal"` 标记。**真实密钥不会经过网络。**
+
+---
+
+## 内置 Web 控制台 (Web Console)
+
+`literouter serve` 运行时，同一个端口就带一份**不依赖任何外部资源**的 Web 控制台，适合无桌面环境的服务器与容器。
+
+| 路径 | 说明 |
+|---|---|
+| `GET /` | 302 跳转到 `/ui/` |
+| `GET /ui/` | 控制台页面（概览 / 日志 / 配置） |
+| `GET /ui/app.js`、`/ui/app.css`、`/ui/favicon.svg` | 前端静态资源 |
+| `GET /favicon.ico` | 302 跳转到 `/ui/favicon.svg` |
+
+- **鉴权**：静态外壳不含任何数据，因此无需密钥即可加载；页面随后调用的 `/__literouter/*` 与 `/v1/*` 一样受 `server.api_key` 保护。浏览器首次访问会弹出密钥输入框，密钥只保存在本机 localStorage。
+- **打包方式**：四个资源通过 C++23 `#embed` 编译进二进制，服务器上只拷贝一个 `literouter` 即可。若编译器不支持 `#embed`（例如 ISO 严格模式下的 GCC），改用环境变量 `LITEROUTER_WEB_DIR` 指向包含这四个文件的目录。
+- **能力**：实时指标磁贴、中转站健康矩阵与一键探测、增量日志（按级别/类型/关键字过滤）、配置只读视图与校验结果、配置热重载、重置统计、关闭服务。
+- **安全性**：与控制台同源，不开放跨域；密钥仅用于浏览器到本机服务的请求。
