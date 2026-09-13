@@ -9,6 +9,7 @@ import tailwindcss from '@tailwindcss/vite'
 // The console is served with `Cache-Control: no-store`, so there is nothing a
 // hash would buy here.
 export default defineConfig({
+  base: '/ui/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },

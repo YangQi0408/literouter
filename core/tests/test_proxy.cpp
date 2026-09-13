@@ -1183,6 +1183,10 @@ void group15WebConsole(StubRelay &relay_a, literouter::ProxyServer &proxy) {
     LR_CHECK_MSG(index.body.find("literouter console") != std::string::npos,
                  "the console shell is served");
     LR_CHECK_MSG(index.content_type.starts_with("text/html"), "…as HTML");
+    LR_CHECK_MSG(index.body.find(R"(src="/ui/app.js")") != std::string::npos,
+                 "the console references its script under /ui/");
+    LR_CHECK_MSG(index.body.find(R"(href="/ui/app.css")") != std::string::npos,
+                 "the console references its stylesheet under /ui/");
 
     const Hit script = getPath(port, "/ui/app.js");
     LR_CHECK_EQ(script.status, 200);
