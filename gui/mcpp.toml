@@ -11,7 +11,6 @@ main = "src/gui_main.cpp"
 eui-neo.workspace = true
 # Link compat.zlib as shared to align with libgio's dynamic dependency on libz.so,
 # eliminating the duplicate symbol warning between static zlib and libz.so.
-zlib = { version = "1.3.2", linkage = "shared" }
 
 
 [dependencies.literouter]

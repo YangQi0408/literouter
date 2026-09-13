@@ -212,10 +212,8 @@ jobs:
           find gui/target -type f \( -name "literouter-gui" -o -name "literouter-gui.exe" \) -exec cp {} "$STAGING/" \; 2>/dev/null || true
           find gui/target -type f -name "*.dll" -exec cp {} "$STAGING/" \; 2>/dev/null || true
 
-          # On Linux, copy shared libraries (.so) and patch ELF interpreter & RPATH
+          # On Linux, patch ELF interpreter & RPATH for portable standalone execution
           if [ "${{ runner.os }}" = "Linux" ]; then
-            find gui/target -type f -name "*.so*" -exec cp -P {} "$STAGING/" \; 2>/dev/null || true
-            find gui/target -type l -name "*.so*" -exec cp -P {} "$STAGING/" \; 2>/dev/null || true
             for bin in "$STAGING/literouter" "$STAGING/literouter-gui"; do
               if [ -f "$bin" ]; then
                 patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 "$bin" 2>/dev/null || python3 scripts/patch_elf_interp.py "$bin" || true
@@ -225,6 +223,15 @@ jobs:
           fi
 
           chmod +x "$STAGING/literouter" "$STAGING/literouter-gui" 2>/dev/null || true
+
+          # Export standalone single binaries directly to dist-release for single-file download
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$STAGING/literouter.exe" "dist-release/literouter-${VER}-${{ matrix.platform }}.exe" 2>/dev/null || true
+            cp "$STAGING/literouter-gui.exe" "dist-release/literouter-gui-${VER}-${{ matrix.platform }}.exe" 2>/dev/null || true
+          else
+            cp "$STAGING/literouter" "dist-release/literouter-${VER}-${{ matrix.platform }}" 2>/dev/null || true
+            cp "$STAGING/literouter-gui" "dist-release/literouter-gui-${VER}-${{ matrix.platform }}" 2>/dev/null || true
+          fi
 
           # Copy documentation and license
           cp README.md "$STAGING/" 2>/dev/null || true
@@ -248,8 +255,12 @@ jobs:
             (cd staging && tar -czf "../dist-release/${ARCHIVE}" "${PKG_NAME}")
           fi
 
-          # Compute SHA-256
-          (cd dist-release && (sha256sum "${ARCHIVE}" 2>/dev/null || shasum -a 256 "${ARCHIVE}") > "${ARCHIVE}.sha256")
+          # Compute SHA-256 for all artifacts
+          (cd dist-release && for f in *; do
+            if [ -f "$f" ] && [[ "$f" != *.sha256 ]]; then
+              (sha256sum "$f" 2>/dev/null || shasum -a 256 "$f") > "$f.sha256"
+            fi
+          done)
 
           ls -lh dist-release/
 
