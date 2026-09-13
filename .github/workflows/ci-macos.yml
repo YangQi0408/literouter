@@ -47,6 +47,18 @@ jobs:
           mcpp --version
           mcpp self env
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Build web console
+        run: |
+          npm ci --prefix web
+          npm run build --prefix web
+
       - name: Build core
         run: mcpp build -p core
       - name: Build cli

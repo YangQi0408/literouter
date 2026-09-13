@@ -56,6 +56,21 @@ jobs:
           mcpp --version
           mcpp self env
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Build web console
+        run: |
+          npm ci --prefix web
+          npm run build --prefix web
+
+      - name: Verify web dist is in sync
+        run: git diff --exit-code -- web/dist
+
       # Built per member rather than with --workspace so a failure names the
       # member that produced it instead of stopping at whatever ran first.
       - name: Build core
