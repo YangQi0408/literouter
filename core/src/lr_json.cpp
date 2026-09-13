@@ -221,6 +221,7 @@ ServerConfig serverFromJson(const json &node) {
     out.log_capacity = readInt(node, "log_capacity", out.log_capacity);
     out.log_bodies = readBool(node, "log_bodies", out.log_bodies);
     out.log_body_limit = readInt(node, "log_body_limit", out.log_body_limit);
+    out.web_ui = readBool(node, "web_ui", out.web_ui);
     out.language = readString(node, "language", out.language);
     out.ui_scale = readDouble(node, "ui_scale", out.ui_scale);
     return out;
@@ -239,6 +240,7 @@ json serverToJson(const ServerConfig &value) {
     node["log_capacity"] = value.log_capacity;
     node["log_bodies"] = value.log_bodies;
     node["log_body_limit"] = value.log_body_limit;
+    node["web_ui"] = value.web_ui;
     node["language"] = value.language;
     node["ui_scale"] = value.ui_scale;
     return node;

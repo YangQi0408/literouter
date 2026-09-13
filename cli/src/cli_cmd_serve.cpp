@@ -18,6 +18,10 @@ extern "C" void handleSignal(int) { g_stop_requested.store(true); }
 struct ServeOptions {
     std::string host;
     int port = -1;
+    // Neither flag given keeps server.web_ui from the file, so a one-off run
+    // never silently overrides what the operator wrote down.
+    bool webUiOn = false;
+    bool webUiOff = false;
     bool force = false;
     bool printConfig = false;
     bool check = false;
@@ -40,6 +44,12 @@ void runServe(Context &ctx, const ServeOptions &opts) {
     literouter::ConfigStore &store = *storeOpt;
 
     literouter::AppConfig config = store.config();
+    if (opts.webUiOn) {
+        config.server.web_ui = true;
+    }
+    if (opts.webUiOff) {
+        config.server.web_ui = false;
+    }
     if (!opts.host.empty()) {
         config.server.host = opts.host;
     }
@@ -133,6 +143,12 @@ void register_serve(CLI::App &root, Context &ctx) {
         "serve", std::string(literouter::i18n::tr("Run the proxy in the foreground")));
     sub->add_option("--host", opts->host, "Override server.host for this run only");
     sub->add_option("--port", opts->port, "Override server.port for this run only");
+    CLI::Option *no_web_ui =
+        sub->add_flag("--no-web-ui", opts->webUiOff,
+                      "Do not serve the built-in console at /ui for this run only");
+    sub->add_flag("--web-ui", opts->webUiOn,
+                  "Serve the built-in console at /ui for this run only")
+        ->excludes(no_web_ui);
     sub->add_flag("--force", opts->force, "Run even when validate() reports errors");
     sub->add_flag("--print-config", opts->printConfig,
                   "Dump the effective config JSON and exit");

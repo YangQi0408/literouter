@@ -253,6 +253,16 @@ ValidationReport validate(const AppConfig &config) {
                  std::format("`{}` is reachable off this machine but no client key is set",
                              config.server.host));
     }
+    if (config.server.web_ui && config.server.api_key.empty() &&
+        config.server.host != "127.0.0.1" && config.server.host != "localhost" &&
+        config.server.host != "::1") {
+        // Not an error: the operator may be behind a firewall they control. But
+        // the console can read the request log, so reaching it must be a choice.
+        addIssue(report, ValidationIssue::Level::Warning, "server.web_ui",
+                 std::format("the web console is served on `{}` with no server.api_key; "
+                             "anyone who can reach the port can read the request log",
+                             config.server.host));
+    }
     if (!config.server.language.empty()) {
         const auto parsedLang = i18n::parseLang(config.server.language);
         if (parsedLang == i18n::Lang::Auto && config.server.language != "auto" &&

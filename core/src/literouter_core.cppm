@@ -110,6 +110,12 @@ struct ServerConfig {
     bool log_bodies = false;
     // Bytes of a body kept when log_bodies is on.
     int log_body_limit = 2048;
+    // Serve the built-in web console at /ui. On by default because the console
+    // is the only telemetry surface a headless machine has; turn it off and the
+    // routes do not exist at all. Keep it off — or set api_key — when the
+    // listener is reachable from more than this machine: the console exposes the
+    // request log, which can carry prompts.
+    bool web_ui = true;
     // Interface language ("auto", "en", "zh"). Default "auto" detects from system locale.
     std::string language = "auto";
     // UI display scale (e.g. 1.0 = 100%, 0.8 = 80%, 1.25 = 125%). 0.0 or 1.0 means default.

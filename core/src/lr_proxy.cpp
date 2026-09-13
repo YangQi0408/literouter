@@ -1452,7 +1452,8 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         // CORS belongs to the client-facing API only. `Access-Control-Allow-Origin: *`
         // on the management surface would let any page the operator visits read
         // this proxy's log — which can hold prompts — and POST /shutdown.
-        if (isConsolePath(req.path) || startsWith(req.path, kAdminPrefix)) {
+        const bool console_path = isConsolePath(req.path);
+        if (console_path || startsWith(req.path, kAdminPrefix)) {
             res.set_header("Cache-Control", "no-store");
         } else {
             Impl::applyCors(res);
@@ -1463,8 +1464,9 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         }
         // The console shell is static and holds no data: it has to load before
         // the operator can type a key. Every byte it then fetches from the
-        // admin API still passes the check below.
-        if (isConsolePath(req.path) && req.method == "GET") {
+        // admin API still passes the check below. When the console is switched
+        // off its paths fall through to the same check as anything else.
+        if (console_path && req.method == "GET" && impl_->snapshotConfig().server.web_ui) {
             return h::Server::HandlerResponse::Unhandled;
         }
         if (Impl::authorized(req, impl_->snapshotConfig())) {
@@ -1623,22 +1625,47 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     // ── the built-in web console ────────────────────────────────────────────────
     //
     // Served from the same listener as everything else: a headless machine needs
-    // no second process, no static-file daemon and no CORS configuration.
+    // no second process, no static-file daemon and no CORS configuration. The
+    // switch is read per request, so `server.web_ui = false` — from a reload or
+    // from the console itself — closes it immediately rather than at restart.
 
-    server.Get("/", [](const h::Request &, h::Response &res) {
+    const auto consoleOpen = [this](h::Response &res) {
+        if (impl_->snapshotConfig().server.web_ui) {
+            return true;
+        }
+        sendError(res, 404, "the web console is disabled (server.web_ui = false)",
+                  "not_found", "console_disabled");
+        return false;
+    };
+
+    server.Get("/", [consoleOpen](const h::Request &, h::Response &res) {
+        if (!consoleOpen(res)) {
+            return;
+        }
         res.status = 302;
         res.set_header("Location", "/ui/");
     });
-    server.Get("/favicon.ico", [](const h::Request &, h::Response &res) {
+    server.Get("/favicon.ico", [consoleOpen](const h::Request &, h::Response &res) {
+        if (!consoleOpen(res)) {
+            return;
+        }
         res.status = 302;
         res.set_header("Location", "/ui/favicon.svg");
     });
-    const auto consoleIndex = [](const h::Request &, h::Response &res) {
-        serveWebAsset("index.html", res);
-    };
-    server.Get("/ui", consoleIndex);
-    server.Get("/ui/", consoleIndex);
-    server.Get(R"(/ui/([A-Za-z0-9._-]+))", [](const h::Request &req, h::Response &res) {
+    server.Get("/ui", [consoleOpen](const h::Request &, h::Response &res) {
+        if (consoleOpen(res)) {
+            serveWebAsset("index.html", res);
+        }
+    });
+    server.Get("/ui/", [consoleOpen](const h::Request &, h::Response &res) {
+        if (consoleOpen(res)) {
+            serveWebAsset("index.html", res);
+        }
+    });
+    server.Get(R"(/ui/([A-Za-z0-9._-]+))", [consoleOpen](const h::Request &req, h::Response &res) {
+        if (!consoleOpen(res)) {
+            return;
+        }
         const std::string name = req.matches.size() > 1 ? req.matches[1].str() : std::string{};
         if (!serveWebAsset(name, res)) {
             sendError(res, 404, std::format("no such console asset `{}`", name),
@@ -1690,6 +1717,90 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         root["validation"] = validationJson(validate(cfg));
         res.status = 200;
         res.set_content(root.dump(2), "application/json");
+    });
+
+    // Writes the whole config back. Editing the file's shape field by field
+    // would mean a dozen endpoints and a dozen chances to leave the file
+    // inconsistent; one atomic write validated as a whole cannot do that.
+    //
+    // Secrets round-trip without ever reaching the client: a provider whose
+    // `api_key` arrives empty keeps the value already stored under that id
+    // (which is what makes it safe for the console to PUT back what it got from
+    // the redacting GET), and `api_key_clear: true` is the explicit way to
+    // actually empty it.
+    server.Put(admin + "/config", [this](const h::Request &req, h::Response &res) {
+        const json body = json::parse(req.body, nullptr, false);
+        if (body.is_discarded() || !body.is_object()) {
+            sendError(res, 400, "expected a config object", "invalid_request", "bad_config_body");
+            return;
+        }
+        const auto nested = body.find("config");
+        const json doc = (nested != body.end() && nested->is_object()) ? *nested : body;
+
+        const AppConfig current = impl_->snapshotConfig();
+        auto parsed = appConfigFromJson(doc.dump());
+        if (!parsed) {
+            sendError(res, 422, parsed.error(), "invalid_config", "config_invalid");
+            return;
+        }
+
+        // Which ids asked to be cleared, and which keep what the file has.
+        std::set<std::string, std::less<>> clearing;
+        if (const auto providers = doc.find("providers");
+            providers != doc.end() && providers->is_array()) {
+            for (const auto &entry : *providers) {
+                if (entry.is_object() && entry.value("api_key_clear", false) &&
+                    entry.contains("id") && entry["id"].is_string()) {
+                    clearing.insert(entry["id"].get<std::string>());
+                }
+            }
+        }
+        for (auto &provider : parsed->providers) {
+            if (clearing.contains(provider.id)) {
+                provider.api_key.clear();
+                continue;
+            }
+            if (provider.api_key.empty()) {
+                if (const ProviderConfig *stored = current.provider(provider.id);
+                    stored != nullptr && !stored->api_key.empty()) {
+                    provider.api_key = stored->api_key;
+                }
+            }
+        }
+
+        const ValidationReport report = validate(*parsed);
+        if (!report.ok()) {
+            // Nothing is written and nothing takes effect: a half-applied bad
+            // config would be the worst of both.
+            json refused = validationJson(report);
+            refused["ok"] = false;
+            res.status = 422;
+            res.set_content(refused.dump(2), "application/json");
+            return;
+        }
+
+        const std::string path = impl_->configPath();
+        bool saved = false;
+        if (!path.empty()) {
+            ConfigStore store;
+            store.config() = *parsed;
+            if (auto written = store.saveAs(path); !written) {
+                sendError(res, 500, written.error(), "write_failed", "config_write_failed");
+                return;
+            }
+            saved = true;
+        }
+        updateConfig(*parsed);
+
+        json root = validationJson(report);
+        root["ok"] = true;
+        root["saved"] = saved;
+        root["path"] = path;
+        res.status = 200;
+        res.set_content(root.dump(2), "application/json");
+        impl_->recordSystem(saved ? "config written from the console"
+                                  : "config updated in memory (no config path)",
+                            report.count(ValidationIssue::Level::Warning) > 0 ? "warn" : "info");
     });
 
     server.Get(admin + "/status", [this](const h::Request &, h::Response &res) {
