@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../app_state.h"
-#include "theme.h"
+#include "lr_theme.h"
 #include "widgets.h"
 
 // The persistent shell: left navigation, the content top bar, and the

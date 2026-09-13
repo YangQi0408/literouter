@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../app_state.h"
-#include "../components/theme.h"
+#include "../components/lr_theme.h"
 #include "../components/widgets.h"
 
 // Page 3 — Routes: one card per logical model, with its ordered failover chain

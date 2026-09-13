@@ -215,14 +215,20 @@ jobs:
           # Archive
           if [ "${{ matrix.archive_type }}" = "zip" ]; then
             ARCHIVE="${PKG_NAME}.zip"
-            (cd staging && zip -r -9 "../dist-release/${ARCHIVE}" "${PKG_NAME}")
+            if command -v 7z >/dev/null 2>&1; then
+              (cd staging && 7z a -tzip "../dist-release/${ARCHIVE}" "${PKG_NAME}")
+            elif command -v zip >/dev/null 2>&1; then
+              (cd staging && zip -r -9 "../dist-release/${ARCHIVE}" "${PKG_NAME}")
+            else
+              powershell.exe -Command "Compress-Archive -Path 'staging/${PKG_NAME}' -DestinationPath 'dist-release/${ARCHIVE}'"
+            fi
           else
             ARCHIVE="${PKG_NAME}.tar.gz"
             (cd staging && tar -czf "../dist-release/${ARCHIVE}" "${PKG_NAME}")
           fi
 
           # Compute SHA-256
-          (cd dist-release && sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256")
+          (cd dist-release && (sha256sum "${ARCHIVE}" 2>/dev/null || shasum -a 256 "${ARCHIVE}") > "${ARCHIVE}.sha256")
 
           ls -lh dist-release/
 

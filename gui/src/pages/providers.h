@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../app_state.h"
-#include "../components/theme.h"
+#include "../components/lr_theme.h"
 #include "../components/widgets.h"
 
 // Page 2 — Providers: the relay list, the row actions, and the entry point to

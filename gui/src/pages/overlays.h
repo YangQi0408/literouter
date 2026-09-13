@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../app_state.h"
-#include "../components/theme.h"
+#include "../components/lr_theme.h"
 #include "../components/widgets.h"
 
 // Global overlays: the provider editor, the add-hop dialog, the confirmation

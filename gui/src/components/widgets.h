@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../app_state.h"
-#include "theme.h"
+#include "lr_theme.h"
 
 // Small reusable pieces built from the DSL primitives. Every page composes
 // through these so the console keeps one rhythm: same label style, same card

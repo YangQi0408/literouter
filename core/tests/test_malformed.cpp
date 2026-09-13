@@ -262,7 +262,11 @@ struct Fixture {
     }
 
     literouter::Snapshot finish(const char *scenario) {
-        const auto snapshot = proxy.snapshot();
+        auto snapshot = proxy.snapshot();
+        for (int i = 0; i < 30 && snapshot.active_requests > 0; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            snapshot = proxy.snapshot();
+        }
         std::string detail;
         LR_CHECK_MSG(accountingHolds(snapshot, detail), detail);
         LR_CHECK_MSG(snapshot.active_requests == 0,

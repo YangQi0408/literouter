@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../app_state.h"
-#include "../components/theme.h"
+#include "../components/lr_theme.h"
 #include "../components/widgets.h"
 
 // Page 5 — Settings: the whole ServerConfig, the persistence controls, and a

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../app_state.h"
-#include "../components/theme.h"
+#include "../components/lr_theme.h"
 #include "../components/widgets.h"
 
 // Page 1 — Overview: metric tiles, a breaker banner, one card per relay, and a

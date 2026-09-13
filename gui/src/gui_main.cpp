@@ -15,7 +15,7 @@
 #include "app_state.h"
 
 #include "components/shell.h"
-#include "components/theme.h"
+#include "components/lr_theme.h"
 #include "components/widgets.h"
 #include "pages/logs.h"
 #include "pages/overlays.h"
