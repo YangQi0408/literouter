@@ -149,6 +149,7 @@ You can override the default configuration path at any time via:
 | `log_capacity` | `size_t` | `400` | Maximum capacity of the in-memory circular log buffer. |
 | `log_bodies` | `bool` | `false` | Whether to record request and response bodies in the log buffer. |
 | `log_body_limit` | `size_t` | `2048` | Maximum bytes stored per body when `log_bodies` is true. |
+| `web_ui` | `bool` | `true` | Whether to enable the built-in web console. Takes effect immediately; a non-loopback host without an `api_key` emits a security warning. |
 
 ### Provider Configuration (`providers`)
 

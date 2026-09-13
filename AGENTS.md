@@ -27,8 +27,10 @@ literouter/
 │   └── src/                    # cli_main.cpp 及各类 cli_cmd_*.cpp
 ├── gui/                        # 桌面控制台前端：literouter-gui 可执行文件 (EUI-NEO)
 │   └── src/                    # gui_main.cpp, app_state.h, pages/, components/
-└── web/                        # 内置 Web 控制台资源（index.html / app.css / app.js / favicon.svg）
-                                # 由 core 用 C++23 #embed 编译进二进制，经 `serve` 的同端口 /ui 提供
+└── web/                        # 内置 Web 控制台（React 19 + TypeScript + Vite + Tailwind + shadcn/ui）
+    ├── src/                    # 前端源码（views/, components/, store.tsx 等）
+    ├── dist/                   # 构建产物（index.html / app.css / app.js / favicon.svg）
+    └── package.json            # 前端依赖配置
 ```
 
 ---
@@ -186,12 +188,12 @@ mcpp run -p gui
 4. 运行 `mcpp build -p gui` 确认编译成功。
 
 ### 任务 D：修改内置 Web 控制台
-1. 前端资源只有四个文件，全部位于 `web/`：`index.html`、`app.css`、`app.js`、`favicon.svg`；
-2. 它们通过 `#embed` 在**编译期**嵌进 `core`（见 `core/src/lr_proxy.cpp` 顶部），因此改完必须重新构建（`mcpp build -p cli`）并强制刷新浏览器；不支持 `#embed` 的编译器会改从 `$LITEROUTER_WEB_DIR` 读取同名文件，新增/改名文件时要同步更新 `kWebAssets` 白名单；
-3. **禁止引入任何外部资源或 CDN**（无外链字体/脚本/图标），控制台要在断网的内网服务器上可用；保持零构建工具链，纯原生 HTML/CSS/JS；
-4. 数据只来自同源的管理 API（`/__literouter/*`）与 `/v1/models`：**不要把密钥或明文 api_key 送进浏览器**，配置视图依赖 `GET /__literouter/config` 的脱敏规则；新增管理端点时同步更新 `docs/{zh,en}/protocols-api.md`；
+1. 前端基于 **React 19 + TypeScript + Vite + Tailwind CSS v4 + shadcn/ui** 开发，源码位于 `web/src/`，固定产物输出至 `web/dist/`（`index.html`、`app.css`、`app.js`、`favicon.svg`）；
+2. 构建产物通过 `#embed` 在**编译期**嵌进 `core`（见 `core/src/lr_proxy.cpp` 顶部），因此修改前端代码后必须先运行 `npm --prefix web run build` 重新生成 `web/dist/`，再构建 C++ 模块（`mcpp build -p cli`）。**`web/dist/` 构建产物必须与 `web/src/` 源码同步提交**，以便无 Node.js 环境的用户直接编译；
+3. **禁止引入任何外部资源或 CDN**（无外链字体/外部脚本/远程图标），控制台需在断网内网环境下可用；组件库直接导入本地源码（如 `@radix-ui/react-*` 单包、`lucide-react` 本地图标）；
+4. 数据只来自同源的管理 API（`/__literouter/*`）与 `/v1/models`：**不要把明文密钥送进浏览器**。配置视图依赖 `GET /__literouter/config` 的脱敏规则，全量回写配置通过 `PUT /__literouter/config`（空密钥保留服务端原值，`api_key_clear: true` 清空）；新增管理端点时同步更新 `docs/{zh,en}/protocols-api.md`；
 5. 控制台外壳可免密钥加载，但所有数据接口仍受 `server.api_key` 保护；不要给 `/__literouter/*` 或 `/ui/*` 添加 CORS 头（请求日志含提示词）；
-6. 在 `core/tests/test_proxy.cpp` 的 15 号分组补充断言（页面可取、未知资源 404、脱敏、CORS 边界、按 id 探测），并运行 `mcpp test -p core`。
+6. 在 `core/tests/test_proxy.cpp` 的 15 号分组补充断言（页面可取、未知资源 404、脱敏、CORS 边界、按 id 探测、PUT 配置回写、`web_ui` 开关），并运行 `mcpp test -p core`。
 
 ---
 
@@ -199,7 +201,7 @@ mcpp run -p gui
 
 任何 Agent 在声称任务完成或提交代码前，必须对照以下清单进行自查：
 
-- [ ] `mcpp test -p core` 执行无误，8 组测试套件全部通过（0 failures）；
+- [ ] `mcpp test -p core` 执行无误，10 组测试套件全部通过（0 failures）；
 - [ ] `mcpp build --workspace` 执行无误，全工作区无 warning、无 error；
 - [ ] 涉及 CLI 修改的，手动运行一次对应子命令确认控制台输出无乱码、对齐正常；
 - [ ] 涉及配置变动的，确认环境变量密钥引用未被意外展开成明文；

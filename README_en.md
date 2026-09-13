@@ -37,7 +37,7 @@ Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate
 - 🔐 **Zero-Leak Secret Placeholders**: Store `${OPENAI_API_KEY}` or `${VAR:-fallback}` placeholders in your config. Secrets are resolved in memory strictly when dispatching requests and are never written back to disk.
 - 💻 **Three Frontends**:
   - **CLI**: Supports foreground server mode, `tail -f` live log streaming, status dashboards, and system diagnostics (`doctor`).
-  - **Web Console**: `serve` carries a `/ui` console on the same port, so a headless server still gets live metrics, logs and relay health; the assets are embedded in the binary, nothing else to deploy.
+  - **Web Console**: `serve` carries a modern React + Vite + Tailwind + shadcn/ui `/ui` console on the same port, providing telemetry overview, provider/route management, probing, log filtering, and full config editing; assets are embedded in the binary with zero extra deployment (developing the web UI requires Node.js 22+).
   - **GUI Console**: Native hardware-accelerated OpenGL desktop dashboard featuring real-time telemetry tiles, provider health matrices, visual route ordering, and one-click model auto-discovery.
 - 🌐 **Cross-Platform & Internationalization**: Native support for Linux, macOS, and Windows. Includes English and Simplified Chinese localization, alongside dynamic vector UI scaling (80% ~ 150%).
 

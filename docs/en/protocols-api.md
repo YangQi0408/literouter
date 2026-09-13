@@ -226,20 +226,33 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   ```
 - **Redaction**: an `api_key` that is a `${VAR}` reference is returned as written — it names a variable, not a key. A literal key is replaced by an empty string and marked `"api_key_source": "literal"`. **A real secret never crosses the network.**
 
+### 8. Update & Persist Running Config
+
+- **Request**: `PUT /__literouter/config`
+- **Request Body**: `{ "config": <AppConfig> }` or bare `<AppConfig>` object
+- **Validation & Atomicity**: Deserializes JSON, then runs semantic validation (`validate()`). If any errors occur, returns **422 Unprocessable Entity** and touches neither memory nor disk config.
+- **Secret Preservation Rules**:
+  - Provider `api_key` is empty string: preserves the provider's existing secret in memory (safe round-trip from the redacted GET response);
+  - `api_key_clear: true`: explicitly clears that provider's secret;
+  - Non-empty string: updates to the new value (supports `${VAR}` placeholders).
+- **Persistence**: When started with a config path, saves atomically using temporary-file-and-rename and calls `updateConfig()`; when running without a config path, updates memory only and returns `"saved": false`.
+- **Response**: `{"ok": true, "saved": true, "path": "...", "summary": "...", "issues": [...]}`
+
 ---
 
 ## Built-in Web Console
 
-While `literouter serve` runs, the same port carries a web console that needs **no external assets**, for headless servers and containers.
+While `literouter serve` runs, the same port carries a modern web console built with **React + Vite + Tailwind + shadcn/ui**, with no external CDN dependencies, ideal for headless servers and container deployments.
 
 | Path | Purpose |
 |---|---|
-| `GET /` | 302 to `/ui/` |
-| `GET /ui/` | the console (overview / logs / config) |
-| `GET /ui/app.js`, `/ui/app.css`, `/ui/favicon.svg` | static assets |
+| `GET /` | 302 to `/ui/` (when console is enabled) |
+| `GET /ui/` | the console single-page application entry (`index.html`) |
+| `GET /ui/app.js`, `/ui/app.css`, `/ui/favicon.svg` | frontend build artifacts |
 | `GET /favicon.ico` | 302 to `/ui/favicon.svg` |
 
-- **Auth**: the shell holds no data, so it loads without a key; every `/__literouter/*` call the page then makes is protected by `server.api_key`, exactly like `/v1/*`. The first visit opens a key prompt and the key stays in that browser's localStorage.
-- **Packaging**: the four assets are compiled into the binary with C++23 `#embed`, so a server needs nothing but `literouter`. Where `#embed` is unavailable (an ISO-strict GCC, for instance), set `LITEROUTER_WEB_DIR` to a directory holding the same four files.
-- **What it does**: live metric tiles, a per-relay health matrix with one-click probing, an incremental request log (filter by level, kind or text), a read-only config view with validation results, config reload, stats reset, shutdown.
-- **Security**: same-origin only, no cross-origin access, and the key is used solely for browser-to-localhost calls.
+- **Toggle Control**: Controlled by `server.web_ui` (boolean, defaults to `true`). Can also be overridden at launch via CLI flags `serve --web-ui` or `serve --no-web-ui`. When disabled, navigating to `/ui/` returns 404 (error code `console_disabled`). Changes via reload or PUT take effect immediately without restarting the process.
+- **Auth**: The shell holds no data, so it loads without a key; every `/__literouter/*` call the page then makes is protected by `server.api_key`, exactly like `/v1/*`. The first visit opens a key prompt and the key stays in that browser's localStorage.
+- **Packaging**: Frontend build artifacts (under `web/dist/`) are compiled into the binary with C++23 `#embed`, so a server needs nothing but `literouter`. Where `#embed` is unavailable (an ISO-strict GCC, for instance), set `LITEROUTER_WEB_DIR` to a directory holding the same four files (e.g. `web/dist`).
+- **Capabilities**: Live metric tiles (requests, success rate, token rates), relay health matrix with one-click probing, route candidate ordering and editing, full visual configuration editing and safe round-trip persistence, incremental request log streaming (filter by level, kind, or keyword, pause/clear), dark/light theme toggle, and English/Chinese i18n.
+- **Security**: Same-origin only, admin endpoints never advertise CORS headers; secrets are used solely for browser-to-localhost requests and literal keys never leave the server.

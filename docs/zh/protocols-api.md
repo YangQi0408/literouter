@@ -249,20 +249,33 @@ curl http://127.0.0.1:8787/v1/messages \
   ```
 - **脱敏规则**：`api_key` 是 `${VAR}` 引用时原样返回（它只是变量名，不是密钥）；是字面量密钥时替换为空字符串，并以 `"api_key_source": "literal"` 标记。**真实密钥不会经过网络。**
 
+### 8. 更新运行配置与持久化
+
+- **请求**：`PUT /__literouter/config`
+- **请求体**：`{ "config": <AppConfig> }` 或裸 `<AppConfig>` 对象
+- **校验与原子性**：先执行 JSON 反序列化，再执行语义校验（`validate()`）。若存在任何 `error` 级别错误，返回 **422 Unprocessable Entity**，且不改动内存和磁盘配置。
+- **密钥保留规则**：
+  - provider 的 `api_key` 为空字符串：自动保留内存中该 provider 现有的密钥（支持将脱敏 GET 的结果安全原样回传）；
+  - `api_key_clear: true`：显式清空该 provider 的密钥；
+  - 非空字符串：更新为新值（支持环境变量占位符 `${VAR}`）。
+- **持久化**：有配置文件路径时使用临时文件重命名原子落盘，并调用 `updateConfig()`；无路径时仅更新内存并返回 `"saved": false`。
+- **响应**：`{"ok": true, "saved": true, "path": "...", "summary": "...", "issues": [...]}`
+
 ---
 
 ## 内置 Web 控制台 (Web Console)
 
-`literouter serve` 运行时，同一个端口就带一份**不依赖任何外部资源**的 Web 控制台，适合无桌面环境的服务器与容器。
+`literouter serve` 运行时，同一个端口就带一份基于 **React + Vite + Tailwind + shadcn/ui** 开发的现代 Web 控制台，不依赖任何外部 CDN 资源，非常适合无桌面环境的服务器与容器部署。
 
 | 路径 | 说明 |
 |---|---|
-| `GET /` | 302 跳转到 `/ui/` |
-| `GET /ui/` | 控制台页面（概览 / 日志 / 配置） |
-| `GET /ui/app.js`、`/ui/app.css`、`/ui/favicon.svg` | 前端静态资源 |
+| `GET /` | 302 跳转到 `/ui/`（控制台开启时） |
+| `GET /ui/` | 控制台单页应用入口（`index.html`） |
+| `GET /ui/app.js`、`/ui/app.css`、`/ui/favicon.svg` | 前端构建产物 |
 | `GET /favicon.ico` | 302 跳转到 `/ui/favicon.svg` |
 
+- **开关控制**：由 `server.web_ui`（布尔值，默认 `true`）控制。也可以在启动时通过 CLI 参数 `serve --web-ui` 或 `serve --no-web-ui` 显式覆盖。关闭后访问 `/ui/` 返回 404（错误码 `console_disabled`）。配置修改（通过 reload 或 PUT）后即刻生效，无需重启进程。
 - **鉴权**：静态外壳不含任何数据，因此无需密钥即可加载；页面随后调用的 `/__literouter/*` 与 `/v1/*` 一样受 `server.api_key` 保护。浏览器首次访问会弹出密钥输入框，密钥只保存在本机 localStorage。
-- **打包方式**：四个资源通过 C++23 `#embed` 编译进二进制，服务器上只拷贝一个 `literouter` 即可。若编译器不支持 `#embed`（例如 ISO 严格模式下的 GCC），改用环境变量 `LITEROUTER_WEB_DIR` 指向包含这四个文件的目录。
-- **能力**：实时指标磁贴、中转站健康矩阵与一键探测、增量日志（按级别/类型/关键字过滤）、配置只读视图与校验结果、配置热重载、重置统计、关闭服务。
-- **安全性**：与控制台同源，不开放跨域；密钥仅用于浏览器到本机服务的请求。
+- **打包方式**：前端构建产物（`web/dist/` 下的 `index.html`、`app.js`、`app.css`、`favicon.svg`）通过 C++23 `#embed` 编译进二进制，服务器上只拷贝一个 `literouter` 即可。若编译器不支持 `#embed`（例如 ISO 严格模式下的 GCC），改用环境变量 `LITEROUTER_WEB_DIR` 指向包含这四个文件的构建产物目录（如 `web/dist`）。
+- **能力**：实时指标磁贴（请求/成功率/Token 速率等）、中转站健康矩阵与一键探测、路由候选链排序与编辑、可视化全局配置编辑与安全回传保存、增量日志流过滤（按级别/类型/关键字过滤、暂停/清空）、暗亮主题切换与中英双语国际化。
+- **安全性**：与控制台同源，不向跨域请求开放管理端点；密钥仅用于浏览器到本机服务的同源请求，且字面量密钥绝不出网。

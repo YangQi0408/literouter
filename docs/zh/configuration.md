@@ -149,6 +149,7 @@
 | `log_capacity` | `size_t` | `400` | 内存环形日志缓冲区的最大条目容量。超出会自动覆盖最旧记录。 |
 | `log_bodies` | `bool` | `false` | 是否在内存日志中抓取并保存请求体和响应体文本。 |
 | `log_body_limit` | `size_t` | `2048` | 开启 `log_bodies` 时单个报文体截断保存的最大字节数。 |
+| `web_ui` | `bool` | `true` | 是否启用内置 Web 控制台。修改后即刻生效；若 `host` 设为非回环地址（如 `0.0.0.0`）且未设置 `api_key`，校验时将产生安全警告。 |
 
 ### 中转站配置 (`providers`)
 

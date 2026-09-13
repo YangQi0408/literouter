@@ -49,12 +49,40 @@ Windows GUI builds use GLFW's Cocoa and Win32 backends instead.
 | `compat.xrender` | 0.9.12 | HPND-sell-variant | · | · | ✔ |
 | `compat.xtrans` | 1.6.0 | HPND-sell-variant, MIT, MIT-Open-Group | · | · | ✔ |
 
+### Web Console Frontend Components (Embedded)
+
+The built-in web console is compiled into `literouter.core` via C++23 `#embed` and bundled into `cli` and `gui` binaries.
+
+| Component | Version | License (SPDX) | core | cli | gui |
+|---|---|---|:---:|:---:|:---:|
+| `react` / `react-dom` | 19.2.0 | MIT | ✔ | ✔ | ✔ |
+| `@radix-ui/react-dialog` | 1.1.15 | MIT | ✔ | ✔ | ✔ |
+| `@radix-ui/react-label` | 2.1.8 | MIT | ✔ | ✔ | ✔ |
+| `@radix-ui/react-select` | 2.2.6 | MIT | ✔ | ✔ | ✔ |
+| `@radix-ui/react-separator` | 1.1.8 | MIT | ✔ | ✔ | ✔ |
+| `@radix-ui/react-slot` | 1.2.4 | MIT | ✔ | ✔ | ✔ |
+| `@radix-ui/react-switch` | 1.2.6 | MIT | ✔ | ✔ | ✔ |
+| `@radix-ui/react-tooltip` | 1.2.8 | MIT | ✔ | ✔ | ✔ |
+| `lucide-react` | 0.545.0 | ISC | ✔ | ✔ | ✔ |
+| `clsx` | 2.1.1 | MIT | ✔ | ✔ | ✔ |
+| `tailwind-merge` | 3.3.1 | MIT | ✔ | ✔ | ✔ |
+| `class-variance-authority` | 0.7.1 | Apache-2.0 | ✔ | ✔ | ✔ |
+| `sonner` | 2.0.7 | MIT | ✔ | ✔ | ✔ |
+| `shadcn/ui` (components) | source copy | MIT | ✔ | ✔ | ✔ |
+
+Development-only tooling (build time, not embedded in binary):
+- `vite` 7.1.9 (MIT)
+- `tailwindcss` 4.1.14 (MIT)
+- `tw-animate-css` 1.4.0 (MIT)
+- `typescript` 5.9.3 (Apache-2.0)
+
 ## License texts
 
 ### MIT
 
 Applies to `compat.httplib`, `nlohmann.json`, `compat.glad`, `compat.yyjson`,
-`compat.tray`, `compat.xcb`, and the Khronos OpenGL registry headers loaded by
+`compat.tray`, `compat.xcb`, `react`, `react-dom`, `@radix-ui/*`, `clsx`,
+`tailwind-merge`, `sonner`, `shadcn/ui`, and the Khronos OpenGL registry headers loaded by
 `compat.opengl` (each carries `SPDX-License-Identifier: MIT`). Copyright lines:
 
 ```
@@ -65,6 +93,12 @@ yyjson (compat.yyjson)        Copyright (c) 2020 YaoYuan <ibireme@gmail.com>
 tray (compat.tray)            Copyright (c) 2017 Serge Zaitsev
 libxcb / xcb-proto            Copyright (C) 2001-2006 Bart Massey, Jamey Sharp, and Josh Triplett
 OpenGL registry headers       Copyright 2013-2026 The Khronos Group Inc.
+react / react-dom             Copyright (c) Meta Platforms, Inc. and affiliates.
+radix-ui primitives           Copyright (c) 2022 WorkOS
+clsx                          Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
+tailwind-merge                Copyright (c) 2021 Dany Castillo
+sonner                        Copyright (c) 2023 Emil Kowalski
+shadcn/ui                     Copyright (c) 2023 shadcn
 ```
 
 ```text
@@ -410,8 +444,8 @@ predates the SPDX-tagged era and carries the older Khronos grant:
 
 ### Apache-2.0
 
-Applies to `compat.openssl` (OpenSSL) and `compat.eui-neo` (EUI-NEO). The full
-license text is the one in `LICENSE`, which this file does not duplicate.
+Applies to `compat.openssl` (OpenSSL), `compat.eui-neo` (EUI-NEO), and `class-variance-authority`.
+The full license text is the one in `LICENSE`, which this file does not duplicate.
 Required attribution:
 
 ```text
@@ -419,10 +453,25 @@ OpenSSL — Copyright 1998-2025 The OpenSSL Project Authors. All Rights Reserved
           This product includes software developed by the OpenSSL Project
           for use in the OpenSSL Toolkit (https://www.openssl.org/).
 EUI-NEO — Copyright (c) the EUI-NEO authors (https://github.com/sudoevolve/EUI-NEO)
+class-variance-authority — Copyright (c) 2022 Joe Bell
 ```
 
 OpenSSL 3.x is licensed under Apache-2.0, whose §4(d) requires a redistributor to
-carry forward the notices above; EUI-NEO ships under the same terms.
+carry forward the notices above; EUI-NEO and class-variance-authority ship under the same terms.
+
+### ISC
+
+Applies to `lucide-react`:
+
+```text
+ISC License
+
+Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT). All other copyright 2022-present Lucide Contributors.
+
+Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
 
 ### X11 / X.Org stack (Linux GUI only)
 
