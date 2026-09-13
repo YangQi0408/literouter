@@ -108,10 +108,11 @@ jobs:
 
           echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "version=$TARGET_VER" >> "$GITHUB_OUTPUT"
+          EOF_DELIM="EOF_${RANDOM}_$(date +%s)"
           {
-            echo "release_notes<<EOF"
+            echo "release_notes<<$EOF_DELIM"
             echo "$BODY"
-            echo "EOF"
+            echo "$EOF_DELIM"
           } >> "$GITHUB_OUTPUT"
 
   build-release:
@@ -204,6 +205,7 @@ jobs:
           find cli/target -type f \( -name "literouter" -o -name "literouter.exe" \) -exec cp {} "$STAGING/" \;
           find gui/target -type f \( -name "literouter-gui" -o -name "literouter-gui.exe" \) -exec cp {} "$STAGING/" \; 2>/dev/null || true
           find gui/target -type f -name "*.dll" -exec cp {} "$STAGING/" \; 2>/dev/null || true
+          chmod +x "$STAGING/literouter" "$STAGING/literouter-gui" 2>/dev/null || true
 
           # Copy documentation and license
           cp README.md "$STAGING/" 2>/dev/null || true

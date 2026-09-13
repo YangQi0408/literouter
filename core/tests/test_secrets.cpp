@@ -57,9 +57,13 @@ void testResolveSecretFallback() {
     LR_CHECK_EQ(literouter::resolveSecret("${" + std::string{kVar} + ":-a b:c/d}"), "a b:c/d");
     // An empty fallback is a legal way to spell "unset means no key".
     LR_CHECK_EQ(literouter::resolveSecret("${" + std::string{kVar} + ":-}"), "");
-    // An empty variable counts as set, so the fallback is not used.
+#ifndef _WIN32
+    // An empty variable counts as set, so the fallback is not used. On Windows,
+    // the CRT and OS do not represent empty environment variables (assigning ""
+    // unsets the variable), so this distinction only exists on POSIX.
     guard.assign("");
     LR_CHECK_EQ(literouter::resolveSecret(reference), "");
+#endif
 }
 
 void testResolveSecretMalformed() {
