@@ -193,6 +193,12 @@ jobs:
             mcpp build -p gui --release
           fi
 
+      - name: Install packaging utilities (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq patchelf
+
       - name: Package release assets
         run: |
           set -euo pipefail
@@ -205,6 +211,19 @@ jobs:
           find cli/target -type f \( -name "literouter" -o -name "literouter.exe" \) -exec cp {} "$STAGING/" \;
           find gui/target -type f \( -name "literouter-gui" -o -name "literouter-gui.exe" \) -exec cp {} "$STAGING/" \; 2>/dev/null || true
           find gui/target -type f -name "*.dll" -exec cp {} "$STAGING/" \; 2>/dev/null || true
+
+          # On Linux, copy shared libraries (.so) and patch ELF interpreter & RPATH
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            find gui/target -type f -name "*.so*" -exec cp -P {} "$STAGING/" \; 2>/dev/null || true
+            find gui/target -type l -name "*.so*" -exec cp -P {} "$STAGING/" \; 2>/dev/null || true
+            for bin in "$STAGING/literouter" "$STAGING/literouter-gui"; do
+              if [ -f "$bin" ]; then
+                patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 "$bin" 2>/dev/null || python3 scripts/patch_elf_interp.py "$bin" || true
+                patchelf --set-rpath '$ORIGIN' "$bin" 2>/dev/null || true
+              fi
+            done
+          fi
+
           chmod +x "$STAGING/literouter" "$STAGING/literouter-gui" 2>/dev/null || true
 
           # Copy documentation and license
