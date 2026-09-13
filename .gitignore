@@ -31,3 +31,6 @@ Thumbs.db
 *.log
 *.pid
 *.tmp*
+
+# Web console frontend dependencies
+web/node_modules/

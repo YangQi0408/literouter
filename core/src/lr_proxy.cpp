@@ -35,8 +35,8 @@ namespace h = httplib;
 // $LITEROUTER_WEB_DIR per request instead, which keeps an ISO-strict compiler
 // building at the cost of one directory to carry.
 #if defined(__has_embed)
-#  if __has_embed("../../web/index.html") && __has_embed("../../web/app.css") && \
-      __has_embed("../../web/app.js") && __has_embed("../../web/favicon.svg")
+#  if __has_embed("../../web/dist/index.html") && __has_embed("../../web/dist/app.css") && \
+      __has_embed("../../web/dist/app.js") && __has_embed("../../web/dist/favicon.svg")
 #    define LR_WEB_EMBEDDED 1
 #  endif
 #endif
@@ -47,16 +47,16 @@ namespace h = httplib;
 #    pragma clang diagnostic ignored "-Wc23-extensions"
 #  endif
 constexpr unsigned char kWebIndexHtml[] = {
-#embed "../../web/index.html"
+#embed "../../web/dist/index.html"
 , 0u};
 constexpr unsigned char kWebAppCss[] = {
-#embed "../../web/app.css"
+#embed "../../web/dist/app.css"
 , 0u};
 constexpr unsigned char kWebAppJs[] = {
-#embed "../../web/app.js"
+#embed "../../web/dist/app.js"
 , 0u};
 constexpr unsigned char kWebFaviconSvg[] = {
-#embed "../../web/favicon.svg"
+#embed "../../web/dist/favicon.svg"
 , 0u};
 #  if defined(__clang__)
 #    pragma clang diagnostic pop

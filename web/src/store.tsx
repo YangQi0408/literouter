@@ -1,0 +1,338 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
+import { toast } from 'sonner'
+
+import {
+  api,
+  ApiError,
+  setApiKey,
+  type AppConfig,
+  type ConfigResponse,
+  type LogEntry,
+  type ModelInfo,
+  type ProviderProbe,
+  type Snapshot,
+  type ValidationIssue,
+  type ValidationReport,
+} from '@/lib/api'
+import { useI18n } from '@/lib/i18n'
+
+/** Everything the console knows lives here: telemetry polled from the server,
+ *  the config as the server holds it, the config as the operator is editing it,
+ *  and the request log's incremental cursor. Components read it and call the
+ *  actions; nothing else talks to the API directly. */
+
+interface StoreValue {
+  // telemetry
+  snapshot: Snapshot | null
+  online: boolean
+  models: ModelInfo[]
+
+  // configuration
+  loaded: ConfigResponse | null
+  working: AppConfig | null
+  dirty: boolean
+  saving: boolean
+  saveIssues: ValidationIssue[]
+  serverReport: ValidationReport | null
+  consoleOff: boolean
+
+  // request log
+  logs: LogEntry[]
+  logsPaused: boolean
+  setLogsActive: (active: boolean) => void
+  setLogsPaused: (paused: boolean) => void
+  clearLogs: () => void
+
+  // credentials
+  keyPrompt: boolean
+  openKeyPrompt: () => void
+  closeKeyPrompt: () => void
+
+  // actions
+  refresh: () => Promise<void>
+  loadConfig: () => Promise<void>
+  update: (mutate: (draft: AppConfig) => void) => void
+  save: () => Promise<void>
+  discard: () => void
+  reload: () => Promise<void>
+  resetStats: () => Promise<void>
+  shutdown: () => Promise<void>
+  probe: (provider: string) => Promise<ProviderProbe>
+}
+
+const StoreContext = createContext<StoreValue | null>(null)
+
+const POLL_MS = 2000
+const LOG_LIMIT = 1500
+
+export function StoreProvider({ children }: { children: ReactNode }) {
+  const { t } = useI18n()
+
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+  const [online, setOnline] = useState(false)
+  const [models, setModels] = useState<ModelInfo[]>([])
+
+  const [loaded, setLoaded] = useState<ConfigResponse | null>(null)
+  const [working, setWorking] = useState<AppConfig | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [saveIssues, setSaveIssues] = useState<ValidationIssue[]>([])
+  const [consoleOff, setConsoleOff] = useState(false)
+
+  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [logsPaused, setLogsPaused] = useState(false)
+  const [logsActive, setLogsActive] = useState(false)
+
+  const [keyPrompt, setKeyPrompt] = useState(false)
+
+  const logsSince = useRef(0)
+  const pausedRef = useRef(false)
+  pausedRef.current = logsPaused
+
+  const dirty = useMemo(() => {
+    if (!working || !loaded) return false
+    return JSON.stringify(working) !== JSON.stringify(loaded.config)
+  }, [working, loaded])
+
+  const handleError = useCallback(
+    (error: unknown) => {
+      if (error instanceof ApiError && error.status === 401) {
+        setKeyPrompt(true)
+        return
+      }
+      setOnline(false)
+    },
+    [],
+  )
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = await api.status()
+      setSnapshot(next)
+      setOnline(true)
+    } catch (error) {
+      handleError(error)
+    }
+  }, [handleError])
+
+  const loadModels = useCallback(async () => {
+    try {
+      const body = await api.models()
+      setModels(body.data ?? [])
+    } catch {
+      /* the model list is decoration; the overview stays useful without it */
+    }
+  }, [])
+
+  const loadConfig = useCallback(async () => {
+    try {
+      const body = await api.config()
+      setLoaded(body)
+      setWorking(structuredClone(body.config))
+      setSaveIssues([])
+    } catch (error) {
+      handleError(error)
+    }
+  }, [handleError])
+
+  const pullLogs = useCallback(async () => {
+    if (pausedRef.current) return
+    try {
+      const body = await api.logs(logsSince.current)
+      if (body.entries.length) {
+        // Advance only over entries actually received, so a truncated answer
+        // leaves the rest for the next poll instead of skipping them.
+        logsSince.current = body.entries[body.entries.length - 1]!.seq
+        setLogs((prev) => [...prev, ...body.entries].slice(-LOG_LIMIT))
+      }
+    } catch (error) {
+      handleError(error)
+    }
+  }, [handleError])
+
+  const update = useCallback((mutate: (draft: AppConfig) => void) => {
+    setWorking((prev) => {
+      if (!prev) return prev
+      const draft = structuredClone(prev)
+      mutate(draft)
+      return draft
+    })
+  }, [])
+
+  const discard = useCallback(() => {
+    if (!loaded) return
+    setWorking(structuredClone(loaded.config))
+    setSaveIssues([])
+  }, [loaded])
+
+  const save = useCallback(async () => {
+    if (!working) return
+    setSaving(true)
+    setSaveIssues([])
+    try {
+      const report = await api.saveConfig(working)
+      toast.success(report.saved ? t('saved') : t('savedInMemory'))
+      setConsoleOff(working.server.web_ui === false)
+      await loadConfig()
+      await refresh()
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 422 && error.data) {
+        const body = error.data as ValidationReport
+        setSaveIssues(body.issues ?? [])
+        toast.error(t('saveRefused'))
+      } else {
+        handleError(error)
+      }
+    } finally {
+      setSaving(false)
+    }
+  }, [working, t, loadConfig, refresh, handleError])
+
+  const reload = useCallback(async () => {
+    try {
+      const report = await api.reload()
+      await loadConfig()
+      await refresh()
+      toast.success(t('reloaded', { summary: report.summary }))
+      if (!report.ok) setSaveIssues(report.issues ?? [])
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 422 && error.data) {
+        const body = error.data as ValidationReport
+        toast.error(t('reloadFailed', { summary: body.summary ?? '' }))
+        setSaveIssues(body.issues ?? [])
+        await loadConfig()
+      } else {
+        handleError(error)
+      }
+    }
+  }, [t, loadConfig, refresh, handleError])
+
+  const resetStats = useCallback(async () => {
+    try {
+      await api.resetStats()
+      toast.success(t('statsReset'))
+      await refresh()
+    } catch (error) {
+      handleError(error)
+    }
+  }, [t, refresh, handleError])
+
+  const shutdown = useCallback(async () => {
+    try {
+      await api.shutdown()
+      toast(t('shuttingDown'))
+    } catch (error) {
+      handleError(error)
+    }
+  }, [t, handleError])
+
+  const probe = useCallback(
+    async (provider: string) => {
+      try {
+        const result = await api.probe(provider)
+        if (result.reachable) {
+          toast.success(
+            t('probeOk', { ms: `${result.latency_ms.toFixed(1)}ms`, n: result.models.length }),
+          )
+        } else {
+          toast.error(t('probeFail', { detail: result.detail || `status ${result.status}` }))
+        }
+        return result
+      } catch (error) {
+        handleError(error)
+        throw error
+      }
+    },
+    [t, handleError],
+  )
+
+  const clearLogs = useCallback(() => {
+    setLogs([])
+  }, [])
+
+  const openKeyPrompt = useCallback(() => setKeyPrompt(true), [])
+  const closeKeyPrompt = useCallback(() => setKeyPrompt(false), [])
+
+  // One timer drives both polls; the log poll only runs while its view is open.
+  useEffect(() => {
+    void refresh()
+    void loadConfig()
+    void loadModels()
+    const timer = window.setInterval(() => {
+      void refresh()
+      if (logsActive) void pullLogs()
+    }, POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [refresh, loadConfig, loadModels, pullLogs, logsActive])
+
+  // The model list changes when a route or a relay's model list does.
+  useEffect(() => {
+    if (!dirty) void loadModels()
+  }, [snapshot?.total_requests, dirty, loadModels])
+
+  const value: StoreValue = {
+    snapshot,
+    online,
+    models,
+    loaded,
+    working,
+    dirty,
+    saving,
+    saveIssues,
+    serverReport: loaded?.validation ?? null,
+    consoleOff,
+    logs,
+    logsPaused,
+    setLogsActive,
+    setLogsPaused,
+    clearLogs,
+    keyPrompt,
+    openKeyPrompt,
+    closeKeyPrompt,
+    refresh,
+    loadConfig,
+    update,
+    save,
+    discard,
+    reload,
+    resetStats,
+    shutdown,
+    probe,
+  }
+
+  return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
+}
+
+export function useStore(): StoreValue {
+  const value = useContext(StoreContext)
+  if (!value) throw new Error('useStore must be used inside StoreProvider')
+  return value
+}
+
+/** Applies a key entered in the dialog and re-reads everything. */
+export function useApiKey() {
+  const { refresh, loadConfig, closeKeyPrompt } = useStore()
+  const save = useCallback(
+    async (key: string) => {
+      setApiKey(key)
+      closeKeyPrompt()
+      await refresh()
+      await loadConfig()
+    },
+    [refresh, loadConfig, closeKeyPrompt],
+  )
+  const clear = useCallback(async () => {
+    setApiKey('')
+    closeKeyPrompt()
+    await refresh()
+  }, [refresh, closeKeyPrompt])
+  return { save, clear }
+}
