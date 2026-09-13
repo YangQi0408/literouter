@@ -2,7 +2,11 @@
 
 #include <cstdlib>
 #include <iostream>
-#include <unistd.h>
+#if defined(_WIN32)
+#  include <io.h>
+#else
+#  include <unistd.h>
+#endif
 
 import literouter.core;
 
@@ -41,8 +45,12 @@ std::string repeat(std::string_view unit, std::size_t times) {
 
 void configureColor(bool disabled) {
     g_configured = true;
-    if (disabled || std::getenv("NO_COLOR") != nullptr ||
-        isatty(fileno(stdout)) == 0) {
+#if defined(_WIN32)
+    const bool is_a_tty = _isatty(_fileno(stdout)) != 0;
+#else
+    const bool is_a_tty = isatty(fileno(stdout)) != 0;
+#endif
+    if (disabled || std::getenv("NO_COLOR") != nullptr || !is_a_tty) {
         g_color = false;
     } else {
         g_color = true;
