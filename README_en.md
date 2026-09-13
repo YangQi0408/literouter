@@ -167,3 +167,6 @@ LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
 ## License
 
 This project is licensed under the [Apache-2.0 License](LICENSE).
+Third-party components and the license terms that apply to them are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+

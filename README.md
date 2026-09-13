@@ -167,3 +167,5 @@ LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
 ## 开源许可
 
 本项目采用 [Apache-2.0 License](LICENSE) 协议开源。
+第三方依赖及其许可证详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
