@@ -40,3 +40,4 @@ json.workspace = true
 # reservation vs ~384 MB at 48).
 cxxflags = ["-DCPPHTTPLIB_THREAD_POOL_COUNT=8"]
 bmi_schedule = "on"
+jobs = "auto"

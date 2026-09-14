@@ -9,14 +9,17 @@ main = "src/gui_main.cpp"
 
 [dependencies.compat]
 eui-neo.workspace = true
-# Link compat.zlib as shared to align with libgio's dynamic dependency on libz.so,
-# eliminating the duplicate symbol warning between static zlib and libz.so.
-
 
 [dependencies.literouter]
 core = { path = "../core" }
 
 [build]
 bmi_schedule = "on"
+jobs = "auto"
+
+# On Linux, hide zlib symbols in the main GUI executable so they do not conflict
+# with libz.so loaded dynamically by libgio-2.0.so.
+[target.linux.build]
+ldflags = ["-Wl,--version-script,../../../hide_zlib.ver"]
 
 
