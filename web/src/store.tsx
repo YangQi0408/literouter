@@ -97,6 +97,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const pausedRef = useRef(false)
   pausedRef.current = logsPaused
 
+  // What the server last handed us, readable from a callback without making
+  // that callback depend on it — `loadConfig` compares against this to tell an
+  // edited draft from an untouched one.
+  const loadedRef = useRef<ConfigResponse | null>(null)
+  loadedRef.current = loaded
+
+  // Same trick for the log tab: the poll timer reads this instead of listing
+  // `logsActive` as a dependency, so switching tabs no longer tears the timer
+  // down and re-runs the whole effect.
+  const logsActiveRef = useRef(false)
+  logsActiveRef.current = logsActive
+
   const dirty = useMemo(() => {
     if (!working || !loaded) return false
     return JSON.stringify(working) !== JSON.stringify(loaded.config)
@@ -132,16 +144,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const loadConfig = useCallback(async () => {
-    try {
-      const body = await api.config()
-      setLoaded(body)
-      setWorking(structuredClone(body.config))
-      setSaveIssues([])
-    } catch (error) {
-      handleError(error)
-    }
-  }, [handleError])
+  // `force` replaces the operator's draft with what the server holds. Only the
+  // actions that mean "the draft is settled" pass it — save, reload, entering a
+  // key. A plain re-read (the first paint, or an effect that happened to re-run)
+  // leaves an edited draft alone: overwriting it would discard typing with no
+  // undo and no warning.
+  const loadConfig = useCallback(
+    async (force = false) => {
+      try {
+        const body = await api.config()
+        setLoaded(body)
+        setWorking((prev) => {
+          if (!prev) return structuredClone(body.config)
+          if (!force && JSON.stringify(prev) !== JSON.stringify(loadedRef.current?.config)) {
+            // Unsaved edits in flight: keep them, and let `dirty` re-diff
+            // against the config that just arrived.
+            return prev
+          }
+          return structuredClone(body.config)
+        })
+        if (force) setSaveIssues([])
+      } catch (error) {
+        handleError(error)
+      }
+    },
+    [handleError],
+  )
 
   const pullLogs = useCallback(async () => {
     if (pausedRef.current) return
@@ -261,17 +289,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const openKeyPrompt = useCallback(() => setKeyPrompt(true), [])
   const closeKeyPrompt = useCallback(() => setKeyPrompt(false), [])
 
-  // One timer drives both polls; the log poll only runs while its view is open.
+  // One timer drives both polls; the log poll only runs while its view is open,
+  // read through a ref. Listing `logsActive` as a dependency instead would tear
+  // this effect down and re-run it on every switch into or out of the log tab —
+  // and the initial `loadConfig()` below would land on top of whatever the
+  // operator had typed.
   useEffect(() => {
     void refresh()
     void loadConfig()
     void loadModels()
     const timer = window.setInterval(() => {
       void refresh()
-      if (logsActive) void pullLogs()
+      if (logsActiveRef.current) void pullLogs()
     }, POLL_MS)
     return () => window.clearInterval(timer)
-  }, [refresh, loadConfig, loadModels, pullLogs, logsActive])
+  }, [refresh, loadConfig, loadModels, pullLogs])
 
   // The model list changes when a route or a relay's model list does.
   useEffect(() => {

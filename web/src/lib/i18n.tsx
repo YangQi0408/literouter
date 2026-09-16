@@ -40,6 +40,8 @@ const en: Record<string, string> = {
   prompt: 'prompt',
   completion: 'completion',
   relays: 'relays',
+  ok: 'ok',
+  failed: 'failed',
 
   // tables
   relayHealth: 'Relay health',
@@ -117,6 +119,7 @@ const en: Record<string, string> = {
   copy: 'Copy',
   save: 'Save',
   copied: 'Copied to clipboard',
+  tabConfig: 'Configuration file',
   configNote: 'Read-only view of what the server holds. Literal secrets are blanked.',
   copiedKey: 'copied',
 
@@ -163,6 +166,8 @@ const zh: Record<string, string> = {
   prompt: 'prompt',
   completion: 'completion',
   relays: '个中转站',
+  ok: '成功',
+  failed: '失败',
 
   relayHealth: '中转站健康',
   models: '模型',
@@ -236,6 +241,7 @@ const zh: Record<string, string> = {
   copy: '复制',
   save: '保存',
   copied: '已复制到剪贴板',
+  tabConfig: '配置文件',
   configNote: '服务端当前配置的只读视图；明文密钥会被打码。',
   copiedKey: '已复制',
 

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -82,6 +82,34 @@ export function NumberField({
   )
 }
 
+/** Holds the raw text of a multi-line field while the operator types.
+ *
+ *  A textarea cannot be driven directly by the parsed value: parsing drops
+ *  blank and partial lines, so echoing it back mid-edit swallowed the newline
+ *  the operator had just pressed and made a second entry impossible to type.
+ *  The raw text therefore lives here and only the parse result travels
+ *  outward. `render` maps a value to its canonical text; the box re-syncs only
+ *  when that canonical text stops matching what our own text yields, which is
+ *  what distinguishes an outside change (a load, a discard, a reopened dialog)
+ *  from the operator's own keystrokes. */
+function useRawText(canonical: string, canonicalize: (raw: string) => string) {
+  const [text, setText] = useState(canonical)
+  const seen = useRef(canonical)
+  if (seen.current !== canonical) {
+    seen.current = canonical
+    // Ours if the text we hold already canonicalises to the incoming value;
+    // otherwise it came from elsewhere and should replace what is in the box.
+    if (canonicalize(text) !== canonical) setText(canonical)
+  }
+  return [text, setText] as const
+}
+
+const parseLines = (raw: string) =>
+  raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+
 export function LinesField({
   value,
   onChange,
@@ -93,24 +121,38 @@ export function LinesField({
   placeholder?: string
   rows?: number
 }) {
+  const [text, setText] = useRawText(value.join('\n'), (raw) => parseLines(raw).join('\n'))
+
   return (
     <Textarea
       rows={rows}
       spellCheck={false}
       placeholder={placeholder}
-      value={value.join('\n')}
-      onChange={(event) =>
-        onChange(
-          event.target.value
-            .split('\n')
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0),
-        )
-      }
+      value={text}
+      onChange={(event) => {
+        setText(event.target.value)
+        onChange(parseLines(event.target.value))
+      }}
       className="min-h-0 font-mono text-xs"
     />
   )
 }
+
+const parseHeaders = (raw: string): Record<string, string> => {
+  const next: Record<string, string> = {}
+  for (const line of raw.split('\n')) {
+    const at = line.indexOf(':')
+    if (at <= 0) continue
+    const name = line.slice(0, at).trim()
+    if (name) next[name] = line.slice(at + 1).trim()
+  }
+  return next
+}
+
+const renderHeaders = (value: Record<string, string>) =>
+  Object.entries(value)
+    .map(([name, headerValue]) => `${name}: ${headerValue}`)
+    .join('\n')
 
 export function HeadersField({
   value,
@@ -119,9 +161,13 @@ export function HeadersField({
   value: Record<string, string>
   onChange: (value: Record<string, string>) => void
 }) {
-  const text = Object.entries(value)
-    .map(([name, headerValue]) => `${name}: ${headerValue}`)
-    .join('\n')
+  // Same reason as LinesField: a header is only parseable once its colon is
+  // typed, and echoing the parse back before that dropped the name character
+  // by character as it was being written.
+  const [text, setText] = useRawText(renderHeaders(value), (raw) =>
+    renderHeaders(parseHeaders(raw)),
+  )
+
   return (
     <Textarea
       rows={3}
@@ -129,15 +175,8 @@ export function HeadersField({
       placeholder="X-Title: literouter"
       value={text}
       onChange={(event) => {
-        const next: Record<string, string> = {}
-        for (const line of event.target.value.split('\n')) {
-          const at = line.indexOf(':')
-          if (at <= 0) continue
-          const name = line.slice(0, at).trim()
-          const headerValue = line.slice(at + 1).trim()
-          if (name) next[name] = headerValue
-        }
-        onChange(next)
+        setText(event.target.value)
+        onChange(parseHeaders(event.target.value))
       }}
       className="min-h-0 font-mono text-xs"
     />
