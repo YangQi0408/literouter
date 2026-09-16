@@ -102,6 +102,16 @@ jobs:
       - name: Build cli
         run: mcpp build -p cli
 
+      - name: Verify config docs match the build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          bin="$(ls -t cli/target/*/*/bin/literouter | head -1)"
+          tmp="$(mktemp -d)"
+          LITEROUTER_CONFIG="$tmp/seed.json" "$bin" config init --force
+          printf '{"providers":[{}],"routes":[{"targets":[{"provider":"p"}]}]}' > "$tmp/minimal.json"
+          LITEROUTER_CONFIG="$tmp/minimal.json" "$bin" serve --print-config --force > "$tmp/defaults.json"
+          python3 scripts/check_config_docs.py --seed "$tmp/seed.json" --defaults "$tmp/defaults.json"
+
       - name: Build gui
         # On macOS, zlib shared linkage currently lacks C++ runtime symbols; keep going if it fails
         continue-on-error: ${{ runner.os == 'macOS' }}

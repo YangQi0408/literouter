@@ -77,7 +77,7 @@ You can override the default configuration path at any time via:
       "base_url": "https://api.openai.com/v1", // Upstream base URL (subpaths preserved)
       "api_key": "${OPENAI_API_KEY}",          // Plaintext key or env placeholder
       "enabled": true,                         // Enable or disable this provider
-      "priority": 10,                          // Dispatch priority (lower number = higher priority)
+      "priority": 10,                          // Dispatch priority, lower wins (example value; the field default is 100)
       "weight": 1,                             // Weight tie-breaker among providers with the same priority
       "timeout_sec": 120,                      // Request timeout in seconds
       "connect_timeout_sec": 15,               // TCP / TLS handshake timeout in seconds
@@ -182,7 +182,7 @@ Writes match the config file: a temp file in the same directory followed by an a
 | `base_url` | `string` | Required | Root URL of the upstream service (e.g. `https://api.openai.com/v1`). Must be a valid HTTP/HTTPS URL. |
 | `api_key` | `string` | `""` | Upstream key, supporting static strings or environment variable placeholders. |
 | `enabled` | `bool` | `true` | Enable or disable this provider from request dispatching. |
-| `priority` | `int32` | `10` | Dispatch priority; **lower number wins** (e.g. 1 before 10, 10 before 20). |
+| `priority` | `int32` | `100` | Dispatch priority; **lower number wins** (e.g. 1 before 10, 10 before 20). |
 | `weight` | `uint32` | `1` | Relative weight for breaking ties within the same priority; **higher number wins**. |
 | `timeout_sec` | `uint32` | `120` | Upstream response timeout in seconds. |
 | `connect_timeout_sec` | `uint32` | `15` | TCP / TLS connection establishment timeout in seconds. |

@@ -17,6 +17,7 @@ literouter/
 ├── README.md                   # 中文项目总览（默认）
 ├── README_en.md                # 英文项目总览
 ├── CHANGELOG.md                # ⚠️ 改动会触发自动发版，见规则 7
+├── scripts/                    # 构建与校验脚本（check_config_docs.py 等）
 ├── docs/                       # 专题技术与使用文档
 │   ├── zh/                     # 中文详细文档（configuration, routing-failover, protocols-api 等）
 │   ├── en/                     # 英文详细文档
@@ -339,6 +340,7 @@ C++ 模块的 `std.pcm` 与编译器构建**严格绑定**，系统 clangd 会�
 2. **GUI 构建的平台差异**：macOS 上 GUI 构建标记为 `continue-on-error`（zlib 共享链接缺 C++ 运行时符号），**Linux 与 Windows 上不容许失败**。
 3. **CLI 冒烟**：`--version` → `config init --force` → `config validate` 三连。注意 `--force` 会覆写配置文件，所以本地跑之前先设好 `LITEROUTER_CONFIG`。
 4. **GUI 无头冒烟**：仅 Linux，`xvfb-run` + `LITEROUTER_GUI_SMOKE=1`，并以 `LIBGL_ALWAYS_SOFTWARE=1` 强制软件光栅化。
+5. **配置文档校验**：仅 Linux，`scripts/check_config_docs.py` 会把 `docs/{zh,en}/configuration.md` 的样例 JSON 与字段表同 `config init` / `serve --print-config` 的真实输出逐字段比对（字段缺失、多出字段、默认值不符都会失败）。**新增或改名任何配置字段后，必须同步文档**，否则 CI 直接红——这是上一轮 `log_capacity` 文档写 400、代码是 200 之类漂移的专用护栏。
 
 `release.yml` 是独立的发版流水线，触发条件见规则 7。
 

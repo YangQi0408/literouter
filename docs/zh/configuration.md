@@ -77,7 +77,7 @@
       "base_url": "https://api.openai.com/v1", // 上游根地址（保留路径前缀）
       "api_key": "${OPENAI_API_KEY}",          // 支持直接写明文，或使用环境变量占位符
       "enabled": true,                         // 是否启用该中转站
-      "priority": 10,                          // 优先级，数值越小越优先尝试
+      "priority": 10,                          // 优先级，数值越小越优先尝试（此处为示例值，字段默认值为 100）
       "weight": 1,                             // 同优先级下的权重（权重数值大者排在前面）
       "timeout_sec": 120,                      // 响应超时时间（秒）
       "connect_timeout_sec": 15,               // TCP/TLS 连接建立超时（秒）
@@ -182,7 +182,7 @@
 | `base_url` | `string` | 必填 | 上游服务基础地址，例如 `https://api.openai.com/v1`。必须为合法 HTTP/HTTPS URL。 |
 | `api_key` | `string` | `""` | 上游鉴权密钥，支持静态明文或环境变量占位符。 |
 | `enabled` | `bool` | `true` | 是否启用该中转站。禁用后不会参与任何请求调度。 |
-| `priority` | `int32` | `10` | 调度优先级，**数值越小越优先**（例如 1 优于 10，10 优于 20）。 |
+| `priority` | `int32` | `100` | 调度优先级，**数值越小越优先**（例如 1 优于 10，10 优于 20）。 |
 | `weight` | `uint32` | `1` | 同一优先级下的相对权重，**权重越大越优先**。 |
 | `timeout_sec` | `uint32` | `120` | HTTP 响应超时（秒），超过此时间请求自动终止并尝试下一个候选。 |
 | `connect_timeout_sec` | `uint32` | `15` | TCP / TLS 握手连接超时（秒）。 |
