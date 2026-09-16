@@ -180,7 +180,59 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 ### 1. Snapshot Status
 
 - **Request**: `GET /__literouter/status`
-- **Response**: JSON snapshot containing uptime, total/success/active requests, circuit tripped counts, and per-provider telemetry.
+- **Response**:
+  ```json
+  {
+    "running": true,
+    "host": "127.0.0.1",
+    "port": 8787,
+    "base_url": "http://127.0.0.1:8787",
+    "version": "0.1.0",
+    "config_path": "/home/you/.config/literouter/config.json",
+    "started_unix": 1758000000.0,
+    "uptime_sec": 3600.5,
+    "active_requests": 0,
+    "total_requests": 1420,
+    "total_success": 1410,
+    "total_failure": 10,
+    "bytes_out": 12345678,
+    "tokens_prompt": 120000,
+    "tokens_completion": 45000,
+    "latency_ms_avg": 345.2,
+    "log_seq": 1420,
+    "breakers_open": 0,
+    "providers": [
+      {
+        "provider": "openai-official",
+        "requests": 1200,
+        "successes": 1198,
+        "failures": 2,
+        "aborted": 0,
+        "retries_in": 5,
+        "bytes_in": 120000,
+        "bytes_out": 900000,
+        "tokens_prompt": 110000,
+        "tokens_completion": 40000,
+        "latency_ms_last": 310.5,
+        "latency_ms_avg": 345.2,
+        "latency_ms_p95": 0.0,
+        "last_used_unix": 1758003600.5
+      }
+    ],
+    "health": [
+      {
+        "provider": "openai-official",
+        "state": "healthy",
+        "consecutive_failures": 0,
+        "total_failures": 2,
+        "last_error": "",
+        "cooldown_remaining": 0.0
+      }
+    ]
+  }
+  ```
+
+  `providers` holds cumulative stats (since the last `POST /__literouter/reset-stats` or the restored telemetry file) and `health` the breaker state, whose `state` is one of `unknown` / `healthy` / `degraded` / `open`. `uptime_sec` is computed per request, which is what lets the web console and the GUI tick the uptime once a second; it is formatted as `1h 2m 5s` and always keeps the seconds (`humanUptime`), while plain durations — a breaker's remaining cooldown, for instance — still use the minute-rounding `humanDuration`.
 
 ### 2. Incremental Request Logs
 

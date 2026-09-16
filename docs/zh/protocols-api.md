@@ -184,25 +184,56 @@ curl http://127.0.0.1:8787/v1/messages \
 - **响应**：
   ```json
   {
-    "version": "1.0.0",
-    "uptime_seconds": 3600,
-    "active_requests": 2,
+    "running": true,
+    "host": "127.0.0.1",
+    "port": 8787,
+    "base_url": "http://127.0.0.1:8787",
+    "version": "0.1.0",
+    "config_path": "/home/you/.config/literouter/config.json",
+    "started_unix": 1758000000.0,
+    "uptime_sec": 3600.5,
+    "active_requests": 0,
     "total_requests": 1420,
-    "success_requests": 1410,
-    "circuit_tripped_count": 1,
+    "total_success": 1410,
+    "total_failure": 10,
+    "bytes_out": 12345678,
+    "tokens_prompt": 120000,
+    "tokens_completion": 45000,
+    "latency_ms_avg": 345.2,
+    "log_seq": 1420,
+    "breakers_open": 0,
     "providers": [
       {
-        "id": "openai-official",
-        "healthy": true,
-        "circuit_state": "Healthy",
+        "provider": "openai-official",
+        "requests": 1200,
+        "successes": 1198,
+        "failures": 2,
+        "aborted": 0,
+        "retries_in": 5,
+        "bytes_in": 120000,
+        "bytes_out": 900000,
+        "tokens_prompt": 110000,
+        "tokens_completion": 40000,
+        "latency_ms_last": 310.5,
+        "latency_ms_avg": 345.2,
+        "latency_ms_p95": 0.0,
+        "last_used_unix": 1758003600.5
+      }
+    ],
+    "health": [
+      {
+        "provider": "openai-official",
+        "state": "healthy",
         "consecutive_failures": 0,
-        "total_requests": 1200,
-        "success_requests": 1198,
-        "avg_latency_ms": 345.2
+        "total_failures": 2,
+        "last_error": "",
+        "cooldown_remaining": 0.0
       }
     ]
   }
   ```
+
+  `providers` 是累计统计（自上次 `POST /__literouter/reset-stats` 或遥测文件恢复起），`health` 是熔断器当前状态（`state` 取 `unknown` / `healthy` / `degraded` / `open`）。`uptime_sec` 每次请求实时计算，因此 Web 控制台与 GUI 的运行时长会逐秒跳动；显示格式为 `1h 2m 5s`，且**始终保留秒**（`humanUptime`），而一般的时长显示（如熔断冷却剩余时间）仍使用会向上归整到分钟的 `humanDuration`。
 
 ### 2. 获取增量请求日志
 
