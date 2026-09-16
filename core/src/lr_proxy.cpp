@@ -461,6 +461,30 @@ struct LatencyWindow {
     }
 };
 
+// The window an upstream asked for in `Retry-After`, in seconds.
+//
+// Only the delta-seconds form is read: it is what the APIs and relays this
+// speaks to send, and leaving the date form unparsed costs nothing worse than
+// the configured cooldown. The value is capped so a relay having a bad day
+// cannot park itself for a week. Templated because the buffered path carries its
+// headers as a map and the streamed bridge as a vector.
+template <typename Headers>
+double retryAfterSeconds(const Headers &headers) {
+    constexpr double kMaxRetryAfter = 86400.0;
+    const std::string raw = trim(headerValue(headers, "retry-after"));
+    if (raw.empty()) {
+        return 0.0;
+    }
+    long long seconds = 0;
+    const auto *begin = raw.data();
+    const auto *end = begin + raw.size();
+    const auto parsed = std::from_chars(begin, end, seconds);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || seconds <= 0) {
+        return 0.0;
+    }
+    return std::min<double>(static_cast<double>(seconds), kMaxRetryAfter);
+}
+
 // ── log ring ─────────────────────────────────────────────────────────────────
 
 // The one place the persisted telemetry document is shaped, and the reason the
@@ -1248,7 +1272,8 @@ struct ProxyServer::Impl {
                                  ? std::format("{}: Cloudflare WAF blocked (HTTP {})", provider->id, result.status)
                                  : std::format("{}: HTTP {}", provider->id, result.status);
                 last_status = result.status;
-                router.recordFailure(provider->id, last_error, nowUnix());
+                router.recordFailure(provider->id, last_error, nowUnix(),
+                                     retryAfterSeconds(result.headers));
                 recordAttempt(provider->id, AttemptOutcome::Failure, result.latency_ms, 0, 0, 0);
                 logFailover(ctx, provider->id, static_cast<int>(attempt), result.status,
                             std::format("{} — failing over", last_error));
@@ -1270,7 +1295,7 @@ struct ProxyServer::Impl {
                 router.recordSuccess(provider->id, result.latency_ms, nowUnix());
             } else {
                 router.recordFailure(provider->id, std::format("HTTP {}", result.status),
-                                     nowUnix());
+                                     nowUnix(), retryAfterSeconds(result.headers));
             }
 
             ProviderStat usage;
@@ -1485,6 +1510,7 @@ struct ProxyServer::Impl {
             // Drain the error body first: it is the diagnostic the log keeps,
             // and on the last candidate it is what the client would have seen.
             std::string detail;
+            std::vector<std::pair<std::string, std::string>> retry_headers;
             {
                 std::unique_lock lock{bridge->mutex};
                 bridge->cv.wait_for(lock, std::chrono::seconds(10),
@@ -1495,6 +1521,7 @@ struct ProxyServer::Impl {
                         break;
                     }
                 }
+                retry_headers = bridge->headers;
                 bridge->aborted = true;
                 bridge->cv.notify_all();
             }
@@ -1505,7 +1532,10 @@ struct ProxyServer::Impl {
 
             last_error =
                 std::format("{}: HTTP {} {}", provider.id, status, truncateUtf8(trim(detail), 160));
-            router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix());
+            // A streamed 429 has the same thing to say about when it will be
+            // ready as a buffered one does.
+            router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix(),
+                                 retryAfterSeconds(retry_headers));
             recordAttempt(provider.id, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0);
             logFailover(ctx, provider.id, static_cast<int>(attempt), status,
@@ -1556,7 +1586,8 @@ struct ProxyServer::Impl {
                 last_error = is_cf_block
                                  ? std::format("{}: Cloudflare WAF blocked (HTTP {})", provider.id, status)
                                  : std::format("{}: HTTP {}", provider.id, status);
-                router.recordFailure(provider.id, last_error, nowUnix());
+                router.recordFailure(provider.id, last_error, nowUnix(),
+                                     retryAfterSeconds(error_headers));
                 recordAttempt(provider.id, AttemptOutcome::Failure,
                               (nowUnix() - attempt_started) * 1000.0, 0, 0, 0);
                 logFailover(ctx, provider.id, static_cast<int>(attempt), status,
@@ -1569,7 +1600,8 @@ struct ProxyServer::Impl {
             if (relay_behaved) {
                 router.recordSuccess(provider.id, 0.0, nowUnix());
             } else {
-                router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix());
+                router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix(),
+                                     retryAfterSeconds(error_headers));
             }
             recordAttempt(provider.id,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
@@ -1613,7 +1645,13 @@ struct ProxyServer::Impl {
         if (relay_ok) {
             router.recordSuccess(provider.id, 0.0, nowUnix());
         } else {
-            router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix());
+            std::vector<std::pair<std::string, std::string>> commit_headers;
+            {
+                std::scoped_lock lock{bridge->mutex};
+                commit_headers = bridge->headers;
+            }
+            router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix(),
+                                 retryAfterSeconds(commit_headers));
         }
 
         std::vector<std::pair<std::string, std::string>> headers;

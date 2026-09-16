@@ -412,7 +412,13 @@ public:
     int openBreakerCount(double now_unix) const;
 
     void recordSuccess(std::string_view provider, double latency_ms, double now_unix);
-    void recordFailure(std::string_view provider, std::string reason, double now_unix);
+    // `cooldown_hint_sec` is a window the upstream named in Retry-After: an
+    // explicit "come back in N seconds" opens the breaker at once, for at least
+    // the configured cooldown, rather than waiting for the strike counter to
+    // fill — the relay has said when it will be ready, and believing it beats
+    // hammering it while the window runs.
+    void recordFailure(std::string_view provider, std::string reason, double now_unix,
+                       double cooldown_hint_sec = 0.0);
     // Called when a config removes a relay, so its counters do not linger.
     void forget(std::string_view provider);
     void resetHealth();
@@ -423,6 +429,9 @@ public:
 private:
     const ProviderConfig *find(std::string_view id) const;
     ProviderHealth &slot(std::string_view id);
+    // Whether a breaker's window is still running. The strike counter decides
+    // when a window is *set* (recordFailure); what it means is this.
+    static bool windowRunning(const ProviderHealth &state, double now_unix);
 
     AppConfig config_;
     std::map<std::string, ProviderHealth, std::less<>> health_;

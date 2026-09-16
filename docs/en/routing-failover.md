@@ -169,6 +169,7 @@ Each provider maintains an independent circuit breaker state to prevent cascadin
 1. **Healthy (Closed)**: Normal routing. Requests dispatched by priority and weight.
 2. **Open**: Triggered when retriable failures reach `circuit_failure_threshold` (default 3).
    - During `circuit_cooldown_sec` (default 30s), the provider is moved to the tail of candidate chains (or skipped if `skip_open_circuits` is active).
+   - **Exception — the upstream named its own window**: a 429/5xx carrying `Retry-After` (seconds) opens the breaker on a **single** failure, for `max(circuit_cooldown_sec, Retry-After)` (capped at 24 hours). The relay has said when it will be ready, so hammering it while the window runs buys nothing; and a window shorter than the local policy is raised to the policy, so an upstream cannot talk the operator into coming back sooner than they allowed. The HTTP-date form is not parsed, and such a response falls back to the ordinary strike counting.
 3. **Degraded (Half-Open)**: After cooldown expires, the provider transitions to degraded status.
    - The next request acts as a **Probe**;
    - If probe succeeds: state transitions immediately to **Healthy**, failure count reset to 0;

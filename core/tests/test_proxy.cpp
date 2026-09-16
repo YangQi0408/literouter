@@ -124,6 +124,7 @@ public:
     }
 
     void setMode(Mode mode) { mode_.store(mode); }
+    void setRetryAfter(std::optional<int> seconds) { retry_after_ = seconds; }
     void resetCounters() {
         chat_requests_.store(0);
         model_requests_.store(0);
@@ -176,6 +177,11 @@ private:
             return;
         case Mode::RateLimit:
             res.status = 429;
+            // Only when the test asked for one: the other groups assert what a
+            // 429 does without the relay naming a window.
+            if (retry_after_) {
+                res.set_header("Retry-After", std::to_string(*retry_after_));
+            }
             res.set_content(error_body_, "application/json");
             return;
         case Mode::ServerError:
@@ -226,6 +232,7 @@ private:
     std::thread thread_;
     std::atomic<bool> stopped_{false};
     std::atomic<Mode> mode_{Mode::Normal};
+    std::optional<int> retry_after_;
     std::atomic<int> chat_requests_{0};
     std::atomic<int> model_requests_{0};
     int port_ = 0;
@@ -1084,6 +1091,45 @@ void group17LatencyPercentile(StubRelay &relay_a, literouter::ProxyServer &proxy
     }
 }
 
+void group18RetryAfter(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServer &proxy) {
+    LR_GROUP("18. a relay that names a Retry-After window is believed, not hammered");
+    const int port = proxy.boundPort();
+    proxy.resetStats();
+    relay_a.setMode(StubRelay::Mode::RateLimit);
+    relay_a.setRetryAfter(600);
+    relay_b.setMode(StubRelay::Mode::Normal);
+    relay_a.resetCounters();
+    relay_b.resetCounters();
+
+    // The failover still serves the client — honouring the header must not turn
+    // a 429 into a refusal.
+    const Hit hit = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+    LR_CHECK_EQ(hit.status, 200);
+    LR_CHECK_EQ(relay_a.chatRequests(), 1);
+    LR_CHECK_EQ(relay_b.chatRequests(), 1);
+
+    // One 429 was enough: the relay said "back in 600 seconds", so the breaker
+    // opened for that window rather than waiting for three strikes.
+    const literouter::Snapshot after = proxy.snapshot();
+    const auto *alpha = healthOf(after, "alpha");
+    LR_CHECK(alpha != nullptr && alpha->state == literouter::ProviderHealth::State::Open);
+    LR_CHECK(alpha != nullptr && alpha->cooldown_remaining > 30.0);
+    LR_CHECK_EQ(after.breakers_open, 1);
+
+    // So the next request goes straight to the relay that is still answering.
+    const Hit second = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+    LR_CHECK_EQ(second.status, 200);
+    LR_CHECK_MSG(relay_a.chatRequests() == 1,
+                 "the relay that asked for 600 seconds of quiet was tried again anyway");
+    LR_CHECK_EQ(relay_b.chatRequests(), 2);
+
+    // Left tidy for the groups after this one: resetStats() clears breaker state
+    // too, and a 600-second window would otherwise outlive the test.
+    relay_a.setRetryAfter(std::nullopt);
+    relay_a.setMode(StubRelay::Mode::Normal);
+    proxy.resetStats();
+}
+
 void group10Restart(literouter::ProxyServer &proxy, const literouter::AppConfig &config) {
     LR_GROUP("10. stop() is clean and a second start()/stop() cycle works");
     proxy.stop();
@@ -1665,6 +1711,7 @@ int main() {
         group15WebConsole(relay_a, proxy);
         group16TelemetryFile(relay_a, config);
         group17LatencyPercentile(relay_a, proxy);
+        group18RetryAfter(relay_a, relay_b, proxy);
         // Runs last on purpose: it deliberately leaves the proxy stopped.
         group10Restart(proxy, config);
 

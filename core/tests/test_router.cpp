@@ -362,6 +362,63 @@ void testSetConfigReplacesModel() {
 
 } // namespace
 
+void testRetryAfterWindow() {
+    LR_GROUP("a Retry-After window opens the breaker on the first failure");
+    AppConfig config;
+    config.server.circuit_failure_threshold = 3;
+    config.server.circuit_cooldown_sec = 30;
+    config.providers = {relay("p")};
+    RouteConfig route;
+    route.model = "m";
+    route.targets = {RouteTarget{.provider = "p", .model = {}}};
+    config.routes = {route};
+
+    const double base = literouter::nowUnix();
+    {
+        // The upstream asked for longer than the operator configured: it wins.
+        Router router;
+        router.setConfig(config);
+        router.recordFailure("p", "HTTP 429", base, 120.0);
+        LR_CHECK_MSG(router.circuitOpen("p", base), "the named window did not open the breaker");
+        LR_CHECK_EQ(router.openBreakerCount(base), 1);
+        const auto health = router.health(base);
+        LR_CHECK_EQ(static_cast<long long>(health.size()), 1);
+        if (!health.empty()) {
+            LR_CHECK(health[0].state == ProviderHealth::State::Open);
+            LR_CHECK(health[0].cooldown_remaining > 30.0);
+        }
+        // And it is a window, not a permanent state: past it the relay is
+        // degraded — the next request is the probe.
+        LR_CHECK(!router.circuitOpen("p", base + 121.0));
+        LR_CHECK_EQ(router.openBreakerCount(base + 121.0), 0);
+    }
+    {
+        // A window shorter than the configured cooldown is raised to it: an
+        // upstream cannot talk the operator into coming back sooner than the
+        // policy allows.
+        Router router;
+        router.setConfig(config);
+        router.recordFailure("p", "HTTP 429", base, 5.0);
+        const auto health = router.health(base);
+        LR_CHECK(!health.empty());
+        if (!health.empty()) {
+            LR_CHECK(health[0].state == ProviderHealth::State::Open);
+            LR_CHECK(health[0].cooldown_remaining > 29.0);
+            LR_CHECK(health[0].cooldown_remaining <= 30.0);
+        }
+    }
+    {
+        // Without a hint, one failure is still just one failure.
+        Router router;
+        router.setConfig(config);
+        router.recordFailure("p", "HTTP 429", base);
+        LR_CHECK(!router.circuitOpen("p", base));
+        const auto health = router.health(base);
+        LR_CHECK(!health.empty() && health[0].state == ProviderHealth::State::Degraded);
+        LR_CHECK(!health.empty() && health[0].cooldown_remaining == 0.0);
+    }
+}
+
 int main() {
     testRouteOrderIsAuthorOrder();
     testDisabledProviderDroppedFromChain();
@@ -371,6 +428,7 @@ int main() {
     testCircuitBreaker();
     testHealthStates();
     testRetryableStatus();
+    testRetryAfterWindow();
     testSetConfigReplacesModel();
     return LR_SUMMARY("test_router");
 }

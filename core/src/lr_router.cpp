@@ -98,16 +98,18 @@ std::vector<Candidate> Router::candidatesFor(std::string_view model) const {
     return out;
 }
 
+bool Router::windowRunning(const ProviderHealth &state, double now_unix) {
+    return now_unix < state.open_until_unix;
+}
+
 bool Router::circuitOpen(std::string_view provider, double now_unix) const {
     const auto it = health_.find(provider);
     if (it == health_.end()) {
         return false;
     }
-    const auto &state = it->second;
-    if (state.consecutive_failures < config_.server.circuit_failure_threshold) {
-        return false;
-    }
-    return now_unix < state.open_until_unix;
+    // Only the window, not the strike count that set it: an upstream that named
+    // a Retry-After gets its window on the first failure.
+    return windowRunning(it->second, now_unix);
 }
 
 std::vector<ProviderHealth> Router::health(double now_unix) const {
@@ -126,15 +128,15 @@ std::vector<ProviderHealth> Router::health(double now_unix) const {
             view.state = ProviderHealth::State::Unknown;
         } else if (view.consecutive_failures == 0) {
             view.state = ProviderHealth::State::Healthy;
-        } else if (view.consecutive_failures < config_.server.circuit_failure_threshold) {
-            view.state = ProviderHealth::State::Degraded;
-        } else if (now_unix < view.open_until_unix) {
+        } else if (windowRunning(view, now_unix)) {
+            // The window is what makes a breaker open — a Retry-After sets one
+            // on the first failure, without the strike counter ever filling.
             view.state = ProviderHealth::State::Open;
             view.cooldown_remaining = view.open_until_unix - now_unix;
         } else {
-            // Cooldown elapsed: the next request is the probe. Reporting
-            // "degraded" rather than "healthy" is honest — nothing has
-            // succeeded yet.
+            // No window: either below the threshold, or the cooldown elapsed and
+            // the next request is the probe. Reporting "degraded" rather than
+            // "healthy" is honest — nothing has succeeded yet.
             view.state = ProviderHealth::State::Degraded;
             view.cooldown_remaining = 0.0;
         }
@@ -147,10 +149,7 @@ int Router::openBreakerCount(double now_unix) const {
     std::scoped_lock lock{mutex_};
     int count = 0;
     for (const auto &[id, state] : health_) {
-        if (state.consecutive_failures < config_.server.circuit_failure_threshold) {
-            continue;
-        }
-        if (now_unix >= state.open_until_unix) {
+        if (!windowRunning(state, now_unix)) {
             continue;
         }
         if (const auto *provider = config_.provider(id); provider == nullptr || !provider->enabled) {
@@ -173,16 +172,22 @@ void Router::recordSuccess(std::string_view provider, double latency_ms, double 
     (void)now_unix;
 }
 
-void Router::recordFailure(std::string_view provider, std::string reason, double now_unix) {
+void Router::recordFailure(std::string_view provider, std::string reason, double now_unix,
+                           double cooldown_hint_sec) {
     std::scoped_lock lock{mutex_};
     auto &state = slot(provider);
     ++state.consecutive_failures;
     ++state.total_failures;
     state.last_error = truncateUtf8(reason, 240);
     state.state = ProviderHealth::State::Degraded;
-    if (state.consecutive_failures >= config_.server.circuit_failure_threshold) {
+    // A named window counts as a full strike on its own: the upstream has told
+    // us when it will be ready, and the configured cooldown is the floor under
+    // it (never a reason to come back sooner than the operator allowed).
+    const bool asked_to_wait = cooldown_hint_sec > 0.0;
+    if (asked_to_wait || state.consecutive_failures >= config_.server.circuit_failure_threshold) {
         state.state = ProviderHealth::State::Open;
-        state.open_until_unix = now_unix + static_cast<double>(config_.server.circuit_cooldown_sec);
+        state.open_until_unix =
+            now_unix + std::max<double>(config_.server.circuit_cooldown_sec, cooldown_hint_sec);
     }
 }
 
