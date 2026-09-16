@@ -485,6 +485,82 @@ double retryAfterSeconds(const Headers &headers) {
     return std::min<double>(static_cast<double>(seconds), kMaxRetryAfter);
 }
 
+// This process's id, for the pid file. There is no portable spelling of it, and
+// both headers arrive with httplib.h, which this unit already includes.
+std::int64_t currentProcessId() {
+#ifdef _WIN32
+    return static_cast<std::int64_t>(::GetCurrentProcessId());
+#else
+    return static_cast<std::int64_t>(::getpid());
+#endif
+}
+
+// ── single instance ─────────────────────────────────────────────────────────
+
+// A literouter already answering on this address, if there is one.
+//
+// A bind cannot report this: httplib sets SO_REUSEPORT, so a second instance
+// binds the same port happily and the kernel then spreads connections across
+// both — two proxies, two configs, one address, and a console whose counters
+// jump between them. The probe therefore identifies the other end rather than
+// assuming anything about it: only a health answer shaped like ours counts, and
+// whatever else holds the port is left to fail the bind with its own, accurate
+// error. An empty return means the port is ours to take.
+std::string existingInstance(const std::string &host, int port,
+                             const std::filesystem::path &pid_path) {
+    // 0.0.0.0 and :: are bind addresses, not destinations.
+    const bool wildcard = host.empty() || host == "0.0.0.0" || host == "::" || host == "[::]";
+    h::Client client{wildcard ? std::string{"127.0.0.1"} : host, port};
+    client.set_connection_timeout(0, 400000);
+    client.set_read_timeout(0, 400000);
+    const auto res = client.Get("/health");
+    if (!res || res->status != 200) {
+        return {};
+    }
+    const std::string &body = res->body;
+    if (body.find("\"status\"") == std::string::npos || body.find("ok") == std::string::npos) {
+        return {};
+    }
+
+    // The pid file is a courtesy, not the detector: it is what turns "something
+    // is there" into "that process is there".
+    std::string holder;
+    if (std::ifstream input{pid_path, std::ios::binary}; input) {
+        const std::string text{std::istreambuf_iterator<char>{input},
+                               std::istreambuf_iterator<char>{}};
+        const json doc = json::parse(text, nullptr, false);
+        if (!doc.is_discarded() && doc.is_object() && doc.value("pid", 0) > 0) {
+            holder = std::format(" (pid {})", doc.value("pid", 0));
+        }
+    }
+    return std::format("{}:{} already answers as a literouter listener{}; refusing to share the "
+                       "port — stop that instance, or serve this one on another port",
+                       host, port, holder);
+}
+
+// The listening process's own record: who is on this port, since when, and with
+// which config. Written after the bind (the bound port is what identifies the
+// instance) and removed by stop().
+bool writePidFile(const std::filesystem::path &path, int port, const std::string &config_path) {
+    std::error_code ec;
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path(), ec);
+    }
+    json doc = json::object();
+    doc["pid"] = static_cast<std::int64_t>(currentProcessId());
+    doc["port"] = port;
+    doc["started_unix"] = nowUnix();
+    doc["config"] = config_path;
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    if (!output) {
+        return false; // a courtesy file is never a reason to refuse to listen
+    }
+    const std::string text = doc.dump(2) + "\n";
+    output.write(text.data(), static_cast<std::streamsize>(text.size()));
+    output.flush();
+    return static_cast<bool>(output);
+}
+
 // ── log ring ─────────────────────────────────────────────────────────────────
 
 // The one place the persisted telemetry document is shaped, and the reason the
@@ -674,6 +750,9 @@ struct ProxyServer::Impl {
     // runtime, so a request thread reading it (markStateDirty is on the hot
     // path) never races with a live config edit.
     std::filesystem::path state_path;
+    // Set only once this process has written its own pid file, so stop() can
+    // never remove the record of an instance that refused to start next to.
+    std::filesystem::path pid_path;
     std::atomic<bool> persist_enabled{false};
     bool state_restored = false;
     bool state_write_failed = false;
@@ -1889,6 +1968,15 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         impl_->state_restored = true;
         impl_->loadState();
     }
+    // Before binding, because the bind cannot report it: httplib shares the port
+    // between instances, and only one of them can be the one the operator means.
+    if (config.server.port != 0) {
+        const std::filesystem::path pid_path = defaultPidPath(config.server.port);
+        if (const std::string clash = existingInstance(config.server.host, config.server.port, pid_path);
+            !clash.empty()) {
+            return std::unexpected(clash);
+        }
+    }
     impl_->stopping.store(false);
 
     auto &server = *(impl_->server = std::make_unique<h::Server>());
@@ -2397,6 +2485,13 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         bound = config.server.port;
     }
     impl_->bound_port.store(bound);
+    // Named by the port actually bound: a config asking for port 0 is otherwise
+    // unidentifiable, and the file is what a later start reads to name the
+    // process holding the port it wants.
+    const std::filesystem::path pid_path = defaultPidPath(bound);
+    if (writePidFile(pid_path, bound, impl_->configPath())) {
+        impl_->pid_path = pid_path;
+    }
     impl_->started_unix = nowUnix();
     impl_->running.store(true);
 
@@ -2448,6 +2543,13 @@ void ProxyServer::stop() {
     // pin a decommissioned listener and its address for the process lifetime.
     impl_->server.reset();
     impl_->running.store(false);
+    // The listener is gone, so the record of it should be too — a stale file
+    // would otherwise be indistinguishable from one whose process is hung.
+    if (!impl_->pid_path.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(impl_->pid_path, ec);
+        impl_->pid_path.clear();
+    }
     impl_->recordSystem("stopped");
     // Last, so the entry above is part of what gets written, and so no thread is
     // still holding the document when the object goes away.

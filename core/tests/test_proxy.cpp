@@ -1130,6 +1130,77 @@ void group18RetryAfter(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
     proxy.resetStats();
 }
 
+std::int64_t thisProcessId() {
+#ifdef _WIN32
+    return static_cast<std::int64_t>(::GetCurrentProcessId());
+#else
+    return static_cast<std::int64_t>(::getpid());
+#endif
+}
+
+void group19SingleInstance(const literouter::AppConfig &base) {
+    LR_GROUP("19. a second instance refuses to share the port");
+    literouter::AppConfig config = base;
+    config.server.port = 0; // the kernel picks one; the pid file will name it
+
+    literouter::ProxyServer first;
+    const auto started = first.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = first.boundPort();
+    LR_CHECK(port > 0);
+
+    // While it listens, the instance has a record of itself, named by the port it
+    // actually got.
+    const std::filesystem::path pid_file = literouter::defaultPidPath(port);
+    std::string pid_text;
+    {
+        std::ifstream input{pid_file, std::ios::binary};
+        pid_text.assign(std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{});
+    }
+    const json pid_doc = json::parse(pid_text, nullptr, false);
+    LR_CHECK_MSG(!pid_doc.is_discarded(), "no readable pid file for a running instance");
+    if (!pid_doc.is_discarded()) {
+        LR_CHECK_EQ(pid_doc.value("port", 0), port);
+        LR_CHECK_EQ(pid_doc.value("pid", static_cast<std::int64_t>(0)), thisProcessId());
+    }
+
+    // httplib shares a port between instances, so a bind would have succeeded
+    // here and the two would then have split the traffic between them.
+    literouter::AppConfig clash = base;
+    clash.server.port = port;
+    literouter::ProxyServer second;
+    const auto refused = second.start(clash);
+    LR_CHECK_MSG(!refused.has_value(), "a second instance started on an occupied port");
+    if (!refused) {
+        LR_CHECK_MSG(refused.error().find("already answers") != std::string::npos,
+                     "the refusal does not say what is there: " + refused.error());
+        LR_CHECK_MSG(refused.error().find(std::to_string(port)) != std::string::npos,
+                     "the refusal does not name the port: " + refused.error());
+        LR_CHECK_MSG(refused.error().find("pid") != std::string::npos,
+                     "the refusal does not name the holder: " + refused.error());
+    }
+    LR_CHECK(!second.running());
+    // And it did not take over the record of the instance that is still running.
+    LR_CHECK_MSG(std::filesystem::exists(pid_file),
+                 "the refused start removed the running instance's pid file");
+
+    first.stop();
+    LR_CHECK_MSG(!std::filesystem::exists(pid_file), "stop() left the pid file behind");
+
+    // The port is free again, so this is a legitimate restart rather than a
+    // conflict — the guard must not outlive the instance it protects.
+    const auto again = second.start(clash);
+    LR_CHECK_MSG(again.has_value(), again ? "" : again.error());
+    if (again) {
+        LR_CHECK(second.running());
+        second.stop();
+        LR_CHECK(!std::filesystem::exists(pid_file));
+    }
+}
+
 void group10Restart(literouter::ProxyServer &proxy, const literouter::AppConfig &config) {
     LR_GROUP("10. stop() is clean and a second start()/stop() cycle works");
     proxy.stop();
@@ -1712,6 +1783,7 @@ int main() {
         group16TelemetryFile(relay_a, config);
         group17LatencyPercentile(relay_a, proxy);
         group18RetryAfter(relay_a, relay_b, proxy);
+        group19SingleInstance(config);
         // Runs last on purpose: it deliberately leaves the proxy stopped.
         group10Restart(proxy, config);
 

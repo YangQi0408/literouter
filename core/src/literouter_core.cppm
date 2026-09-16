@@ -159,7 +159,11 @@ std::filesystem::path userHome();
 std::filesystem::path defaultConfigDir();
 std::filesystem::path defaultConfigPath();
 std::filesystem::path defaultStateDir();
-std::filesystem::path defaultPidPath();
+// Where a running instance of this build records itself: one file per port,
+// since the port is what identifies an instance. Written after a successful
+// bind and removed on stop(), so a file left behind by a crash is
+// distinguishable from a live instance by whether anything answers on the port.
+std::filesystem::path defaultPidPath(int port);
 
 // The CA bundle used to verify an upstream's TLS certificate.
 //

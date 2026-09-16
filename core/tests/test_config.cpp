@@ -483,7 +483,10 @@ void testDefaultPaths() {
 
     LR_CHECK_EQ(literouter::defaultConfigPath().string(), configPath.string());
     LR_CHECK_EQ(literouter::defaultStateDir().string(), stateDir.string());
-    LR_CHECK_EQ(literouter::defaultPidPath().string(), (stateDir / "literouter.pid").string());
+    LR_CHECK_EQ(literouter::defaultPidPath(8787).string(), (stateDir / "literouter-8787.pid").string());
+    // One file per port: two instances on two ports are two instances, and the
+    // file is what tells a second start who is holding the one it wants.
+    LR_CHECK_EQ(literouter::defaultPidPath(0).string(), (stateDir / "literouter-0.pid").string());
 
     // loadDefault() on a directory that has no config yields the seed.
     auto loaded = ConfigStore::loadDefault();

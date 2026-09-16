@@ -39,7 +39,9 @@
 - **默认行为**：
   - **Linux / macOS**：`$XDG_STATE_HOME/literouter`（若环境变量未设则为 `~/.local/state/literouter`）
   - **Windows**：`%LOCALAPPDATA%\literouter`
-- **内容**：开启 `server.persist_telemetry` 时，全局计数器、逐中转站统计与最近的请求日志会写入 `telemetry.json`（权限 `0600`，临时文件 + 原子重命名），供下一次启动读回；关闭该开关则不会创建任何文件。详见[配置文件与密钥管理](configuration.md)。
+- **内容**：
+  - **`telemetry.json`**：开启 `server.persist_telemetry` 时，全局计数器、逐中转站统计与最近的请求日志写入此处（权限 `0600`，临时文件 + 原子重命名），供下一次启动读回；关闭该开关则不会创建该文件。详见[配置文件与密钥管理](configuration.md)；
+  - **`literouter-<port>.pid`**：实例监听期间记录自身的 `pid`、端口、启动时间与配置文件路径，`stop()` 时删除。它用于让后续启动能明确指出"这个端口是谁在占着"——`literouter` 依赖的 httplib 默认开启 `SO_REUSEPORT`，两个实例可以同时绑定同一端口并由内核分流请求，仅靠 bind 失败无法察觉。已有实例在监听时，新的 `serve` 会拒绝启动并报出占用者。
 - **示例**：
   ```bash
   export LITEROUTER_STATE_DIR="/var/run/literouter"

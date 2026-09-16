@@ -39,7 +39,9 @@ Directory for state the server keeps (currently persisted telemetry).
 - **Default Paths**:
   - **Linux / macOS**: `$XDG_STATE_HOME/literouter` (or `~/.local/state/literouter`)
   - **Windows**: `%LOCALAPPDATA%\literouter`
-- **Contents**: with `server.persist_telemetry` on, the global counters, per-relay stats and the recent request log are written to `telemetry.json` (mode `0600`, temp file plus atomic rename) and read back on the next start. With the switch off, no file is created at all. See [Configuration & Secrets](configuration.md).
+- **Contents**:
+  - **`telemetry.json`**: with `server.persist_telemetry` on, the global counters, per-relay stats and the recent request log are written here (mode `0600`, temp file plus atomic rename) and read back on the next start. With the switch off, no such file is created. See [Configuration & Secrets](configuration.md);
+  - **`literouter-<port>.pid`**: while an instance is listening it records its `pid`, port, start time and config path here, and `stop()` removes it. It exists so a later start can say *which* process is holding the port — httplib, which this depends on, sets `SO_REUSEPORT` by default, so two instances can bind the same port and let the kernel split requests between them, which a failed bind would never reveal. A `serve` aimed at a port an instance already answers on refuses to start and names the holder.
 - **Example**:
   ```bash
   export LITEROUTER_STATE_DIR="/var/run/literouter"

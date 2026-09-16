@@ -83,8 +83,8 @@ std::filesystem::path defaultStateDir() {
     return userHome() / ".local" / "state" / "literouter";
 }
 
-std::filesystem::path defaultPidPath() {
-    return defaultStateDir() / "literouter.pid";
+std::filesystem::path defaultPidPath(int port) {
+    return defaultStateDir() / std::format("literouter-{}.pid", port);
 }
 
 std::filesystem::path resolveCaBundle() {

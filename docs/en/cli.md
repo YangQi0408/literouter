@@ -71,6 +71,8 @@ literouter serve [OPTIONS]
 - `--print-config`: Print the parsed configuration structure before listening;
 - `--check`: Load and validate configuration, then exit without binding.
 
+> If an instance already answers on the target port, `serve` refuses to start and names it together with its pid (why: see the [Environment Variables Reference](environment.md)) — two instances sharing one port have their requests split by the kernel, which makes both the counters and the routing unexplainable.
+
 **Examples**:
 ```bash
 # Start on default port 8787
