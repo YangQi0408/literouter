@@ -37,6 +37,7 @@ export function RelayHealth() {
             <th className="text-right">{t('colRequests')}</th>
             <th>{t('colSuccess')}</th>
             <th className="text-right">{t('colLatency')}</th>
+            <th className="text-right">p95</th>
             <th className="text-right">{t('colTokens')}</th>
             <th>{t('lastError')}</th>
             <th />
@@ -45,7 +46,7 @@ export function RelayHealth() {
         <tbody>
           {snapshot.providers.length === 0 ? (
             <tr>
-              <td colSpan={8} className="py-8 text-center text-muted-foreground">
+              <td colSpan={9} className="py-8 text-center text-muted-foreground">
                 {t('empty')}
               </td>
             </tr>
@@ -82,6 +83,9 @@ export function RelayHealth() {
                   </td>
                   <td className="text-right font-mono text-xs tnum">
                     {stat.latency_ms_avg ? humanMillis(stat.latency_ms_avg) : '—'}
+                  </td>
+                  <td className="text-right font-mono text-xs tnum">
+                    {stat.latency_ms_p95 ? humanMillis(stat.latency_ms_p95) : '—'}
                   </td>
                   <td className="text-right font-mono text-xs tnum">{formatTokens(stat)}</td>
                   <td className="max-w-[22rem] truncate text-xs text-muted-foreground">

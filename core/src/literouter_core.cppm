@@ -311,7 +311,7 @@ struct ProviderStat {
     std::uint64_t tokens_completion = 0;
     double latency_ms_last = 0.0;
     double latency_ms_avg = 0.0;     // exponential moving average, alpha 0.25
-    double latency_ms_p95 = 0.0;     // over the last window
+    double latency_ms_p95 = 0.0;     // nearest-rank p95 over the last 64 attempts
     double last_used_unix = 0.0;
 };
 

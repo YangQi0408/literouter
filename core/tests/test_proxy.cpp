@@ -1051,6 +1051,39 @@ void group11CommittedStreamError(StubRelay &relay_a, StubRelay &relay_b,
                      capture.text());
 }
 
+void group17LatencyPercentile(StubRelay &relay_a, literouter::ProxyServer &proxy) {
+    LR_GROUP("17. the p95 latency is computed from the attempts, not left at zero");
+    const int port = proxy.boundPort();
+    relay_a.setMode(StubRelay::Mode::Normal);
+
+    // resetStats() drops the window along with the totals, so the numbers below
+    // can only be made of what this group serves.
+    proxy.resetStats();
+    const auto *cleared = statOf(proxy.snapshot(), "alpha");
+    LR_CHECK(cleared != nullptr && cleared->latency_ms_p95 == 0.0);
+
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+    const auto *one = statOf(proxy.snapshot(), "alpha");
+    LR_CHECK(one != nullptr);
+    if (one != nullptr) {
+        // One sample: the percentile is that sample, exactly. It used to be a
+        // field that was serialized, typed in the console, and never computed.
+        LR_CHECK_MSG(one->latency_ms_p95 == one->latency_ms_last,
+                     "a single sample's p95 must be the sample itself");
+        LR_CHECK(one->latency_ms_p95 > 0.0);
+    }
+
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+    const auto *two = statOf(proxy.snapshot(), "alpha");
+    LR_CHECK(two != nullptr);
+    if (two != nullptr) {
+        LR_CHECK_EQ(two->requests, static_cast<std::uint64_t>(2));
+        // Two samples are too few for a nearest-rank p95 to be anything but the
+        // slower of them, and the slower of two cannot be slower than the last.
+        LR_CHECK(two->latency_ms_p95 >= two->latency_ms_last);
+    }
+}
+
 void group10Restart(literouter::ProxyServer &proxy, const literouter::AppConfig &config) {
     LR_GROUP("10. stop() is clean and a second start()/stop() cycle works");
     proxy.stop();
@@ -1631,6 +1664,7 @@ int main() {
         group14MultiProtocolIngress(relay_a, proxy.boundPort());
         group15WebConsole(relay_a, proxy);
         group16TelemetryFile(relay_a, config);
+        group17LatencyPercentile(relay_a, proxy);
         // Runs last on purpose: it deliberately leaves the proxy stopped.
         group10Restart(proxy, config);
 

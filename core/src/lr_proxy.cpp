@@ -428,6 +428,39 @@ struct StreamBridge {
     std::atomic<std::uint64_t> bytes_out{0};
 };
 
+// A relay's recent latencies, for the p95 the console shows. Kept here rather
+// than in ProviderStat because it is a window over the last attempts, not a
+// lifetime total — and it has no business being written to the state file.
+struct LatencyWindow {
+    static constexpr std::size_t kDepth = 64;
+    std::array<double, kDepth> samples{};
+    std::size_t count = 0;
+    std::size_t next = 0;
+
+    void add(double ms) {
+        samples[next] = ms;
+        next = (next + 1) % kDepth;
+        if (count < kDepth) {
+            ++count;
+        }
+    }
+
+    double p95() const {
+        if (count == 0) {
+            return 0.0;
+        }
+        std::array<double, kDepth> sorted{};
+        std::copy_n(samples.begin(), count, sorted.begin());
+        // Nearest-rank: the smallest sample at or above 95% of the window, so
+        // the value is always one the relay actually served.
+        const std::size_t rank =
+            static_cast<std::size_t>(std::ceil(0.95 * static_cast<double>(count))) - 1;
+        std::nth_element(sorted.begin(), sorted.begin() + static_cast<long>(rank),
+                         sorted.begin() + static_cast<long>(count));
+        return sorted[rank];
+    }
+};
+
 // ── log ring ─────────────────────────────────────────────────────────────────
 
 // The one place the persisted telemetry document is shaped, and the reason the
@@ -596,6 +629,7 @@ struct ProxyServer::Impl {
 
     mutable std::mutex telemetry_mutex;
     std::map<std::string, ProviderStat, std::less<>> stats;
+    std::map<std::string, LatencyWindow, std::less<>> latency_windows;
     LogRing log;
     std::uint64_t total_requests = 0;
     std::uint64_t total_success = 0;
@@ -999,6 +1033,9 @@ struct ProxyServer::Impl {
             stat.latency_ms_last = latency_ms;
             stat.latency_ms_avg =
                 stat.latency_ms_avg == 0.0 ? latency_ms : stat.latency_ms_avg * 0.75 + latency_ms * 0.25;
+            auto &window = latency_windows[std::string{provider}];
+            window.add(latency_ms);
+            stat.latency_ms_p95 = window.p95();
         }
         tokens_prompt += prompt_tokens;
         tokens_completion += completion_tokens;
@@ -2456,6 +2493,7 @@ void ProxyServer::resetStats() {
     {
         std::scoped_lock lock{impl_->telemetry_mutex};
         impl_->stats.clear();
+        impl_->latency_windows.clear();
         impl_->total_requests = 0;
         impl_->total_success = 0;
         impl_->total_failure = 0;
