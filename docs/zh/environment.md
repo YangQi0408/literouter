@@ -9,7 +9,7 @@
 | 环境变量 | 作用说明 | 默认值 / 推荐格式 | 适用组件 |
 |---|---|---|:---:|
 | `LITEROUTER_CONFIG` | 覆盖读取与写入的配置文件绝对路径 | `~/.config/literouter/config.json` | 核心 / CLI / GUI |
-| `LITEROUTER_STATE_DIR` | 覆盖运行时状态目录（PID 锁文件等） | `~/.local/state/literouter` | 核心 / CLI |
+| `LITEROUTER_STATE_DIR` | 覆盖运行时状态目录（持久化遥测等） | `~/.local/state/literouter` | 核心 / CLI / GUI |
 | `LITEROUTER_LANG` | 强制指定控制台与图形界面语言（`auto`, `zh`, `en`） | `auto` (跟随系统) | CLI / GUI |
 | `LITEROUTER_UI_SCALE` | 指定桌面控制台启动时的默认缩放比例 | `1.0`（支持 `0.8` ~ `1.5`） | GUI |
 | `LITEROUTER_CA_BUNDLE` | 指定用于上游 HTTPS 校验的自定义 CA 根证书包绝对路径 | 自动探测系统 CA 信任库 | 核心 |
@@ -26,7 +26,7 @@
 
 - **默认行为**：
   - **Linux**：`$XDG_CONFIG_HOME/literouter/config.json`（若环境变量未设则为 `~/.config/literouter/config.json`）
-  - **macOS**：`~/Library/Application Support/literouter/config.json`（向下兼容 `~/.config/literouter/config.json`）
+  - **macOS**：与 Linux 相同（`$XDG_CONFIG_HOME` 未设时使用 `~/.config/literouter/config.json`）
   - **Windows**：`%APPDATA%\literouter\config.json`（通常为 `C:\Users\<User>\AppData\Roaming\literouter\config.json`）
 - **示例**：
   ```bash
@@ -34,12 +34,12 @@
   ```
 
 ### 2. `LITEROUTER_STATE_DIR`
-存放服务运行中临时状态数据的目录（例如 PID 文件、进程通信临时文件等）。
+存放服务状态数据的目录（当前用于持久化遥测）。
 
 - **默认行为**：
-  - **Linux**：`$XDG_STATE_HOME/literouter`（默认为 `~/.local/state/literouter`）
-  - **macOS**：`~/Library/Application Support/literouter/state`
-  - **Windows**：`%LOCALAPPDATA%\literouter\state`
+  - **Linux / macOS**：`$XDG_STATE_HOME/literouter`（若环境变量未设则为 `~/.local/state/literouter`）
+  - **Windows**：`%LOCALAPPDATA%\literouter`
+- **内容**：开启 `server.persist_telemetry` 时，全局计数器、逐中转站统计与最近的请求日志会写入 `telemetry.json`（权限 `0600`，临时文件 + 原子重命名），供下一次启动读回；关闭该开关则不会创建任何文件。详见[配置文件与密钥管理](configuration.md)。
 - **示例**：
   ```bash
   export LITEROUTER_STATE_DIR="/var/run/literouter"

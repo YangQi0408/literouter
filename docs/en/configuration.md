@@ -27,7 +27,7 @@ This document provides a comprehensive guide to the `literouter` configuration f
 | OS Platform | Default Path | Note |
 |---|---|---|
 | **Linux** | `~/.config/literouter/config.json` | Follows XDG Base Directory specification (`$XDG_CONFIG_HOME` prioritized) |
-| **macOS** | `~/Library/Application Support/literouter/config.json` or `~/.config/literouter/config.json` | Conforms to macOS standards, backwards compatible with `~/.config` |
+| **macOS** | `~/.config/literouter/config.json` | Same as Linux (`$XDG_CONFIG_HOME` honored) |
 | **Windows** | `%APPDATA%\literouter\config.json` | e.g. `C:\Users\<User>\AppData\Roaming\literouter\config.json` |
 
 ### Explicit Path Overrides
@@ -60,9 +60,13 @@ You can override the default configuration path at any time via:
     "circuit_failure_threshold": 3, // Consecutive retriable errors before tripping circuit breaker
     "circuit_cooldown_sec": 30,     // Cooldown duration (seconds) before half-open probe
     "skip_open_circuits": true,   // Deprioritize or skip open circuit providers during route selection
-    "log_capacity": 400,          // Capacity of the in-memory ring buffer for request logs
+    "log_capacity": 200,          // Capacity of the in-memory ring buffer for request logs
     "log_bodies": false,          // Capture request/response bodies in logs (disabled by default for prompt privacy)
-    "log_body_limit": 2048        // Maximum body bytes recorded when log_bodies is true
+    "log_body_limit": 2048,       // Maximum body bytes recorded when log_bodies is true
+    "persist_telemetry": true,    // Persist counters and the request log to the state dir (see "Telemetry Persistence")
+    "language": "auto",           // UI language: auto / en / zh
+    "ui_scale": 1.0,              // GUI display scale: 0.8 ~ 1.5 (0.0 or 1.0 means default)
+    "web_ui": true                // Serve the built-in web console at /ui (a non-loopback host without api_key warns)
   },
 
   "providers": [
@@ -146,10 +150,25 @@ You can override the default configuration path at any time via:
 | `circuit_failure_threshold`| `uint32` | `3` | Number of consecutive network/retriable failures before tripping a provider circuit. |
 | `circuit_cooldown_sec` | `uint32` | `30` | Cooldown duration in seconds before testing with a probe request. |
 | `skip_open_circuits` | `bool` | `true` | Whether candidate chain building should deprioritize or skip open circuit providers. |
-| `log_capacity` | `size_t` | `400` | Maximum capacity of the in-memory circular log buffer. |
+| `log_capacity` | `size_t` | `200` | Maximum capacity of the in-memory circular log buffer. |
 | `log_bodies` | `bool` | `false` | Whether to record request and response bodies in the log buffer. |
 | `log_body_limit` | `size_t` | `2048` | Maximum bytes stored per body when `log_bodies` is true. |
+| `persist_telemetry` | `bool` | `true` | Whether counters, per-relay stats and the request log are persisted to the state directory and read back at startup. See "Telemetry Persistence" below. |
+| `language` | `string` | `"auto"` | UI language: `auto` (follow the system locale) / `en` / `zh`. Shared by the CLI and the GUI. |
+| `ui_scale` | `double` | `1.0` | Initial GUI vector scale, accepted roughly between `0.25` and `4.0` (recommended `0.8` ~ `1.5`); `0.0` and `1.0` both mean default. |
 | `web_ui` | `bool` | `true` | Whether to enable the built-in web console. Takes effect immediately; a non-loopback host without an `api_key` emits a security warning. |
+
+### Telemetry Persistence
+
+With `persist_telemetry` on (the default), the server writes the following to `telemetry.json` in the **state directory** (see the [Environment Variables Reference](environment.md)) and reads it back on the next start, so `literouter status`, the `/ui` console and the GUI do not reset to zero across a restart:
+
+- Global counters: `total_requests` / `total_success` / `total_failure` / `bytes_out` / `tokens_*` / average latency;
+- Per-relay stats: requests, successes/failures/aborts, absorbed retries, bytes in and out, tokens and latency;
+- The newest **500** request-log entries (`log.seq` keeps counting across the restart and never goes backwards).
+
+Writes match the config file: a temp file in the same directory followed by an atomic rename, mode `0600`. Flushing happens on a background timer (at most once every 3 seconds, and only when something changed) and once more on `stop()`. A corrupt or unrecognised file is ignored and logged, never a reason to refuse startup; a disk write that fails logs one error and leaves request handling alone.
+
+> ⚠️ **Privacy**: with `log_bodies` on as well, bodies (that is, prompts) are written to disk too. Validation warns about that combination. Set `persist_telemetry` to `false` for a run that leaves nothing behind.
 
 ### Provider Configuration (`providers`)
 

@@ -9,7 +9,7 @@ This document lists all environment variables supported by `literouter`, their d
 | Variable | Description | Default / Recommended Format | Scope |
 |---|---|---|:---:|
 | `LITEROUTER_CONFIG` | Absolute path override for reading and writing config | `~/.config/literouter/config.json` | Core / CLI / GUI |
-| `LITEROUTER_STATE_DIR` | Absolute path override for runtime state (PID files, etc.) | `~/.local/state/literouter` | Core / CLI |
+| `LITEROUTER_STATE_DIR` | Absolute path override for runtime state (persisted telemetry, etc.) | `~/.local/state/literouter` | Core / CLI / GUI |
 | `LITEROUTER_LANG` | UI and terminal language override (`auto`, `zh`, `en`) | `auto` (system locale) | CLI / GUI |
 | `LITEROUTER_UI_SCALE` | Initial GUI vector scaling factor | `1.0` (supports `0.8` ~ `1.5`) | GUI |
 | `LITEROUTER_CA_BUNDLE` | Custom CA certificate bundle path for HTTPS verification | Auto-detected system CA trust store | Core |
@@ -26,7 +26,7 @@ Controls where the configuration file is loaded and saved.
 
 - **Default Paths**:
   - **Linux**: `$XDG_CONFIG_HOME/literouter/config.json` (or `~/.config/literouter/config.json`)
-  - **macOS**: `~/Library/Application Support/literouter/config.json` (with `~/.config/literouter/config.json` fallback)
+  - **macOS**: same as Linux (`~/.config/literouter/config.json` unless `$XDG_CONFIG_HOME` is set)
   - **Windows**: `%APPDATA%\literouter\config.json` (typically `C:\Users\<User>\AppData\Roaming\literouter\config.json`)
 - **Example**:
   ```bash
@@ -34,12 +34,12 @@ Controls where the configuration file is loaded and saved.
   ```
 
 ### 2. `LITEROUTER_STATE_DIR`
-Directory for runtime transient files (PID locks, socket files).
+Directory for state the server keeps (currently persisted telemetry).
 
 - **Default Paths**:
-  - **Linux**: `$XDG_STATE_HOME/literouter` (or `~/.local/state/literouter`)
-  - **macOS**: `~/Library/Application Support/literouter/state`
-  - **Windows**: `%LOCALAPPDATA%\literouter\state`
+  - **Linux / macOS**: `$XDG_STATE_HOME/literouter` (or `~/.local/state/literouter`)
+  - **Windows**: `%LOCALAPPDATA%\literouter`
+- **Contents**: with `server.persist_telemetry` on, the global counters, per-relay stats and the recent request log are written to `telemetry.json` (mode `0600`, temp file plus atomic rename) and read back on the next start. With the switch off, no file is created at all. See [Configuration & Secrets](configuration.md).
 - **Example**:
   ```bash
   export LITEROUTER_STATE_DIR="/var/run/literouter"

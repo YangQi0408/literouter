@@ -202,7 +202,7 @@ LITEROUTER_GUI_SMOKE=1 LITEROUTER_GUI_PAGE=2 mcpp run -p gui
 | 环境变量 | 用途 |
 |---|---|
 | `LITEROUTER_CONFIG` | 指向临时配置文件，**避免污染真实 `~/.config/literouter/config.json`**，测试套件正是靠它隔离 |
-| `LITEROUTER_STATE_DIR` | 指向临时状态目录（PID 文件等），同上 |
+| `LITEROUTER_STATE_DIR` | 指向状态目录（`server.persist_telemetry` 开启时其中的 `telemetry.json` 保存计数器与请求日志） |
 | `LITEROUTER_CA_BUNDLE` | 指定上游 HTTPS 校验用的 CA 包；上游报"证书被拒"时先查这个 |
 | `LITEROUTER_GUI_SMOKE` / `LITEROUTER_GUI_PAGE` | GUI 无头冒烟与页面钉选 |
 | `LITEROUTER_WEB_DIR` | `#embed` 不可用时（如 ISO 严格模式的 GCC）从该目录按请求读取 Web 产物 |

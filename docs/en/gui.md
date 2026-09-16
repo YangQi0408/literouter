@@ -76,6 +76,7 @@ mcpp run -p gui
 ### 5. Settings
 - **Server Parameters**: Configure listen host, port, and client authentication key;
 - **Circuit Breaker Tuning**: Adjust failure thresholds and cooldown intervals graphically;
+- **Telemetry Persistence**: Choose whether counters, relay stats and the request log are written to the state directory and resumed after a restart;
 - **Hot Reload & Safe Save**: Save settings to disk while strictly preserving secret placeholders, or reload from disk;
 - **Code Snippet Generator**: Copy ready-to-use curl commands and SDK connection snippets.
 

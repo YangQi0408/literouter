@@ -27,7 +27,7 @@
 | 操作系统 | 默认配置文件路径 | 说明 |
 |---|---|---|
 | **Linux** | `~/.config/literouter/config.json` | 遵循 XDG Base Directory 规范（`$XDG_CONFIG_HOME` 优先） |
-| **macOS** | `~/Library/Application Support/literouter/config.json` 或 `~/.config/literouter/config.json` | 符合 macOS 应用数据规范，向下兼容 `~/.config` |
+| **macOS** | `~/.config/literouter/config.json` | 与 Linux 一致（同样优先读取 `$XDG_CONFIG_HOME`） |
 | **Windows** | `%APPDATA%\literouter\config.json` | 如 `C:\Users\<User>\AppData\Roaming\literouter\config.json` |
 
 ### 显式指定配置路径
@@ -60,9 +60,13 @@
     "circuit_failure_threshold": 3, // 连续失败几次触发中转站进入熔断冷却
     "circuit_cooldown_sec": 30,     // 熔断后的冷却保持时长（秒）
     "skip_open_circuits": true,   // 路由调度时是否优先跳过熔断冷却中的中转站
-    "log_capacity": 400,          // 内存环形日志最大缓冲条数
+    "log_capacity": 200,          // 内存环形日志最大缓冲条数
     "log_bodies": false,          // 是否记录请求体与响应体报文（默认关闭以保护提示词隐私）
-    "log_body_limit": 2048        // 记录报文时截断保存的最大字节数
+    "log_body_limit": 2048,       // 记录报文时截断保存的最大字节数
+    "persist_telemetry": true,    // 是否将计数器与请求日志持久化到状态目录（详见下文“遥测持久化”）
+    "language": "auto",           // 界面语言：auto / en / zh
+    "ui_scale": 1.0,              // GUI 界面缩放：0.8 ~ 1.5（0.0 或 1.0 表示默认）
+    "web_ui": true                // 是否在 /ui 提供内置 Web 控制台（非回环地址且未设 api_key 时将告警）
   },
 
   "providers": [
@@ -146,10 +150,25 @@
 | `circuit_failure_threshold`| `uint32` | `3` | 连续遭遇几次网络故障或 5xx/429 可重试错误后触发中转站熔断。 |
 | `circuit_cooldown_sec` | `uint32` | `30` | 熔断冷却期时长（秒）。冷却期间该中转站被自动降级至候选链最末端。 |
 | `skip_open_circuits` | `bool` | `true` | 路由调度构建候选链时，是否跳过处于熔断 Open 状态的中转站（除非无其他候选可用）。 |
-| `log_capacity` | `size_t` | `400` | 内存环形日志缓冲区的最大条目容量。超出会自动覆盖最旧记录。 |
+| `log_capacity` | `size_t` | `200` | 内存环形日志缓冲区的最大条目容量。超出会自动覆盖最旧记录。 |
 | `log_bodies` | `bool` | `false` | 是否在内存日志中抓取并保存请求体和响应体文本。 |
 | `log_body_limit` | `size_t` | `2048` | 开启 `log_bodies` 时单个报文体截断保存的最大字节数。 |
+| `persist_telemetry` | `bool` | `true` | 是否把计数器、逐中转站统计与请求日志持久化到状态目录，重启后自动读回。详见下方“遥测持久化”。 |
+| `language` | `string` | `"auto"` | 界面语言：`auto`（跟随系统区域）/ `en` / `zh`。CLI 与 GUI 共用同一份字典。 |
+| `ui_scale` | `double` | `1.0` | GUI 初始矢量缩放比例，可用范围约 `0.25` ~ `4.0`（推荐 `0.8` ~ `1.5`）；`0.0` 与 `1.0` 均表示默认。 |
 | `web_ui` | `bool` | `true` | 是否启用内置 Web 控制台。修改后即刻生效；若 `host` 设为非回环地址（如 `0.0.0.0`）且未设置 `api_key`，校验时将产生安全警告。 |
+
+### 遥测持久化
+
+`persist_telemetry` 为 `true`（默认）时，服务会把以下数据写入 **状态目录**（见[环境变量参考手册](environment.md)）下的 `telemetry.json`，并在下一次启动时读回，因此 `literouter status`、`/ui` 控制台与 GUI 不会在重启后归零：
+
+- 全局计数器：`total_requests` / `total_success` / `total_failure` / `bytes_out` / `tokens_*` / 平均延迟；
+- 逐中转站统计：请求数、成功/失败/中断数、重试吸收数、进出字节、token 数与延迟；
+- 最近 **500** 条请求日志（`log.seq` 序号跨重启继续递增，不会倒退）。
+
+写入方式与配置保持一致：先写同目录临时文件再原子重命名，文件权限 `0600`。刷写由后台线程按需进行（有变更时最多 3 秒一次），并在 `stop()` 时补齐最后一次。文件损坏或版本不符时会被忽略并记录一条系统日志，绝不会阻止服务启动；磁盘写入失败只记录一次错误日志，不影响请求处理。
+
+> ⚠️ **隐私提示**：若同时开启 `log_bodies`，报文体（即提示词）也会被一并写入磁盘。校验时会就此组合给出告警。如需每次运行都不留痕迹，请把 `persist_telemetry` 设为 `false`。
 
 ### 中转站配置 (`providers`)
 

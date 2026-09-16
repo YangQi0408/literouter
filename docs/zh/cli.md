@@ -65,6 +65,8 @@ literouter serve [OPTIONS]
 ### 选项
 - `--host <ip>`：临时覆盖配置文件中的监听地址（例如 `0.0.0.0`）；
 - `--port <port>`：临时覆盖监听端口（例如 `9000`）；
+- `--web-ui` / `--no-web-ui`：本次运行是否在 `/ui` 提供内置 Web 控制台（不指定则沿用配置文件）；
+- `--persist` / `--no-persist`：本次运行是否将计数器与请求日志持久化到状态目录（不指定则沿用配置文件）；
 - `--force`：即使配置校验存在错误也强制启动；
 - `--print-config`：启动前在控制台打印解析后的配置结构；
 - `--check`：仅加载并校验配置，不绑定端口直接退出。
@@ -76,6 +78,9 @@ literouter serve
 
 # 启动并绑定指定端口
 literouter serve --port 8080 --host 0.0.0.0
+
+# 一次性运行，不在磁盘留下任何遥测
+literouter serve --no-persist
 ```
 
 ---

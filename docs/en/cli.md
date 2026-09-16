@@ -65,6 +65,8 @@ literouter serve [OPTIONS]
 ### Options
 - `--host <ip>`: Temporarily override `server.host` for this run (e.g. `0.0.0.0`);
 - `--port <port>`: Temporarily override `server.port` for this run (e.g. `9000`);
+- `--web-ui` / `--no-web-ui`: Whether this run serves the built-in console at `/ui` (untouched from the file when neither is given);
+- `--persist` / `--no-persist`: Whether this run persists counters and the request log to the state directory (untouched from the file when neither is given);
 - `--force`: Start even if `validate()` reports configuration errors;
 - `--print-config`: Print the parsed configuration structure before listening;
 - `--check`: Load and validate configuration, then exit without binding.
@@ -76,6 +78,9 @@ literouter serve
 
 # Start on custom port and host
 literouter serve --port 8080 --host 0.0.0.0
+
+# One-off run that leaves no telemetry behind
+literouter serve --no-persist
 ```
 
 ---
