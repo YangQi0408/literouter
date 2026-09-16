@@ -22,6 +22,10 @@ struct ServeOptions {
     // never silently overrides what the operator wrote down.
     bool webUiOn = false;
     bool webUiOff = false;
+    // Same for server.persist_telemetry: --no-persist is the one that matters,
+    // a one-off run that must leave nothing on disk.
+    bool persistOn = false;
+    bool persistOff = false;
     bool force = false;
     bool printConfig = false;
     bool check = false;
@@ -49,6 +53,12 @@ void runServe(Context &ctx, const ServeOptions &opts) {
     }
     if (opts.webUiOff) {
         config.server.web_ui = false;
+    }
+    if (opts.persistOn) {
+        config.server.persist_telemetry = true;
+    }
+    if (opts.persistOff) {
+        config.server.persist_telemetry = false;
     }
     if (!opts.host.empty()) {
         config.server.host = opts.host;
@@ -149,6 +159,12 @@ void register_serve(CLI::App &root, Context &ctx) {
     sub->add_flag("--web-ui", opts->webUiOn,
                   "Serve the built-in console at /ui for this run only")
         ->excludes(no_web_ui);
+    CLI::Option *no_persist =
+        sub->add_flag("--no-persist", opts->persistOff,
+                      "Do not persist counters and the request log for this run only");
+    sub->add_flag("--persist", opts->persistOn,
+                  "Persist counters and the request log for this run only")
+        ->excludes(no_persist);
     sub->add_flag("--force", opts->force, "Run even when validate() reports errors");
     sub->add_flag("--print-config", opts->printConfig,
                   "Dump the effective config JSON and exit");

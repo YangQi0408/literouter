@@ -74,7 +74,7 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
             // Derived card heights
             constexpr float kListenerHeight = 412.0f;
             constexpr float kBreakerHeight = 96.0f + 34.0f + kCardBottomPadding;
-            constexpr float kLoggingHeight = 144.0f + 32.0f + kCardBottomPadding;
+            constexpr float kLoggingHeight = 184.0f + 32.0f + kCardBottomPadding;
             constexpr float kDisplayHeight = 236.0f + 18.0f + kCardBottomPadding;
             constexpr float kHowHeight = kDisplayHeight;
 
@@ -486,6 +486,22 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                                 .checked(server.log_bodies)
                                 .onChange([](bool value) {
                                     appState().store.config().server.log_bodies = value;
+                                })
+                                .build();
+                        })
+                        .build();
+                    contentUi.stack("settings.persist.wrap")
+                        .position(loggingX + 18.0f, loggingY + 184.0f)
+                        .size(fieldWidth, 32.0f)
+                        .content([&] {
+                            components::toggleSwitch(contentUi, "settings.persist")
+                                .theme(uiTokens())
+                                .size(fieldWidth, 32.0f)
+                                .text(std::string(literouter::i18n::tr("Keep telemetry across restarts")))
+                                .fontSize(13.0f)
+                                .checked(server.persist_telemetry)
+                                .onChange([](bool value) {
+                                    appState().store.config().server.persist_telemetry = value;
                                 })
                                 .build();
                         })

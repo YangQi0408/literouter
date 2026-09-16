@@ -131,6 +131,7 @@ const en: Record<string, string> = {
   hintHeaders: 'one Name: value per line',
   hintWebUi: 'serve this console at /ui',
   hintLogBodies: 'store request/response bodies in the log',
+  hintPersistTelemetry: 'keep counters, relay stats and the request log across restarts',
 }
 
 const zh: Record<string, string> = {
@@ -252,6 +253,7 @@ const zh: Record<string, string> = {
   hintHeaders: '每行一个 Name: value',
   hintWebUi: '在 /ui 提供本控制台',
   hintLogBodies: '在日志中保存请求/响应体',
+  hintPersistTelemetry: '重启后保留计数器、中转站统计与请求日志',
 }
 
 const dictionaries: Record<Lang, Record<string, string>> = { en, zh }

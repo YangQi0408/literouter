@@ -142,6 +142,7 @@ export interface ServerConfig {
   log_capacity: number
   log_bodies: boolean
   log_body_limit: number
+  persist_telemetry: boolean
   web_ui: boolean
   language: string
   ui_scale: number

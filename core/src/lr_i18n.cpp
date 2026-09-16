@@ -278,6 +278,7 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
     {"Ring buffer depth (entries)", "环形缓冲区容量（条目数）"},
     {"Retained body bytes per entry", "单条日志保留报文体字节数"},
     {"Retain request / response bodies", "保留请求与响应报文体"},
+    {"Keep telemetry across restarts", "重启后保留遥测数据"},
     {"Language", "界面语言"},
     {"Interface language", "界面语言"},
     {"Choose interface language", "选择控制台与界面的显示语言"},

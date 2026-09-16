@@ -154,6 +154,13 @@ export function Settings() {
               onChange={(log_body_limit) => patch({ log_body_limit })}
             />
           </Field>
+          <Field label="persist_telemetry" hint={t('hintPersistTelemetry')}>
+            <SwitchField
+              checked={server.persist_telemetry}
+              onChange={(persist_telemetry) => patch({ persist_telemetry })}
+              label="persist_telemetry"
+            />
+          </Field>
         </CardContent>
       </Card>
 
