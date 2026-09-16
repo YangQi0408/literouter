@@ -92,6 +92,9 @@ jobs:
           npm ci --prefix web
           npm run build --prefix web
 
+      - name: Test web console
+        run: npm test --prefix web
+
       - name: Verify web dist is in sync (Linux)
         if: runner.os == 'Linux'
         run: git diff --exit-code -- web/dist

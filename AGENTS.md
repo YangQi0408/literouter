@@ -34,6 +34,7 @@ literouter/
 │   └── hide_zlib.ver           # Linux 链接必需的版本脚本，见规则 8
 └── web/                        # 内置 Web 控制台（React 19 + TypeScript + Vite + Tailwind + shadcn/ui）
     ├── src/                    # 前端源码（views/, components/, store.tsx 等）
+    │   └── lib/*.test.ts       # 纯函数单测（vitest），与源码同目录
     ├── dist/                   # 构建产物（index.html / app.css / app.js / favicon.svg）
     └── package.json            # 前端依赖配置
 ```
@@ -160,6 +161,18 @@ mcpp test -p core test_proxy --timeout 600
 ```
 
 当前套件：`test_config`、`test_i18n`、`test_json_api`、`test_malformed`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`。
+
+Web 控制台的纯函数另有一套 vitest 单测（`web/src/lib/*.test.ts`，与源码同目录）：
+
+```bash
+# 运行（秒级）
+npm --prefix web test
+
+# 开发时监听
+npm --prefix web run test:watch
+```
+
+它们覆盖的是"两份实现必须一致"的地方——`format.ts` 的用例表与 `core/tests/test_util.cpp` 逐值对齐，`diff.ts` / `draft.ts` 覆盖草稿保留与未保存计数这两处曾经出错的逻辑。**改动这些文件（或 `store.tsx` 的状态流转）后必须跑一遍**；`npm run build` 的 `tsc --noEmit` 也会顺带对测试文件做类型检查。
 
 ### 3.3 运行 CLI
 ```bash
@@ -367,6 +380,7 @@ ci: unify multi-platform CI into single workflow
 任何 Agent 在声称任务完成或提交代码前，必须对照以下清单进行自查：
 
 - [ ] `mcpp test -p core` 执行无误，10 组测试套件全部通过（0 failures）；
+- [ ] 涉及 `web/src/lib` 或 `store.tsx` 的，`npm --prefix web test` 全部通过；
 - [ ] `mcpp build --workspace` 执行无误，全工作区无 warning、无 error；
 - [ ] 涉及 CLI 修改的，手动运行一次对应子命令确认控制台输出无乱码、对齐正常；
 - [ ] 涉及配置变动的，确认环境变量密钥引用未被意外展开成明文；

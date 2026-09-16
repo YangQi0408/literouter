@@ -23,6 +23,7 @@ import {
   type ValidationIssue,
   type ValidationReport,
 } from '@/lib/api'
+import { shouldReplaceDraft } from '@/lib/draft'
 import { useI18n } from '@/lib/i18n'
 
 /** Everything the console knows lives here: telemetry polled from the server,
@@ -154,15 +155,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       try {
         const body = await api.config()
         setLoaded(body)
-        setWorking((prev) => {
-          if (!prev) return structuredClone(body.config)
-          if (!force && JSON.stringify(prev) !== JSON.stringify(loadedRef.current?.config)) {
-            // Unsaved edits in flight: keep them, and let `dirty` re-diff
-            // against the config that just arrived.
-            return prev
-          }
-          return structuredClone(body.config)
-        })
+        setWorking((prev) =>
+          shouldReplaceDraft(prev, loadedRef.current?.config ?? null, force)
+            ? structuredClone(body.config)
+            : prev,
+        )
         if (force) setSaveIssues([])
       } catch (error) {
         handleError(error)
