@@ -231,6 +231,11 @@ struct Fixture {
         config.server.port = 0;
         config.server.pass_through_unknown = false;
         config.server.log_capacity = 64;
+        // Off: this suite asserts absolute counters ("the request was
+        // double-counted or lost"), and these fixtures reuse one process, so a
+        // state file written by the scenario before would be read back by the
+        // next one and inflate them.
+        config.server.persist_telemetry = false;
 
         literouter::ProviderConfig one;
         one.id = "one";
@@ -596,6 +601,12 @@ void testStillWorksAfterwards() {
 } // namespace
 
 int main() {
+    // The fixtures below switch persistence off; the guard means a regression
+    // still cannot write into the developer's own state directory.
+    const lr_test::EnvGuard stateEnv{"LITEROUTER_STATE_DIR"};
+    stateEnv.assign(
+        (std::filesystem::temp_directory_path() / "literouter-test-malformed").string());
+
     testTruncatedBodyFailsOver();
     testHeadersThenCloseFailsOver();
     testEmpty200IsPassedThrough();

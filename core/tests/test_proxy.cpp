@@ -33,6 +33,39 @@ constexpr const char *kRouteModel = "route-model";
 constexpr const char *kCloserModel = "closer-model";
 constexpr const char *kPassModel = "pass-model";
 
+// A scratch directory for the telemetry file these tests make a real server
+// write. Without it a run would leave the developer's own
+// ~/.local/state/literouter/telemetry.json rewritten by the fixture.
+class TempDir {
+public:
+    TempDir() {
+        path_ = std::filesystem::temp_directory_path() /
+                std::format("literouter-test-{}", literouter::hexId(6));
+        std::filesystem::create_directories(path_);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+    TempDir(const TempDir &) = delete;
+    TempDir &operator=(const TempDir &) = delete;
+
+    const std::filesystem::path &path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+bool writeFile(const std::filesystem::path &path, std::string_view text) {
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    if (!output) {
+        return false;
+    }
+    output.write(text.data(), static_cast<std::streamsize>(text.size()));
+    output.flush();
+    return static_cast<bool>(output);
+}
+
 // ── stub relay ───────────────────────────────────────────────────────────────
 
 // Behaves like an OpenAI-compatible relay whose mood is set per assertion group.
@@ -1366,7 +1399,167 @@ void group15WebConsole(StubRelay &relay_a, literouter::ProxyServer &proxy) {
     }
 }
 
+void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base) {
+    LR_GROUP("16. telemetry reaches the state file and comes back on the next start");
+    literouter::AppConfig config = base;
+    // The kernel picks the port: other groups hold the fixture's own port, and
+    // this group starts servers of its own.
+    config.server.port = 0;
+    // The fixture ships with persistence off; this is the group that wants it.
+    config.server.persist_telemetry = true;
+    relay_a.setMode(StubRelay::Mode::Normal);
+
+    const std::filesystem::path state_file = literouter::defaultStateDir() / "telemetry.json";
+    std::error_code ec;
+    std::filesystem::remove(state_file, ec);
+    LR_CHECK_MSG(state_file.string().find("literouter-test-") != std::string::npos,
+                 "LITEROUTER_STATE_DIR is not isolated: " + state_file.string());
+
+    // 1. A run that serves one request leaves its counters and its log behind.
+    {
+        literouter::ProxyServer first;
+        const auto started = first.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) {
+            return;
+        }
+        const Hit hit =
+            postJson(first.boundPort(), "/v1/chat/completions", chatRequest(kRouteModel));
+        LR_CHECK_EQ(hit.status, 200);
+        LR_CHECK_EQ(first.snapshot().total_requests, static_cast<std::uint64_t>(1));
+        first.stop();
+    }
+
+    LR_CHECK_MSG(std::filesystem::is_regular_file(state_file, ec),
+                 "stop() left no telemetry file behind");
+    std::uint64_t saved_requests = 0;
+    std::uint64_t saved_seq = 0;
+    std::size_t saved_entries = 0;
+    std::uint64_t relay_requests = 0;
+    {
+        std::ifstream input{state_file, std::ios::binary};
+        const std::string text{std::istreambuf_iterator<char>{input},
+                               std::istreambuf_iterator<char>{}};
+        const json doc = json::parse(text, nullptr, false);
+        LR_CHECK(!doc.is_discarded());
+        if (!doc.is_discarded()) {
+            LR_CHECK_EQ(doc.value("version", 0), 1);
+            if (const auto it = doc.find("counters"); it != doc.end() && it->is_object()) {
+                saved_requests = it->value("total_requests", std::uint64_t{0});
+            }
+            // The per-relay numbers are the other half of what the console
+            // shows, so they have to be in the file too.
+            if (const auto it = doc.find("providers"); it != doc.end() && it->is_array()) {
+                for (const auto &item : *it) {
+                    if (item.is_object() && item.value("provider", std::string{}) == "alpha") {
+                        relay_requests = item.value("requests", std::uint64_t{0});
+                    }
+                }
+            }
+            if (const auto it = doc.find("log"); it != doc.end() && it->is_object()) {
+                saved_seq = it->value("next_seq", std::uint64_t{0});
+                if (const auto list = it->find("entries");
+                    list != it->end() && list->is_array()) {
+                    saved_entries = list->size();
+                }
+            }
+        }
+    }
+    LR_CHECK_EQ(saved_requests, static_cast<std::uint64_t>(1));
+    LR_CHECK_EQ(relay_requests, static_cast<std::uint64_t>(1));
+    LR_CHECK(saved_seq >= 1);
+    LR_CHECK(saved_entries >= 1);
+
+    // 2. The next process reads them instead of starting from zero, and the log
+    // sequence never goes backwards across the restart.
+    {
+        literouter::ProxyServer second;
+        const auto started = second.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) {
+            return;
+        }
+        const literouter::Snapshot restored = second.snapshot();
+        LR_CHECK_EQ(restored.total_requests, static_cast<std::uint64_t>(1));
+        LR_CHECK_EQ(restored.total_success, static_cast<std::uint64_t>(1));
+        LR_CHECK_MSG(restored.log_seq >= saved_seq,
+                     std::format("log_seq went backwards: {} < {}", restored.log_seq, saved_seq));
+
+        const auto entries = second.logsSince(0, 500);
+        LR_CHECK_MSG(!entries.empty(), "the restored log came back empty");
+        bool relay_seen = false;
+        for (const auto &entry : entries) {
+            if (entry.provider == "alpha") {
+                relay_seen = true;
+            }
+        }
+        LR_CHECK_MSG(relay_seen, "the restored log lost the entry that named its relay");
+        // Uptime is per-run even when the counters are not.
+        LR_CHECK(restored.uptime_sec >= 0.0);
+        second.stop();
+    }
+
+    // 3. Turning it off is what makes a run leave nothing behind — and that run
+    // must not read the previous file either.
+    {
+        literouter::AppConfig quiet = config;
+        quiet.server.persist_telemetry = false;
+        std::filesystem::remove(state_file, ec);
+        literouter::ProxyServer off;
+        const auto started = off.start(quiet);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (started) {
+            LR_CHECK_EQ(off.snapshot().total_requests, static_cast<std::uint64_t>(0));
+            postJson(off.boundPort(), "/v1/chat/completions", chatRequest(kRouteModel));
+            off.stop();
+        }
+        LR_CHECK_MSG(!std::filesystem::exists(state_file, ec),
+                     "persist_telemetry = false still wrote a state file");
+    }
+
+    // 4. A file this build cannot read is a run with empty counters, never a
+    // server that refuses to start.
+    {
+        std::filesystem::remove(state_file, ec);
+        LR_CHECK(writeFile(state_file, "this is not json"));
+        literouter::ProxyServer tolerating;
+        const auto started = tolerating.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (started) {
+            LR_CHECK_EQ(tolerating.snapshot().total_requests, static_cast<std::uint64_t>(0));
+            tolerating.stop();
+        }
+        // And the next write replaces the junk with a readable document.
+        std::ifstream input{state_file, std::ios::binary};
+        const std::string text{std::istreambuf_iterator<char>{input},
+                               std::istreambuf_iterator<char>{}};
+        LR_CHECK(!json::parse(text, nullptr, false).is_discarded());
+    }
+
+    // 5. Valid JSON holding the wrong types is the same story: the accessors
+    // throw, and a throw must not reach start().
+    {
+        std::filesystem::remove(state_file, ec);
+        LR_CHECK(writeFile(state_file,
+                           "{\"version\":1,\"counters\":{\"total_requests\":\"many\"},"
+                           "\"log\":{\"next_seq\":\"soon\",\"entries\":[]}}"));
+        literouter::ProxyServer tolerant;
+        const auto started = tolerant.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (started) {
+            LR_CHECK_EQ(tolerant.snapshot().total_requests, static_cast<std::uint64_t>(0));
+            tolerant.stop();
+        }
+    }
+}
+
 int main() {
+    // A real server writes its telemetry where LITEROUTER_STATE_DIR points; the
+    // guard is what keeps a test run out of the developer's own state dir.
+    const lr_test::EnvGuard stateEnv{"LITEROUTER_STATE_DIR"};
+    TempDir stateDir;
+    stateEnv.assign(stateDir.path().string());
+
     // Non-ASCII in alpha's answer, so "byte-identical" would catch a codec or a
     // re-encoding that a pure-ASCII body would hide.
     StubRelay relay_a{
@@ -1389,8 +1582,11 @@ int main() {
     int result = 0;
     {
         literouter::ProxyServer proxy;
-        const literouter::AppConfig config =
+        literouter::AppConfig config =
             buildProxyConfig(relay_a.baseUrl(), relay_b.baseUrl(), hanger.baseUrl());
+        // The shared fixture does not persist: group 16 uses the state file, and
+        // two servers writing the same path would make both of them flaky.
+        config.server.persist_telemetry = false;
         // A fixture that does not validate would make every failure below
         // ambiguous.
         LR_CHECK_MSG(literouter::validate(config).ok(),
@@ -1422,6 +1618,7 @@ int main() {
 #endif
         group14MultiProtocolIngress(relay_a, proxy.boundPort());
         group15WebConsole(relay_a, proxy);
+        group16TelemetryFile(relay_a, config);
         // Runs last on purpose: it deliberately leaves the proxy stopped.
         group10Restart(proxy, config);
 

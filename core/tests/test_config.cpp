@@ -94,6 +94,7 @@ AppConfig fullyPopulated() {
     config.server.log_capacity = 128;
     config.server.log_bodies = true;
     config.server.log_body_limit = 512;
+    config.server.persist_telemetry = false;
     config.server.web_ui = false;
     config.server.language = "zh";
     config.server.ui_scale = 1.25;
@@ -166,6 +167,7 @@ void checkServerEqual(const literouter::ServerConfig &actual,
     LR_CHECK_EQ(actual.log_capacity, expected.log_capacity);
     LR_CHECK_EQ(actual.log_bodies, expected.log_bodies);
     LR_CHECK_EQ(actual.log_body_limit, expected.log_body_limit);
+    LR_CHECK_EQ(actual.persist_telemetry, expected.persist_telemetry);
     LR_CHECK_EQ(actual.web_ui, expected.web_ui);
     LR_CHECK_EQ(actual.language, expected.language);
     LR_CHECK_EQ(actual.ui_scale, expected.ui_scale);
@@ -300,6 +302,9 @@ void testMinimalDocuments() {
             LR_CHECK_EQ(parsed->server.skip_open_circuits, true);
             LR_CHECK_EQ(parsed->server.log_capacity, 200);
             LR_CHECK_EQ(parsed->server.log_bodies, false);
+            // On by default: a restart that silently reset the counters and
+            // emptied the log is what this field exists to prevent.
+            LR_CHECK_EQ(parsed->server.persist_telemetry, true);
             LR_CHECK_EQ(parsed->server.ui_scale, 1.0);
             LR_CHECK_EQ(static_cast<long long>(parsed->providers.size()), 0);
             LR_CHECK_EQ(static_cast<long long>(parsed->routes.size()), 0);
@@ -584,6 +589,19 @@ void testValidateServer() {
         const ValidationReport report = literouter::validate(config);
         LR_CHECK(report.ok());
         LR_CHECK(findIssueContaining(report, "no client key", kWarning) != nullptr);
+    }
+    {
+        // Persisting is fine and logging bodies is fine; the pair is what puts
+        // prompts on disk, so it is the combination that gets flagged.
+        AppConfig config;
+        config.server.log_bodies = true;
+        const ValidationReport report = literouter::validate(config);
+        LR_CHECK(report.ok());
+        LR_CHECK(findIssueContaining(report, "outlive the process", kWarning) != nullptr);
+
+        config.server.persist_telemetry = false;
+        LR_CHECK(findIssueContaining(literouter::validate(config), "outlive the process", kWarning) ==
+                 nullptr);
     }
 }
 
