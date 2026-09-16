@@ -459,6 +459,17 @@ struct AppState {
         return false;
     }
 
+    // Drops the oldest entries past the capacity the operator picked. Returns
+    // whether anything went, so the caller can repaint.
+    bool trimLogs() {
+        const std::size_t limit = logLimit();
+        if (logs.size() <= limit) {
+            return false;
+        }
+        logs.erase(logs.begin(), logs.begin() + static_cast<long>(logs.size() - limit));
+        return true;
+    }
+
     bool pollTelemetry() {
         bool changed = false;
         auto fresh = server.snapshot();
@@ -475,14 +486,17 @@ struct AppState {
                     lastLogSeq = entry.seq > lastLogSeq ? entry.seq : lastLogSeq;
                     logs.push_back(std::move(entry));
                 }
-                const std::size_t limit = logLimit();
-                if (logs.size() > limit) {
-                    logs.erase(logs.begin(), logs.begin() + static_cast<long>(logs.size() - limit));
-                }
                 if (logsView.follow) {
                     logsView.scroll = 1000000.0f; // clamped by virtualList at the bottom
                 }
             }
+        }
+        // Trimmed outside both guards above: the capacity segmented control only
+        // records the choice, so lowering 500 → 100 has to take effect on the
+        // next poll rather than waiting for traffic that may never come — and a
+        // paused log must honour a smaller buffer too.
+        if (trimLogs()) {
+            changed = true;
         }
         if (checkDiskChange()) {
             changed = true;
