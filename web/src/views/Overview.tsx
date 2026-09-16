@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react'
+
 import {
   Activity,
   ArrowUpRight,
@@ -13,10 +15,44 @@ import { Metric } from '@/components/Metric'
 import { RelayHealth } from '@/components/RelayHealth'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { humanBytes, humanCount, humanDuration, humanMillis, pct, successRatio } from '@/lib/format'
+import { humanBytes, humanCount, humanUptime, humanMillis, pct, successRatio } from '@/lib/format'
 import { useI18n } from '@/lib/i18n'
 import { totalTokens } from '@/lib/present'
 import { useStore } from '@/store'
+
+/** The one tile that has to keep moving between status polls.
+ *
+ *  Every other number here is an event count, so a two-second refresh is
+ *  invisible; a clock is the one value a reader can watch stall. It ticks once
+ *  a second, anchored to the value the last poll carried plus the time elapsed
+ *  since — never to `started_unix` against the local clock, since the browser
+ *  and the server are under no obligation to agree on what time it is. */
+function UptimeMetric({
+  uptime,
+  running,
+  version,
+  label,
+}: {
+  uptime: number
+  running: boolean
+  version: string
+  label: string
+}) {
+  const [, tick] = useState(0)
+  const anchor = useRef({ at: Date.now(), uptime })
+  if (anchor.current.uptime !== uptime) {
+    anchor.current = { at: Date.now(), uptime }
+  }
+
+  useEffect(() => {
+    if (!running) return
+    const timer = window.setInterval(() => tick((n) => n + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [running])
+
+  const seconds = running ? anchor.current.uptime + (Date.now() - anchor.current.at) / 1000 : 0
+  return <Metric icon={Clock} label={label} value={humanUptime(seconds)} sub={`v${version}`} />
+}
 
 export function Overview() {
   const { snapshot, models } = useStore()
@@ -62,11 +98,11 @@ export function Overview() {
           value={humanMillis(snapshot.latency_ms_avg)}
           sub="ewma"
         />
-        <Metric
-          icon={Clock}
+        <UptimeMetric
+          uptime={snapshot.uptime_sec}
+          running={snapshot.running}
+          version={snapshot.version}
           label={t('metricUptime')}
-          value={humanDuration(snapshot.uptime_sec)}
-          sub={`v${snapshot.version}`}
         />
         <Metric
           icon={ShieldAlert}

@@ -24,6 +24,9 @@ export function humanMillis(ms: number): string {
 }
 
 export function humanDuration(seconds: number): string {
+  // "—" for a nonsense input, as the C++ side does: printing "0s" would make a
+  // value that is not a measurement look like one.
+  if (seconds < 0) return '—'
   const s = Math.max(0, Math.floor(Number(seconds) || 0))
   const d = Math.floor(s / 86400)
   const h = Math.floor((s % 86400) / 3600)
@@ -31,6 +34,23 @@ export function humanDuration(seconds: number): string {
   const r = s % 60
   if (d) return `${d}d ${h}h`
   if (h) return `${h}h ${m}m`
+  if (m) return `${m}m ${r}s`
+  return `${r}s`
+}
+
+/** Like humanDuration, but it never drops the seconds.
+ *
+ *  The uptime tile repaints every second, and a formatter that coarsens to
+ *  minutes past the first hour would leave a running server looking stopped. */
+export function humanUptime(seconds: number): string {
+  if (seconds < 0) return '—'
+  const s = Math.max(0, Math.floor(Number(seconds) || 0))
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const r = s % 60
+  if (d) return `${d}d ${h}h ${m}m ${r}s`
+  if (h) return `${h}h ${m}m ${r}s`
   if (m) return `${m}m ${r}s`
   return `${r}s`
 }
