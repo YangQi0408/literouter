@@ -135,6 +135,16 @@ bool isConsolePath(std::string_view path) {
     return path == "/" || path == "/favicon.ico" || path == "/ui" || startsWith(path, "/ui/");
 }
 
+// The liveness probe, which answers before any credential is presented.
+//
+// A healthcheck is run by something that holds no key — a container runtime, a
+// load balancer, a systemd unit — so gating it behind `server.api_key` turns
+// every such probe into a 401 and reports a healthy proxy as down. It leaks
+// nothing: the body is a constant, and it says only that the listener is up.
+bool isLivenessPath(std::string_view path) {
+    return path == "/health";
+}
+
 json validationJson(const ValidationReport &report) {
     json issues = json::array();
     for (const auto &issue : report.issues) {
@@ -1461,6 +1471,11 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         if (req.method == "OPTIONS") {
             res.status = 204;
             return h::Server::HandlerResponse::Handled;
+        }
+        // Liveness answers unauthenticated, as both protocol documents promise:
+        // whatever runs a healthcheck does not carry the operator's key.
+        if (isLivenessPath(req.path) && req.method == "GET") {
+            return h::Server::HandlerResponse::Unhandled;
         }
         // The console shell is static and holds no data: it has to load before
         // the operator can type a key. Every byte it then fetches from the

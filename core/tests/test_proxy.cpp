@@ -811,6 +811,21 @@ void group7Auth(StubRelay &relay_a, literouter::ProxyServer &proxy,
     const Hit models = getPath(port, "/v1/models");
     LR_CHECK_EQ(models.status, 401);
 
+    // Liveness stays open while the key is set. Whatever runs a healthcheck — a
+    // container runtime, a load balancer, a systemd unit — carries no key, so
+    // gating this reported a healthy proxy as down. Both protocol documents
+    // describe it as unauthenticated.
+    const Hit health = getPath(port, "/health");
+    LR_CHECK_EQ(health.status, 200);
+    const json alive = json::parse(health.body, nullptr, false);
+    LR_CHECK(!alive.is_discarded());
+    if (!alive.is_discarded()) {
+        LR_CHECK_EQ(alive.value("status", std::string{}), "ok");
+    }
+    // It answers the same with a wrong key rather than rejecting it: the body is
+    // a constant and tells a caller nothing it could not learn by connecting.
+    LR_CHECK_EQ(getPath(port, "/health", "sk-wrong").status, 200);
+
     const Hit authorized =
         postJson(port, "/v1/chat/completions", chatRequest(kRouteModel), "sk-local-test");
     LR_CHECK_EQ(authorized.status, 200);
