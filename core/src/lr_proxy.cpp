@@ -430,13 +430,82 @@ struct StreamBridge {
 
 // ── log ring ─────────────────────────────────────────────────────────────────
 
+// The one place the persisted telemetry document is shaped, and the reason the
+// two readers below exist at all: `fetchStatus` / `fetchLogs` parse the same
+// objects off the wire that the state file writes to disk.
+ProviderStat providerStatFromJson(const json &item) {
+    ProviderStat stat;
+    stat.provider = item.value("provider", std::string{});
+    stat.requests = item.value("requests", std::uint64_t{0});
+    stat.successes = item.value("successes", std::uint64_t{0});
+    stat.failures = item.value("failures", std::uint64_t{0});
+    stat.aborted = item.value("aborted", std::uint64_t{0});
+    stat.retries_in = item.value("retries_in", std::uint64_t{0});
+    stat.bytes_out = item.value("bytes_out", std::uint64_t{0});
+    stat.bytes_in = item.value("bytes_in", std::uint64_t{0});
+    stat.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
+    stat.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
+    stat.latency_ms_last = item.value("latency_ms_last", 0.0);
+    stat.latency_ms_avg = item.value("latency_ms_avg", 0.0);
+    stat.latency_ms_p95 = item.value("latency_ms_p95", 0.0);
+    stat.last_used_unix = item.value("last_used_unix", 0.0);
+    return stat;
+}
+
+LogEntry logEntryFromJson(const json &item) {
+    LogEntry entry;
+    entry.seq = item.value("seq", std::uint64_t{0});
+    entry.time_unix = item.value("time_unix", 0.0);
+    entry.level = item.value("level", std::string{"info"});
+    entry.request_id = item.value("request_id", std::string{});
+    entry.kind = item.value("kind", std::string{});
+    entry.model = item.value("model", std::string{});
+    entry.provider = item.value("provider", std::string{});
+    entry.upstream_model = item.value("upstream_model", std::string{});
+    entry.status = item.value("status", 0);
+    entry.stream = item.value("stream", false);
+    entry.failover = item.value("failover", false);
+    entry.attempt = item.value("attempt", 1);
+    entry.attempts_total = item.value("attempts_total", 1);
+    entry.latency_ms = item.value("latency_ms", 0.0);
+    entry.bytes = item.value("bytes", std::uint64_t{0});
+    entry.message = item.value("message", std::string{});
+    entry.request_body = item.value("request_body", std::string{});
+    entry.response_body = item.value("response_body", std::string{});
+    return entry;
+}
+
+// How often a dirty telemetry document reaches the disk, and how much of the
+// ring goes with it. A ring can be configured to 100k entries; rewriting that
+// on a timer would be a write amplifier, and the file only has to be deep
+// enough for a restarted console to open on the recent past.
+constexpr auto kStateFlushInterval = std::chrono::seconds{3};
+constexpr std::size_t kPersistedLogEntries = 500;
+
 struct LogRing {
     std::deque<LogEntry> entries;
-    std::size_t capacity = 400;
+    // Overwritten by setCapacity() from server.log_capacity before anything can
+    // be pushed; the initial value tracks the same default so the two cannot
+    // disagree about what an unconfigured core does.
+    std::size_t capacity = static_cast<std::size_t>(ServerConfig{}.log_capacity);
     std::uint64_t next_seq = 1;
 
     void setCapacity(std::size_t value) {
         capacity = std::max<std::size_t>(16, value);
+        while (entries.size() > capacity) {
+            entries.pop_front();
+        }
+    }
+
+    // Used only for the ring read back from the state file: the sequence keeps
+    // counting from where the previous process stopped, so a console that has
+    // cached `log_seq` does not see it jump backwards.
+    void restore(std::deque<LogEntry> restored, std::uint64_t next) {
+        entries = std::move(restored);
+        for (const auto &entry : entries) {
+            next = std::max(next, entry.seq + 1);
+        }
+        next_seq = std::max<std::uint64_t>(next, 1);
         while (entries.size() > capacity) {
             entries.pop_front();
         }
@@ -536,6 +605,29 @@ struct ProxyServer::Impl {
     std::uint64_t tokens_completion = 0;
     double latency_ms_avg = 0.0;
 
+    // ── persisted telemetry ──────────────────────────────────────────────────
+    //
+    // Counters, per-relay stats and the request ring are all in memory, so
+    // without this every restart reset `status` to zeros and emptied the log.
+    // They are written to `<state dir>/telemetry.json` on a short timer and on
+    // stop(), and read back once per process at the first start().
+    //
+    // The path is fixed when the server starts and the switch is what moves at
+    // runtime, so a request thread reading it (markStateDirty is on the hot
+    // path) never races with a live config edit.
+    std::filesystem::path state_path;
+    std::atomic<bool> persist_enabled{false};
+    bool state_restored = false;
+    bool state_write_failed = false;
+    std::atomic<bool> state_dirty{false};
+    // A plain thread with a stop flag rather than std::jthread: this toolchain's
+    // libc++ exports stop_token's out-of-line helpers under an ABI tag the
+    // linker does not match, so <stop_token> does not link here.
+    std::atomic<bool> flush_stop{false};
+    std::mutex flush_wait_mutex;
+    std::condition_variable flush_wait;
+    std::thread flusher;
+
     AppConfig snapshotConfig() const {
         std::scoped_lock lock{config_mutex};
         return config;
@@ -565,6 +657,7 @@ struct ProxyServer::Impl {
     void appendLog(LogEntry entry) {
         std::scoped_lock lock{telemetry_mutex};
         log.push(std::move(entry));
+        markStateDirty();
     }
 
     void releaseInFlight() {
@@ -616,6 +709,7 @@ struct ProxyServer::Impl {
                                  : latency_ms_avg * 0.85 + entry.latency_ms * 0.15;
         }
         log.push(std::move(entry));
+        markStateDirty();
         releaseInFlight();
     }
 
@@ -625,6 +719,260 @@ struct ProxyServer::Impl {
         entry.kind = "system";
         entry.message = std::move(message);
         appendLog(std::move(entry));
+    }
+
+    // ── telemetry file ───────────────────────────────────────────────────────
+
+    void setPersistence(bool enabled) {
+        persist_enabled.store(enabled, std::memory_order_relaxed);
+    }
+
+    void markStateDirty() {
+        if (persist_enabled.load(std::memory_order_relaxed)) {
+            state_dirty.store(true, std::memory_order_relaxed);
+        }
+    }
+
+    // Assembled under the telemetry lock, written outside it: a request must not
+    // wait on a disk write to have its counters counted.
+    std::string stateJson() const {
+        json root = json::object();
+        root["version"] = 1;
+        root["saved_unix"] = nowUnix();
+
+        const auto attach = [](json &array, const std::string &text) {
+            json node = json::parse(text, nullptr, false);
+            if (!node.is_discarded()) {
+                array.push_back(std::move(node));
+            }
+        };
+
+        std::scoped_lock lock{telemetry_mutex};
+        json counters = json::object();
+        counters["total_requests"] = total_requests;
+        counters["total_success"] = total_success;
+        counters["total_failure"] = total_failure;
+        counters["bytes_out"] = bytes_out;
+        counters["tokens_prompt"] = tokens_prompt;
+        counters["tokens_completion"] = tokens_completion;
+        counters["latency_ms_avg"] = latency_ms_avg;
+        root["counters"] = std::move(counters);
+
+        json providers = json::array();
+        for (auto it = stats.begin(); it != stats.end(); ++it) {
+            attach(providers, toJsonString(it->second));
+        }
+        root["providers"] = std::move(providers);
+
+        json entries = json::array();
+        const std::size_t skip = log.entries.size() > kPersistedLogEntries
+                                     ? log.entries.size() - kPersistedLogEntries
+                                     : 0;
+        for (std::size_t i = skip; i < log.entries.size(); ++i) {
+            attach(entries, toJsonString(log.entries[i]));
+        }
+        json ring = json::object();
+        ring["next_seq"] = log.next_seq;
+        ring["entries"] = std::move(entries);
+        root["log"] = std::move(ring);
+
+        return root.dump(2);
+    }
+
+    // Reported once per failure run rather than once per attempt: a full disk
+    // would otherwise fill the very log it is failing to write.
+    void reportStateProblem(std::string message) {
+        if (state_write_failed) {
+            return;
+        }
+        state_write_failed = true;
+        recordSystem(std::move(message), "error");
+    }
+
+    void writeState() {
+        if (!persist_enabled.load(std::memory_order_relaxed) || state_path.empty()) {
+            return;
+        }
+        const std::string text = stateJson();
+        std::error_code ec;
+        std::filesystem::create_directories(state_path.parent_path(), ec);
+
+        // Same temp-then-rename dance as the config file: a reader sees either
+        // the previous document or the new one, never a half-written one.
+        auto temp = state_path;
+        temp += std::format(".tmp-{}", hexId(4));
+        {
+            std::ofstream output{temp, std::ios::binary | std::ios::trunc};
+            if (!output) {
+                reportStateProblem(std::format("cannot write telemetry file {}", temp.string()));
+                return;
+            }
+            output.write(text.data(), static_cast<std::streamsize>(text.size()));
+            output.flush();
+            if (!output) {
+                output.close();
+                std::filesystem::remove(temp, ec);
+                reportStateProblem(std::format("write to telemetry file {} failed", temp.string()));
+                return;
+            }
+        }
+        std::filesystem::rename(temp, state_path, ec);
+        if (ec) {
+#ifdef _WIN32
+            // Windows can refuse the replace above while the destination is
+            // open elsewhere; remove-then-rename is the documented fallback.
+            ec.clear();
+            std::filesystem::remove(state_path, ec);
+            ec.clear();
+            std::filesystem::rename(temp, state_path, ec);
+#endif
+            if (ec) {
+                std::filesystem::remove(temp, ec);
+                reportStateProblem(std::format("cannot replace telemetry file {}: {}",
+                                               state_path.string(), ec.message()));
+                return;
+            }
+        }
+#ifndef _WIN32
+        // The log can carry prompts when log_bodies is on, so this file is not
+        // for other accounts to read.
+        std::filesystem::permissions(state_path,
+                                     std::filesystem::perms::owner_read |
+                                         std::filesystem::perms::owner_write,
+                                     std::filesystem::perm_options::replace, ec);
+#endif
+        state_write_failed = false;
+    }
+
+    // Never fatal: a state file that cannot be read is a run that starts with
+    // empty counters, not a server that refuses to start.
+    void loadState() {
+        if (!persist_enabled.load(std::memory_order_relaxed) || state_path.empty()) {
+            return;
+        }
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(state_path, ec)) {
+            return;
+        }
+        std::ifstream input{state_path, std::ios::binary};
+        if (!input) {
+            recordSystem(std::format("cannot read telemetry file {}", state_path.string()), "error");
+            return;
+        }
+        const std::string text{std::istreambuf_iterator<char>{input},
+                               std::istreambuf_iterator<char>{}};
+        const json root = json::parse(text, nullptr, false);
+        if (root.is_discarded() || !root.is_object() || root.value("version", 0) != 1) {
+            recordSystem(std::format("ignoring {}: not a readable literouter telemetry file",
+                                     state_path.string()),
+                         "warning");
+            return;
+        }
+
+        // Read into locals first. nlohmann's accessors throw when a hand-edited
+        // file holds the wrong type for a key, and half-applied telemetry is
+        // worse than none — so the members are only touched once the whole
+        // document has been read successfully.
+        std::uint64_t requests = 0;
+        std::uint64_t successes = 0;
+        std::uint64_t failures = 0;
+        std::uint64_t bytes = 0;
+        std::uint64_t prompt_tokens = 0;
+        std::uint64_t completion_tokens = 0;
+        double avg_latency = 0.0;
+        std::map<std::string, ProviderStat, std::less<>> restored_stats;
+        std::deque<LogEntry> entries;
+        std::uint64_t next_seq = 1;
+        try {
+            if (const auto it = root.find("counters"); it != root.end() && it->is_object()) {
+                requests = it->value("total_requests", std::uint64_t{0});
+                successes = it->value("total_success", std::uint64_t{0});
+                failures = it->value("total_failure", std::uint64_t{0});
+                bytes = it->value("bytes_out", std::uint64_t{0});
+                prompt_tokens = it->value("tokens_prompt", std::uint64_t{0});
+                completion_tokens = it->value("tokens_completion", std::uint64_t{0});
+                avg_latency = it->value("latency_ms_avg", 0.0);
+            }
+            if (const auto it = root.find("providers"); it != root.end() && it->is_array()) {
+                for (const auto &item : *it) {
+                    if (item.is_object()) {
+                        ProviderStat stat = providerStatFromJson(item);
+                        restored_stats[stat.provider] = std::move(stat);
+                    }
+                }
+            }
+            if (const auto it = root.find("log"); it != root.end() && it->is_object()) {
+                if (const auto list = it->find("entries"); list != it->end() && list->is_array()) {
+                    for (const auto &item : *list) {
+                        if (item.is_object()) {
+                            entries.push_back(logEntryFromJson(item));
+                        }
+                    }
+                }
+                next_seq = it->value("next_seq", std::uint64_t{1});
+            }
+        } catch (const std::exception &error) {
+            recordSystem(std::format("ignoring {}: {}", state_path.string(), error.what()),
+                         "warning");
+            return;
+        }
+
+        const std::size_t restored = entries.size();
+        {
+            std::scoped_lock lock{telemetry_mutex};
+            total_requests = requests;
+            total_success = successes;
+            total_failure = failures;
+            bytes_out = bytes;
+            tokens_prompt = prompt_tokens;
+            tokens_completion = completion_tokens;
+            latency_ms_avg = avg_latency;
+            for (auto it = restored_stats.begin(); it != restored_stats.end(); ++it) {
+                stats[it->first] = std::move(it->second);
+            }
+            log.restore(std::move(entries), next_seq);
+        }
+        recordSystem(std::format("restored {} log entries from {}", restored,
+                                 state_path.string()));
+    }
+
+    void startFlusher() {
+        if (flusher.joinable()) {
+            return;
+        }
+        flush_stop.store(false, std::memory_order_relaxed);
+        flusher = std::thread([this] {
+            std::unique_lock lock{flush_wait_mutex};
+            while (true) {
+                // The predicate version, so a stop request wakes this instead of
+                // holding up shutdown for the rest of the interval.
+                flush_wait.wait_for(lock, kStateFlushInterval,
+                                    [this] { return flush_stop.load(std::memory_order_relaxed); });
+                if (flush_stop.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                if (state_dirty.exchange(false, std::memory_order_relaxed)) {
+                    writeState();
+                }
+            }
+        });
+    }
+
+    // Requests a stop and joins. No final write: used by the paths where there
+    // is nothing worth persisting.
+    void joinFlusher() {
+        flush_stop.store(true, std::memory_order_relaxed);
+        flush_wait.notify_all();
+        if (flusher.joinable()) {
+            flusher.join();
+        }
+    }
+
+    // Joins and writes the final document — after the caller's last log entry,
+    // so "stopped" is in the file.
+    void stopFlusher() {
+        joinFlusher();
+        writeState();
     }
 
     // A client that hangs up mid-stream is not a relay failure: counting it as
@@ -1449,6 +1797,15 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         std::scoped_lock lock{impl_->telemetry_mutex};
         impl_->log.setCapacity(static_cast<std::size_t>(std::max(16, config.server.log_capacity)));
     }
+    // Read once per process, before anything can be counted: a later start()
+    // (the console's Stop then Start) already holds this process's telemetry in
+    // memory, and re-reading the file would drag the counters backwards.
+    impl_->state_path = defaultStateDir() / "telemetry.json";
+    impl_->setPersistence(config.server.persist_telemetry);
+    if (!impl_->state_restored) {
+        impl_->state_restored = true;
+        impl_->loadState();
+    }
     impl_->stopping.store(false);
 
     auto &server = *(impl_->server = std::make_unique<h::Server>());
@@ -1974,6 +2331,9 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     }
 
     impl_->recordSystem(std::format("listening on http://{}:{}", host, bound));
+    // Started last: everything above can still fail and return, and a flusher
+    // is only wanted once there is a server whose telemetry it can write.
+    impl_->startFlusher();
     return {};
 }
 
@@ -1989,6 +2349,10 @@ void ProxyServer::stop() {
     // second stop() call (from the destructor) a no-op.
     if (!impl_->server) {
         impl_->running.store(false);
+        // Nothing was ever started, so there is nothing to write; this is also
+        // the branch the destructor takes for a console that never pressed
+        // Start.
+        impl_->joinFlusher();
         return;
     }
 
@@ -2002,6 +2366,9 @@ void ProxyServer::stop() {
     impl_->server.reset();
     impl_->running.store(false);
     impl_->recordSystem("stopped");
+    // Last, so the entry above is part of what gets written, and so no thread is
+    // still holding the document when the object goes away.
+    impl_->stopFlusher();
 }
 
 void ProxyServer::updateConfig(const AppConfig &config) {
@@ -2014,6 +2381,11 @@ void ProxyServer::updateConfig(const AppConfig &config) {
         std::scoped_lock lock{impl_->telemetry_mutex};
         impl_->log.setCapacity(static_cast<std::size_t>(std::max(16, config.server.log_capacity)));
     }
+    // A live edit decides whether the next flush writes anything, and marking
+    // it dirty is what makes switching the flag on take effect now rather than
+    // at the next request.
+    impl_->setPersistence(config.server.persist_telemetry);
+    impl_->markStateDirty();
 }
 
 AppConfig ProxyServer::config() const {
@@ -2067,6 +2439,9 @@ std::vector<LogEntry> ProxyServer::logsSince(std::uint64_t seq, std::size_t limi
 void ProxyServer::clearLogs() {
     std::scoped_lock lock{impl_->telemetry_mutex};
     impl_->log.entries.clear();
+    // Marked so a cleared log is not resurrected from the file by the next
+    // start(): the operator asked for it gone.
+    impl_->markStateDirty();
 }
 
 void ProxyServer::resetStats() {
@@ -2201,25 +2576,9 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
 
     if (const auto it = parsed.find("providers"); it != parsed.end() && it->is_array()) {
         for (const auto &item : *it) {
-            if (!item.is_object()) {
-                continue;
+            if (item.is_object()) {
+                s.providers.push_back(providerStatFromJson(item));
             }
-            ProviderStat stat;
-            stat.provider = item.value("provider", std::string{});
-            stat.requests = item.value("requests", std::uint64_t{0});
-            stat.successes = item.value("successes", std::uint64_t{0});
-            stat.failures = item.value("failures", std::uint64_t{0});
-            stat.aborted = item.value("aborted", std::uint64_t{0});
-            stat.retries_in = item.value("retries_in", std::uint64_t{0});
-            stat.bytes_out = item.value("bytes_out", std::uint64_t{0});
-            stat.bytes_in = item.value("bytes_in", std::uint64_t{0});
-            stat.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
-            stat.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
-            stat.latency_ms_last = item.value("latency_ms_last", 0.0);
-            stat.latency_ms_avg = item.value("latency_ms_avg", 0.0);
-            stat.latency_ms_p95 = item.value("latency_ms_p95", 0.0);
-            stat.last_used_unix = item.value("last_used_unix", 0.0);
-            s.providers.push_back(std::move(stat));
         }
     }
 
@@ -2309,29 +2668,9 @@ AdminLogs fetchLogs(std::string_view base_url, std::uint64_t since, std::size_t 
 
     if (const auto it = parsed.find("entries"); it != parsed.end() && it->is_array()) {
         for (const auto &item : *it) {
-            if (!item.is_object()) {
-                continue;
+            if (item.is_object()) {
+                out.entries.push_back(logEntryFromJson(item));
             }
-            LogEntry entry;
-            entry.seq = item.value("seq", std::uint64_t{0});
-            entry.time_unix = item.value("time_unix", 0.0);
-            entry.level = item.value("level", std::string{"info"});
-            entry.request_id = item.value("request_id", std::string{});
-            entry.kind = item.value("kind", std::string{});
-            entry.model = item.value("model", std::string{});
-            entry.provider = item.value("provider", std::string{});
-            entry.upstream_model = item.value("upstream_model", std::string{});
-            entry.status = item.value("status", 0);
-            entry.stream = item.value("stream", false);
-            entry.failover = item.value("failover", false);
-            entry.attempt = item.value("attempt", 1);
-            entry.attempts_total = item.value("attempts_total", 1);
-            entry.latency_ms = item.value("latency_ms", 0.0);
-            entry.bytes = item.value("bytes", std::uint64_t{0});
-            entry.message = item.value("message", std::string{});
-            entry.request_body = item.value("request_body", std::string{});
-            entry.response_body = item.value("response_body", std::string{});
-            out.entries.push_back(std::move(entry));
         }
     }
     return out;

@@ -110,6 +110,13 @@ struct ServerConfig {
     bool log_bodies = false;
     // Bytes of a body kept when log_bodies is on.
     int log_body_limit = 2048;
+    // Keep telemetry across restarts: the counters, the per-relay stats and the
+    // newest slice of the request log are written to `<state dir>/telemetry.json`
+    // and read back at startup, so `status` and the console do not reset to zero
+    // every time the process is restarted. Bodies are only included when
+    // log_bodies is also on. Turn this off for a run that must leave nothing
+    // behind on disk.
+    bool persist_telemetry = true;
     // Serve the built-in web console at /ui. On by default because the console
     // is the only telemetry surface a headless machine has; turn it off and the
     // routes do not exist at all. Keep it off — or set api_key — when the
@@ -649,6 +656,7 @@ std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text);
 
 std::string toJsonString(const Snapshot &snapshot);
 std::string toJsonString(const LogEntry &entry);
+std::string toJsonString(const ProviderStat &stat);
 std::string toJsonString(const ProviderProbe &probe);
 
 // The bearer the server expects for a request carrying `authorization` /

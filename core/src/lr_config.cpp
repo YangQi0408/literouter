@@ -247,6 +247,13 @@ ValidationReport validate(const AppConfig &config) {
         addIssue(report, ValidationIssue::Level::Warning, "server.log_capacity",
                  "a log smaller than 16 entries makes the live view useless");
     }
+    if (config.server.persist_telemetry && config.server.log_bodies) {
+        // Not an error: the operator asked for both. But bodies are prompts, and
+        // this combination is the one that puts them on disk.
+        addIssue(report, ValidationIssue::Level::Warning, "server.persist_telemetry",
+                 "persist_telemetry with log_bodies on writes request and response bodies "
+                 "to the telemetry file, where they outlive the process");
+    }
     if (config.server.api_key.empty() && config.server.host != "127.0.0.1" &&
         config.server.host != "localhost" && config.server.host != "::1") {
         addIssue(report, ValidationIssue::Level::Warning, "server.api_key",

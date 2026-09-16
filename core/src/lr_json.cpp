@@ -221,6 +221,7 @@ ServerConfig serverFromJson(const json &node) {
     out.log_capacity = readInt(node, "log_capacity", out.log_capacity);
     out.log_bodies = readBool(node, "log_bodies", out.log_bodies);
     out.log_body_limit = readInt(node, "log_body_limit", out.log_body_limit);
+    out.persist_telemetry = readBool(node, "persist_telemetry", out.persist_telemetry);
     out.web_ui = readBool(node, "web_ui", out.web_ui);
     out.language = readString(node, "language", out.language);
     out.ui_scale = readDouble(node, "ui_scale", out.ui_scale);
@@ -240,6 +241,7 @@ json serverToJson(const ServerConfig &value) {
     node["log_capacity"] = value.log_capacity;
     node["log_bodies"] = value.log_bodies;
     node["log_body_limit"] = value.log_body_limit;
+    node["persist_telemetry"] = value.persist_telemetry;
     node["web_ui"] = value.web_ui;
     node["language"] = value.language;
     node["ui_scale"] = value.ui_scale;
@@ -473,6 +475,13 @@ std::string toJsonString(const Snapshot &snapshot) {
     node["health"] = std::move(health);
 
     return node.dump(2);
+}
+
+// Its own overload rather than a private branch of the snapshot: the persisted
+// telemetry file needs the same shape as the admin API, and a second copy of
+// this field list is a field that will eventually be added to only one of them.
+std::string toJsonString(const ProviderStat &stat) {
+    return statToJson(stat).dump();
 }
 
 std::string toJsonString(const LogEntry &entry) {
