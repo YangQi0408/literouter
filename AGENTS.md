@@ -13,25 +13,65 @@
 ```text
 literouter/
 ├── mcpp.toml                   # 虚拟工作区总清单，锁定工具链与第三方依赖
-├── AGENTS.md                   # 【当前文件】Agent 操作指南与开发规范
+├── AGENTS.md                   # 【当前文件】Agent 操作指南；CLAUDE.md 是指向它的符号链接
 ├── README.md                   # 中文项目总览（默认）
 ├── README_en.md                # 英文项目总览
+├── CHANGELOG.md                # ⚠️ 改动会触发自动发版，见规则 7
 ├── docs/                       # 专题技术与使用文档
 │   ├── zh/                     # 中文详细文档（configuration, routing-failover, protocols-api 等）
-│   └── en/                     # 英文详细文档
+│   ├── en/                     # 英文详细文档
+│   └── release-notes/          # ⚠️ 新增文件会触发自动发版，见规则 7
 ├── core/                       # 核心库：literouter.core（C++23 静态库模块）
 │   ├── src/literouter_core.cppm# 唯一对外公开接口（契约层）
-│   ├── src/*.cpp               # 内部实现单元（未导出第三方依赖）
-│   └── tests/                  # 测试套件（test_*.cpp）
+│   ├── src/*.cpp               # 内部实现单元（未导出第三方依赖），分工见下表
+│   └── tests/                  # 测试套件（test_*.cpp，每文件编译成一个独立二进制）
+│       └── lr_test_check.h     # 断言宏与 EnvGuard；命名为 .h 以免被当作测试构建
 ├── cli/                        # 命令行前端：literouter 可执行文件 (CLI11)
 │   └── src/                    # cli_main.cpp 及各类 cli_cmd_*.cpp
 ├── gui/                        # 桌面控制台前端：literouter-gui 可执行文件 (EUI-NEO)
-│   └── src/                    # gui_main.cpp, app_state.h, pages/, components/
+│   ├── src/                    # gui_main.cpp, app_state.h, pages/, components/
+│   └── hide_zlib.ver           # Linux 链接必需的版本脚本，见规则 8
 └── web/                        # 内置 Web 控制台（React 19 + TypeScript + Vite + Tailwind + shadcn/ui）
     ├── src/                    # 前端源码（views/, components/, store.tsx 等）
     ├── dist/                   # 构建产物（index.html / app.css / app.js / favicon.svg）
     └── package.json            # 前端依赖配置
 ```
+
+`core` 的实现单元分工：
+
+| 单元 | 职责 |
+|---|---|
+| `lr_proxy.cpp` | 监听与路由注册、入站协议识别、响应头闸门、遥测环形缓冲、Admin API、内置 Web 控制台 |
+| `lr_protocol.cpp` | 四种协议的请求/响应双向转换与 `StreamProtocolAdapter` |
+| `lr_router.cpp` | `candidatesFor()` 候选链推导与熔断器状态机（纯决策层，不持有 socket） |
+| `lr_upstream.cpp` | 单次 `upstreamPost()` / `probeProvider()`，不含路由逻辑 |
+| `lr_config.cpp` | `ConfigStore` 加载与原子保存、路径解析、`validate()` |
+| `lr_json.cpp` | 配置与遥测的 JSON 编解码 |
+| `lr_i18n.cpp` | C++ 侧 en/zh 字典（CLI 与 GUI 共用） |
+| `lr_util.cpp` | 字符串、格式化、URL 拆分等小工具 |
+
+### 1.1 请求生命周期与多协议网关
+
+一次请求穿过四层，读懂这条链路才能安全改动 `core`：
+
+```text
+客户端 ──▶ lr_proxy.cpp ──▶ lr_router.cpp ──▶ lr_protocol.cpp ──▶ lr_upstream.cpp ──▶ 上游
+            识别入站协议      推导候选链         仅在协议不一致时转换      单次 HTTP 调用
+            响应头闸门        熔断器判定
+```
+
+**入站协议由请求路径决定**（`lr_proxy.cpp` 中的 `ingress_protocol` 判定，约 726 行起）：
+
+| 入站路径 | `ingress_protocol` |
+|---|---|
+| `/v1/chat/completions`、`/v1/completions` | `openai` |
+| `/v1/messages` | `anthropic` |
+| `/v1beta/models/{model}:generateContent`（及 `streamGenerateContent`） | `gemini` |
+| `/v1/responses` | `openai_responses` |
+
+**出站协议**来自 `ProviderConfig::protocol`。两者一致时走 `same_protocol` 分支——**零 JSON 解析、原样直通**；不一致时才经 `adaptXToChat` / `adaptChatToX` 双向转换，流式交给有状态的 `StreamProtocolAdapter`（同协议时它同样只做透传）。
+
+> ⚠️ Gemini 把模型名嵌在 URL path 而非请求体里。直通分支下做模型重命名时，Gemini 必须改 path，其余协议改 body。
 
 ---
 
@@ -67,6 +107,22 @@ literouter/
 - `mcpp` 会在项目的 `target/` 目录下放置编译锁和对象缓存。
 - 若有多个 Agent 正在并发修改/构建，**切勿直接在工作区根目录下并发执行构建**。应将代码复制到独立的沙盒（例如 `/tmp/lr-sandbox`）中进行编译与单测，验证全绿后再复制回本工程目录。
 
+### 规则 7：`CHANGELOG.md` 与 `docs/release-notes/` 会触发自动发版
+- `.github/workflows/release.yml` 的触发条件是 push 到 `main` 且改动 `CHANGELOG.md` 或 `docs/release-notes/**.md`，随后会**自动打 tag 并发布 GitHub Release**。
+- **未经用户明确要求发版，不要修改这两处**。顺手更新一行 changelog 就足以对外发出一个版本。
+- 常规的功能与修复说明写在提交信息里即可。
+
+### 规则 8：`gui/hide_zlib.ver` 不可移动或改名
+- 该版本脚本隐藏 GUI 主程序中的 `deflate*` / `inflate*` 符号，避免与 `libgio-2.0.so` 动态加载的 `libz.so` 冲突。
+- `gui/mcpp.toml` 的 `[target.linux.build]` 以相对路径 `../../../hide_zlib.ver` 引用它（相对于 mcpp 的构建工作目录）。移动、改名或调整 `target/` 层级都会直接破坏 Linux GUI 的链接。
+
+### 规则 9：用户可见字符串必须补齐对应字典
+- 本项目存在**两套彼此独立**的 i18n 实现，共三份字典：
+  1. **CLI 与 GUI**：共用 C++ 侧的 `literouter::i18n::tr()`，中文字典是 `core/src/lr_i18n.cpp` 的 `kZhTranslations`（英文即源码里的原文，无需单独字典）；
+  2. **Web 控制台**：完全独立的 `web/src/lib/i18n.tsx`，内含 `en` / `zh` 两个 map，两边都要补。
+- **缺失翻译会静默回退英文原文**（`lr_i18n.cpp` 中 `tr()` 直接 `return text;`），既不报错也不构建失败，只会在界面上露出一句英文。
+- 因此新增任何用户可见字符串，都必须同步补上对应字典条目；改动 Web 文案时 `en` 与 `zh` 两个 map 都要补。
+
 ---
 
 ## 3. 标准命令与操作速查
@@ -85,10 +141,24 @@ mcpp build -p gui
 ```
 
 ### 3.2 运行测试
+
+`mcpp` 把 `core/tests/**/*.cpp` 中每个文件编译成一个独立二进制，以退出码判定成败，因此没有外部测试框架。
+
 ```bash
-# 运行 core 测试套件（必须全部 PASS）
+# 运行 core 全部 10 个测试套件（必须全部 PASS）
 mcpp test -p core
+
+# 只列出套件名，不构建不运行
+mcpp test -p core --list
+
+# 只跑单个套件（位置参数即模式匹配，调试时优先用这个）
+mcpp test -p core test_proxy
+
+# test_proxy 会绑定真实端口并起线程，慢机器上可放宽超时（默认 300 秒）
+mcpp test -p core test_proxy --timeout 600
 ```
+
+当前套件：`test_config`、`test_i18n`、`test_json_api`、`test_malformed`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`。
 
 ### 3.3 运行 CLI
 ```bash
@@ -117,7 +187,39 @@ mcpp run -p cli -- config validate
 ```bash
 # 启动桌面控制台 (需图形环境与 OpenGL)
 mcpp run -p gui
+
+# 无头冒烟：各页面渲染固定帧数后自动退出（CI 用 xvfb-run 包一层）
+LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
+
+# 钉住单页做确定性验证，避免定时轮播导致抓帧抓错页面
+LITEROUTER_GUI_SMOKE=1 LITEROUTER_GUI_PAGE=2 mcpp run -p gui
 ```
+
+### 3.5 开发期常用环境变量
+
+完整清单见 `docs/{zh,en}/environment.md`，以下是改代码时最常用的几个：
+
+| 环境变量 | 用途 |
+|---|---|
+| `LITEROUTER_CONFIG` | 指向临时配置文件，**避免污染真实 `~/.config/literouter/config.json`**，测试套件正是靠它隔离 |
+| `LITEROUTER_STATE_DIR` | 指向临时状态目录（PID 文件等），同上 |
+| `LITEROUTER_CA_BUNDLE` | 指定上游 HTTPS 校验用的 CA 包；上游报"证书被拒"时先查这个 |
+| `LITEROUTER_GUI_SMOKE` / `LITEROUTER_GUI_PAGE` | GUI 无头冒烟与页面钉选 |
+| `LITEROUTER_WEB_DIR` | `#embed` 不可用时（如 ISO 严格模式的 GCC）从该目录按请求读取 Web 产物 |
+| `LITEROUTER_LANG` | 强制 CLI/GUI 语言，验证 i18n 时用（见规则 9） |
+
+### 3.6 编辑器：clangd 必须用 mcpp 自带的那一份
+
+C++ 模块的 `std.pcm` 与编译器构建**严格绑定**，系统 clangd 会以 `ast_file_different_branch` 拒绝加载。必须指向 mcpp 工具链内的 clangd 并开启模块支持：
+
+```jsonc
+{
+  "clangd.path": "<mcpp registry>/data/xpkgs/xim-x-llvm-tools/22.1.8/bin/clangd",
+  "clangd.arguments": ["--experimental-modules-support"]
+}
+```
+
+`compile_commands.json` 由 `mcpp build` 生成（也可用 `mcpp build --configure-only` 只生成不编译），它与 `.vscode/` 均已被 gitignore，需各自在本地配置。
 
 ---
 
@@ -161,11 +263,30 @@ mcpp run -p gui
 ## 5. 常见任务实战指南
 
 ### 任务 A：在 Core 中新增配置字段
-1. 在 `core/src/literouter_core.cppm` 的相应结构体（如 `ServerConfig` 或 `ProviderConfig`）中添加带默认值的字段；
-2. 在 `core/src/lr_json.cpp` 中同步修改 JSON 序列化与反序列化逻辑；
-3. 在 `core/src/lr_config.cpp` 中检查是否需要补充 `validate()` 规则；
-4. 在 `core/tests/test_config.cpp` 中增加新字段的默认值验证与 round-trip 单测；
-5. 执行 `mcpp test -p core` 确认所有测试通过。
+
+一个配置字段要真正可用，扇面横跨 core 与三个前端。只改 core 的话字段能存能读，但 CLI、GUI、Web 三处界面都看不到它——这是最容易漏的一类改动。以最近新增的 `server.web_ui` 为参照，完整清单如下：
+
+**Core（必做）**
+1. `core/src/literouter_core.cppm`：在 `ServerConfig` / `ProviderConfig` / `RouteConfig` 中添加**带默认值**的字段，并补一行注释说明它的取值含义；
+2. `core/src/lr_json.cpp`：同步序列化与反序列化（缺失时必须回落到默认值，旧配置文件不能因此加载失败）；
+3. `core/src/lr_config.cpp`：按需补 `validate()` 规则，路径写成 `providers[2].base_url` 这种可定位形式；
+4. `core/tests/test_config.cpp`：补默认值断言与 round-trip 单测。
+
+**前端（凡是用户需要看见或修改的字段，都要做）**
+
+5. `gui/src/pages/settings.h`（或对应页面）：加控件，注意规则 9 的字典；
+6. `web/src/lib/api.ts`：补 TypeScript 类型定义；
+7. `web/src/views/Settings.tsx`（或对应视图）：加控件；
+8. `web/src/store.tsx`：若涉及前端状态流转；
+9. `web/src/lib/i18n.tsx`：`en` 与 `zh` **两个 map 都要补**文案；
+10. `cli/src/cli_cmd_serve.cpp`：若该字段需要命令行开关覆盖。
+
+**若字段影响服务端行为**
+
+11. `core/src/lr_proxy.cpp`：实现实际行为；
+12. `core/tests/test_proxy.cpp`：补行为断言。
+
+最后执行 `mcpp test -p core` 与 `mcpp build --workspace` 确认全绿。
 
 ### 任务 B：在 CLI 中增加一个新的子命令
 1. 在 `cli/src/` 下创建 `cli_cmd_<name>.cpp`；
@@ -195,9 +316,51 @@ mcpp run -p gui
 5. 控制台外壳可免密钥加载，但所有数据接口仍受 `server.api_key` 保护；不要给 `/__literouter/*` 或 `/ui/*` 添加 CORS 头（请求日志含提示词）；
 6. 在 `core/tests/test_proxy.cpp` 的 15 号分组补充断言（页面可取、未知资源 404、脱敏、CORS 边界、按 id 探测、PUT 配置回写、`web_ui` 开关），并运行 `mcpp test -p core`。
 
+### 任务 E：新增或修改一种上游协议
+
+先读 §1.1 弄清入站/出站协议的判定与直通分支，再动手。改动集中在 `core/src/lr_protocol.cpp`，需要成对补齐：
+
+1. `resolveChatPath()` / `resolveModelsPath()`：该协议的上游路径推导；
+2. **请求方向** `adaptXToChat()`：把入站请求归一成 OpenAI Chat Completion；
+3. **响应方向** `adaptChatToX()`：把 OpenAI 响应转回该协议的形态。两个方向必须同时存在，否则非流式路径会一头通一头断；
+4. `StreamProtocolAdapter::Impl`：流式增量转换（同协议时保持零转换透传）；
+5. 若新增的是**入站**协议，还要在 `lr_proxy.cpp` 注册路由并扩展 `ingress_protocol` 判定；
+6. `core/tests/test_protocol.cpp` 补 round-trip 断言，`core/tests/test_proxy.cpp` 的 14 号分组补入站与直通断言。
+
+> ⚠️ 两处易错：Gemini 的模型名在 URL path 里（见 §1.1 的警示）；流式转换是有状态的，不能假设一个 chunk 恰好是一个完整 SSE 事件。
+
 ---
 
-## 6. 完成定义 (Definition of Done - DoD)
+## 6. CI 会卡住的地方
+
+`.github/workflows/ci.yml` 在 Linux / macOS / Windows 三平台跑同一套流程。本地自查时优先覆盖以下几处——它们是最常见的 CI 失败原因：
+
+1. **`web/dist` 同步检查**：Linux 任务会执行 `git diff --exit-code -- web/dist`。改了 `web/src/` 却没重新构建并提交 `web/dist/`，CI 直接失败（对应任务 D 第 2 条）。
+2. **GUI 构建的平台差异**：macOS 上 GUI 构建标记为 `continue-on-error`（zlib 共享链接缺 C++ 运行时符号），**Linux 与 Windows 上不容许失败**。
+3. **CLI 冒烟**：`--version` → `config init --force` → `config validate` 三连。注意 `--force` 会覆写配置文件，所以本地跑之前先设好 `LITEROUTER_CONFIG`。
+4. **GUI 无头冒烟**：仅 Linux，`xvfb-run` + `LITEROUTER_GUI_SMOKE=1`，并以 `LIBGL_ALWAYS_SOFTWARE=1` 强制软件光栅化。
+
+`release.yml` 是独立的发版流水线，触发条件见规则 7。
+
+---
+
+## 7. 提交信息规范
+
+严格遵循 Conventional Commits，scope 可多值逗号分隔，与仓库现有历史保持一致：
+
+```text
+feat(core,cli): add dynamic web_ui toggle and PUT /__literouter/config endpoint
+fix(gui,build): eliminate zlib duplicate symbol warning and optimize build concurrency
+test(core): add coverage for web console bundle, config PUT, and web_ui toggle
+docs: modularize documentation into docs/ with Chinese and English versions
+ci: unify multi-platform CI into single workflow
+```
+
+常用 type：`feat` / `fix` / `docs` / `test` / `ci` / `chore` / `refactor`。常用 scope：`core` / `cli` / `gui` / `web` / `build` / `release` / `test`。描述用英文小写祈使句，不加句号。
+
+---
+
+## 8. 完成定义 (Definition of Done - DoD)
 
 任何 Agent 在声称任务完成或提交代码前，必须对照以下清单进行自查：
 
@@ -205,5 +368,10 @@ mcpp run -p gui
 - [ ] `mcpp build --workspace` 执行无误，全工作区无 warning、无 error；
 - [ ] 涉及 CLI 修改的，手动运行一次对应子命令确认控制台输出无乱码、对齐正常；
 - [ ] 涉及配置变动的，确认环境变量密钥引用未被意外展开成明文；
+- [ ] 涉及新增配置字段的，四个前端（CLI / GUI / Web / 文档）均已同步，见任务 A 的完整清单；
+- [ ] 涉及新增用户可见字符串的，C++ 与 Web 两侧字典均已补齐（规则 9）；
+- [ ] 涉及前端改动的，`web/dist/` 已重新构建并与 `web/src/` 一同提交（CI 会 diff 校验）；
+- [ ] 未擅自改动 `CHANGELOG.md` 或 `docs/release-notes/`（规则 7）；
 - [ ] 未在任何 member 中遗留 `src/main.cpp` 或临时测试垃圾文件；
+- [ ] 提交信息符合第 7 节的 Conventional Commits 规范；
 - [ ] 保持代码风格整洁，保留所有既有注释和文档。
