@@ -181,6 +181,24 @@ void testHumanDuration() {
     LR_CHECK_EQ(literouter::humanDuration(90061.0), "1d 1h");
 }
 
+void testHumanUptime() {
+    LR_GROUP("humanUptime never drops the seconds");
+    LR_CHECK_EQ(literouter::humanUptime(-1.0), "—");
+    LR_CHECK_EQ(literouter::humanUptime(0.0), "0s");
+    LR_CHECK_EQ(literouter::humanUptime(0.9), "0s");
+    LR_CHECK_EQ(literouter::humanUptime(59.0), "59s");
+    LR_CHECK_EQ(literouter::humanUptime(60.0), "1m 0s");
+    LR_CHECK_EQ(literouter::humanUptime(192.0), "3m 12s");
+    // Where humanDuration stops at "1h 2m", this keeps counting: a live tile
+    // that only moves once a minute reads as a frozen one.
+    LR_CHECK_EQ(literouter::humanUptime(3599.0), "59m 59s");
+    LR_CHECK_EQ(literouter::humanUptime(3600.0), "1h 0m 0s");
+    LR_CHECK_EQ(literouter::humanUptime(3725.0), "1h 2m 5s");
+    LR_CHECK_EQ(literouter::humanUptime(86399.0), "23h 59m 59s");
+    LR_CHECK_EQ(literouter::humanUptime(86400.0), "1d 0h 0m 0s");
+    LR_CHECK_EQ(literouter::humanUptime(90061.0), "1d 1h 1m 1s");
+}
+
 void testHexId() {
     LR_GROUP("hexId");
     const std::string id = literouter::hexId();
@@ -345,6 +363,7 @@ int main() {
     testHumanMillis();
     testHumanBytes();
     testHumanDuration();
+    testHumanUptime();
     testHexId();
     testSecureEquals();
     testSplitBaseUrl();
