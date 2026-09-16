@@ -144,6 +144,10 @@ public:
         return {"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n",
                 "data: {\"id\":\"chunk-2\",\"choices\":[{\"delta\":{\"content\":\"lo \"}}]}\n\n",
                 "data: {\"id\":\"chunk-3\",\"choices\":[{\"delta\":{\"content\":\"there\"}}]}\n\n",
+                // What OpenAI sends when the client asked for
+                // stream_options.include_usage. It is relayed untouched, and it
+                // is the only place a streamed answer states its token counts.
+                "data: {\"id\":\"chunk-4\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7}}\n\n",
                 "data: [DONE]\n\n"};
     }
 
@@ -719,6 +723,14 @@ void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxySe
     LR_CHECK(literouter::endsWith(hit.body, "data: [DONE]\n\n"));
     LR_CHECK_EQ(relay_a.chatRequests(), 1);
     LR_CHECK(relay_a.lastChatBody().find("\"stream\":true") != std::string::npos);
+
+    // The counts a streamed answer reports in its final chunk are accounted for
+    // even though the chunk itself is passed through untouched — the body above
+    // is byte-identical to the relay's own transcript, and these two numbers
+    // come out of it.
+    const literouter::Snapshot streamed = proxy.snapshot();
+    LR_CHECK_EQ(streamed.tokens_prompt, static_cast<std::uint64_t>(11));
+    LR_CHECK_EQ(streamed.tokens_completion, static_cast<std::uint64_t>(7));
 
     LR_GROUP("4b. a streamed request fails over when the first relay 429s");
     proxy.resetStats();

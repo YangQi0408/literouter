@@ -322,6 +322,92 @@ void testStreamProtocolAdapterOpenAiPassthrough() {
     LR_CHECK_EQ(adapter.finish(), "");
 }
 
+void testStreamUsageObserver() {
+    LR_GROUP("StreamUsageObserver reads the counts each protocol hides in its tail");
+    using literouter::StreamUsageObserver;
+    using literouter::TokenUsage;
+    // A predicate rather than a pair the assertions compare: a comma (or a
+    // braced initializer) inside a macro argument is a second argument, and both
+    // would have to be parenthesized at every call site.
+    const auto isCounts = [](const StreamUsageObserver &observer, std::uint64_t prompt,
+                             std::uint64_t completion) {
+        const TokenUsage usage = observer.usage();
+        return usage.prompt == prompt && usage.completion == completion;
+    };
+
+    {
+        // OpenAI, when the client asked for stream_options.include_usage: one
+        // final chunk carries both numbers, after the deltas.
+        StreamUsageObserver observer;
+        observer.feed("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n");
+        LR_CHECK(isCounts(observer, 0, 0));
+        observer.feed("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7}}\n\n");
+        LR_CHECK(isCounts(observer, 11, 7));
+        observer.feed("data: [DONE]\n\n");
+        LR_CHECK(isCounts(observer, 11, 7));
+    }
+    {
+        // The chunk boundary is not obliged to fall on an event boundary — it
+        // can even fall inside the word "usage".
+        StreamUsageObserver observer;
+        observer.feed("data: {\"choices\":[],\"usa");
+        LR_CHECK(isCounts(observer, 0, 0));
+        observer.feed("ge\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n");
+        LR_CHECK(isCounts(observer, 3, 4));
+    }
+    {
+        // Anthropic splits the pair: input_tokens in message_start, the final
+        // output_tokens in message_delta.
+        StreamUsageObserver observer;
+        observer.feed("event: message_start\ndata: {\"type\":\"message_start\","
+                      "\"message\":{\"usage\":{\"input_tokens\":25,\"output_tokens\":1}}}\n\n");
+        LR_CHECK(isCounts(observer, 25, 1));
+        observer.feed("event: message_delta\ndata: {\"type\":\"message_delta\","
+                      "\"usage\":{\"output_tokens\":42}}\n\n");
+        // The larger of the two wins: a cumulative count must not be added to
+        // the partial one it grew out of.
+        LR_CHECK(isCounts(observer, 25, 42));
+    }
+    {
+        // Gemini reports a cumulative usageMetadata on every chunk.
+        StreamUsageObserver observer;
+        observer.feed("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"a\"}]}}],"
+                      "\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":2}}\n\n");
+        observer.feed("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"b\"}]}}],"
+                      "\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":6}}\n\n");
+        LR_CHECK(isCounts(observer, 9, 6));
+    }
+    {
+        // Without ?alt=sse Gemini answers with an array of the same objects.
+        StreamUsageObserver observer;
+        observer.feed("[{\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":5}}]\n");
+        LR_CHECK(isCounts(observer, 4, 5));
+    }
+    {
+        // OpenAI Responses nests the pair under response.usage.
+        StreamUsageObserver observer;
+        observer.feed("event: response.completed\ndata: {\"type\":\"response.completed\","
+                      "\"response\":{\"usage\":{\"input_tokens\":8,\"output_tokens\":13}}}\n\n");
+        LR_CHECK(isCounts(observer, 8, 13));
+    }
+    {
+        // A relay that never names usage is not guessed at, and neither the
+        // literal "usage" in a delta nor a broken event is mistaken for one.
+        StreamUsageObserver observer;
+        observer.feed("data: {\"choices\":[{\"delta\":{\"content\":\"usage of words\"}}]}\n\n");
+        observer.feed("data: {\"usage\":not-json}\n\n");
+        observer.feed("[DONE]\n");
+        LR_CHECK(isCounts(observer, 0, 0));
+    }
+    {
+        // Counts sent as strings, or negative, are left alone rather than
+        // read as something they are not.
+        StreamUsageObserver observer;
+        observer.feed("data: {\"usage\":{\"prompt_tokens\":\"many\",\"completion_tokens\":-3}}\n\n");
+        LR_CHECK(isCounts(observer, 0, 0));
+    }
+}
+
 void testAnthropicIngressAdaptation() {
     LR_GROUP("Anthropic ingress adaptation (Anthropic -> Chat -> Anthropic)");
 
@@ -525,6 +611,7 @@ int main() {
     testStreamProtocolAdapterAnthropic();
     testStreamProtocolAdapterGemini();
     testStreamProtocolAdapterOpenAiPassthrough();
+    testStreamUsageObserver();
     testAnthropicIngressAdaptation();
     testGeminiIngressAdaptation();
     testMultiProtocolStreaming();

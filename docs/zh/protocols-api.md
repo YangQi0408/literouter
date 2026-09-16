@@ -147,6 +147,8 @@ curl http://127.0.0.1:8787/v1/messages \
 - **零解析开销**：入站请求体无需经过完整的 JSON DOM 树构建，直接流向目标上游套接字（仅在需要重命名模型时做轻量替换）；
 - **零缓冲透传**：SSE 数据块到达后即刻推入客户端套接字，内存无额外拼装拷贝，延迟达到硬件和网络极限。
 
+> **流式 token 统计**：为统计用量，流经的每个数据块会做一次子串匹配，只有命中 `usage` / `usageMetadata` 的块才会被 JSON 解析（OpenAI 通常只有最后一个块），因此上面的“零解析开销”在语义上仍然成立。计数按出现过的**最大值**合并：Anthropic 把输入与输出分别放在 `message_start` 与 `message_delta`，Gemini 在每个块里累计上报，OpenAI 仅在客户端开启 `stream_options.include_usage` 时于流尾给出一次（`literouter` **不会**替你注入该参数，以免改动客户端看到的报文）。若上游始终未报告 usage，该次请求的 token 计为 0，不做估算或猜测。
+
 ### 跨协议双向转换 (Cross-Protocol Translation)
 
 当客户端与上游协议不一致时，`literouter` 内部协议适配层（`core/src/lr_protocol.cpp`）无缝执行双向协议转换：

@@ -1201,4 +1201,138 @@ std::string StreamProtocolAdapter::finish() {
     return impl_->finish();
 }
 
+// ── stream usage ────────────────────────────────────────────────────────────
+
+namespace {
+
+// Far more than one event of any of the four protocols needs, and the bound on
+// what an unterminated one can cost.
+constexpr std::size_t kUsageCarryLimit = 8192;
+
+// The two numbers under every spelling these protocols use for them. A relay
+// advertising "OpenAI-compatible" may still answer with the newer
+// input/output naming, so both are read wherever a usage object turns up.
+void pullUsage(const json &node, std::uint64_t &prompt, std::uint64_t &completion) {
+    if (!node.is_object()) {
+        return;
+    }
+    const auto count = [&node](const char *key) -> std::uint64_t {
+        const auto it = node.find(key);
+        if (it == node.end()) {
+            return 0;
+        }
+        if (it->is_number_unsigned()) {
+            return it->get<std::uint64_t>();
+        }
+        if (it->is_number_integer()) {
+            return static_cast<std::uint64_t>(std::max<long long>(0, it->get<long long>()));
+        }
+        if (it->is_number_float()) {
+            const double value = it->get<double>();
+            return value > 0.0 ? static_cast<std::uint64_t>(value) : 0;
+        }
+        // A relay that sends the count as a string is not worth guessing at.
+        return 0;
+    };
+    prompt = std::max(prompt, std::max(count("prompt_tokens"), count("input_tokens")));
+    completion =
+        std::max(completion, std::max(count("completion_tokens"), count("output_tokens")));
+}
+
+// Anthropic and the Responses API both nest the usage object one level down,
+// under an envelope that carries the event's own name.
+void pullNested(const json &root, const char *key, std::uint64_t &prompt,
+                std::uint64_t &completion) {
+    const auto it = root.find(key);
+    if (it == root.end() || !it->is_object()) {
+        return;
+    }
+    pullUsage(*it, prompt, completion);
+    if (const auto inner = it->find("usage"); inner != it->end()) {
+        pullUsage(*inner, prompt, completion);
+    }
+}
+
+void absorbDocument(const json &root, std::uint64_t &prompt, std::uint64_t &completion) {
+    if (root.is_array()) {
+        // Gemini without ?alt=sse answers with an array of the same objects,
+        // and the proxy cannot assume the query string survived the relay.
+        for (const auto &item : root) {
+            absorbDocument(item, prompt, completion);
+        }
+        return;
+    }
+    if (!root.is_object()) {
+        return;
+    }
+    pullUsage(root, prompt, completion);
+    if (const auto it = root.find("usage"); it != root.end()) {
+        pullUsage(*it, prompt, completion);
+    }
+    pullNested(root, "message", prompt, completion);
+    pullNested(root, "response", prompt, completion);
+    if (const auto it = root.find("usageMetadata"); it != root.end() && it->is_object()) {
+        // Gemini spells them its own way, and reports them cumulatively on
+        // every chunk — which is why the merge is a max everywhere.
+        const auto count = [&it](const char *key) -> std::uint64_t {
+            const auto field = it->find(key);
+            return field != it->end() && field->is_number_unsigned()
+                       ? field->get<std::uint64_t>()
+                       : 0;
+        };
+        prompt = std::max(prompt, count("promptTokenCount"));
+        completion = std::max(completion, count("candidatesTokenCount"));
+    }
+}
+
+} // namespace
+
+void StreamUsageObserver::absorbLine(std::string_view line) {
+    // The cheap test that decides whether any of the work below runs at all.
+    if (line.find("usage") == std::string_view::npos) {
+        return;
+    }
+    if (startsWith(line, "event:") || startsWith(line, ":")) {
+        return;
+    }
+    if (startsWith(line, "data:")) {
+        line.remove_prefix(5);
+    }
+    const std::string body{trim(line)};
+    if (body.empty() || body == "[DONE]") {
+        return;
+    }
+    const json root = json::parse(body, nullptr, false);
+    if (root.is_discarded()) {
+        return;
+    }
+    absorbDocument(root, prompt_, completion_);
+}
+
+void StreamUsageObserver::feed(std::string_view chunk) {
+    if (chunk.empty()) {
+        return;
+    }
+    carry_.append(chunk);
+    // Whole lines only: an event split across two chunks is completed by the
+    // next feed, which is the whole reason the tail is kept.
+    std::size_t start = 0;
+    for (;;) {
+        const std::size_t newline = carry_.find('\n', start);
+        if (newline == std::string::npos) {
+            break;
+        }
+        absorbLine(std::string_view{carry_}.substr(start, newline - start));
+        start = newline + 1;
+    }
+    carry_.erase(0, start);
+    if (carry_.size() > kUsageCarryLimit) {
+        carry_.erase(0, carry_.size() - kUsageCarryLimit);
+    }
+}
+
+TokenUsage StreamUsageObserver::usage() const {
+    return TokenUsage{.prompt = prompt_, .completion = completion_};
+}
+
 } // namespace literouter

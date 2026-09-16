@@ -146,6 +146,8 @@ When the **client request protocol** matches the **upstream provider protocol** 
 - **Zero JSON DOM Overhead**: The payload streams directly without constructing an internal JSON tree (unless model renaming is required);
 - **Zero Copy SSE Forwarding**: Upstream SSE data blocks are streamed directly into the client socket with zero intermediate allocation, reaching theoretical network limits.
 
+> **Token counts in streams**: to account for usage, every chunk that passes is substring-matched, and only a chunk that mentions `usage` / `usageMetadata` is parsed as JSON (for OpenAI that is usually the final chunk alone), so the "zero JSON overhead" above still holds in substance. Counts merge by taking the **largest** seen: Anthropic reports input and output separately in `message_start` and `message_delta`, Gemini reports cumulatively on every chunk, and OpenAI reports once at the tail — but only when the client asked for `stream_options.include_usage`, which `literouter` deliberately does not inject on the client's behalf. A stream that never reports usage counts as zero; nothing is estimated.
+
 ### Cross-Protocol Bidirectional Translation
 
 When the incoming protocol differs from the upstream target, `literouter`'s translation layer (`core/src/lr_protocol.cpp`) adapts requests and streams on the fly:

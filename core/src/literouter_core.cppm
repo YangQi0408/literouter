@@ -546,6 +546,45 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Stream usage
+// ─────────────────────────────────────────────────────────────────────────────
+
+// What a streamed answer reported it used.
+struct TokenUsage {
+    std::uint64_t prompt = 0;
+    std::uint64_t completion = 0;
+};
+
+// Reads the token counts out of a stream as it goes by.
+//
+// A streamed reply names its usage somewhere in the tail — OpenAI (when the
+// client asked for `stream_options.include_usage`) in one final chunk,
+// Anthropic split between `message_start` and `message_delta`, Gemini in a
+// cumulative `usageMetadata` — so counting them means watching the stream pass,
+// because the non-streaming reader (`accumulateUsage`) never gets a body.
+//
+// It is deliberately not a parser of every chunk: a chunk whose text holds no
+// "usage" is not parsed at all, which is what keeps the same-protocol path's
+// "no per-chunk JSON parse" promise true. Counts merge by taking the largest
+// seen, since a protocol may report the same number cumulatively on every event
+// while another reports it once at the end.
+class StreamUsageObserver {
+public:
+    void feed(std::string_view chunk);
+    TokenUsage usage() const;
+
+private:
+    void absorbLine(std::string_view line);
+
+    // The tail of an event that has not been terminated yet: an SSE event can be
+    // split across two chunks, and so can the word "usage".
+    std::string carry_;
+    std::uint64_t prompt_ = 0;
+    std::uint64_t completion_ = 0;
+};
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Proxy server
 //
 // Owns the listening socket and the worker pool. `start` binds and returns;

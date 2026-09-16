@@ -1621,11 +1621,16 @@ struct ProxyServer::Impl {
             stream_type = "text/event-stream";
         }
 
+        // Counting a streamed answer's tokens means watching the stream: the
+        // usage block sits somewhere in the tail, and the reader the
+        // non-streaming path uses never gets a body here to read it from.
+        auto usage_observer = std::make_shared<StreamUsageObserver>();
+
         res.set_chunked_content_provider(
             stream_type,
             [this, bridge, client, provider_id, upstream_model, request_ctx, failover, absorbed,
              stream_ok, attempt_number, total_attempts, attempt_started,
-             adapter](std::size_t, h::DataSink &sink) -> bool {
+             adapter, usage_observer](std::size_t, h::DataSink &sink) -> bool {
                 for (;;) {
                     std::string chunk;
                     bool done = false;
@@ -1675,10 +1680,11 @@ struct ProxyServer::Impl {
                         }
                         const double latency = (nowUnix() - attempt_started) * 1000.0;
                         const std::uint64_t bytes = bridge->bytes_out.load();
+                        const TokenUsage tokens = usage_observer->usage();
                         recordAttempt(provider_id,
                                       stream_ok ? AttemptOutcome::Success
                                                 : AttemptOutcome::Failure,
-                                      latency, bytes, 0, 0);
+                                      latency, bytes, tokens.prompt, tokens.completion);
                         if (absorbed) {
                             noteAbsorbed(provider_id);
                         }
@@ -1692,6 +1698,8 @@ struct ProxyServer::Impl {
                     if (chunk.empty()) {
                         continue;
                     }
+                    // Watched before conversion: the counts are the upstream's.
+                    usage_observer->feed(chunk);
 
                     std::string send_chunk;
                     if (adapter) {
