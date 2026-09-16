@@ -129,7 +129,7 @@ void runStatus(Context &ctx) {
     KeyValues header;
     header.add("address", url);
     header.add("version", s.version.empty() ? "—" : s.version);
-    header.add("uptime", literouter::humanDuration(s.uptime_sec));
+    header.add("uptime", literouter::humanUptime(s.uptime_sec));
     header.add("config", s.config_path.empty() ? "—" : s.config_path);
     header.print();
 

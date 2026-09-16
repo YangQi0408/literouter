@@ -459,6 +459,30 @@ std::string humanDuration(double seconds) {
     return std::format("{}s", secs);
 }
 
+// Same shape as humanDuration, minus the compaction: a total that a console
+// repaints every second has to end in seconds, or a server up for an hour looks
+// like a clock that stopped between minute changes.
+std::string humanUptime(double seconds) {
+    if (seconds < 0.0) {
+        return "—";
+    }
+    const auto total = static_cast<long long>(seconds);
+    const long long days = total / 86400;
+    const long long hours = (total % 86400) / 3600;
+    const long long minutes = (total % 3600) / 60;
+    const long long secs = total % 60;
+    if (days > 0) {
+        return std::format("{}d {}h {}m {}s", days, hours, minutes, secs);
+    }
+    if (hours > 0) {
+        return std::format("{}h {}m {}s", hours, minutes, secs);
+    }
+    if (minutes > 0) {
+        return std::format("{}m {}s", minutes, secs);
+    }
+    return std::format("{}s", secs);
+}
+
 std::string hexId(std::size_t bytes) {
     // std::random_device on some libc++ builds is deterministic; mixing in the
     // clock and the thread id costs nothing and makes a collision unlikely

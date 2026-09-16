@@ -695,6 +695,10 @@ std::string humanMillis(double ms);
 std::string humanBytes(std::uint64_t bytes);
 // "3m 12s"
 std::string humanDuration(double seconds);
+// "3m 12s", "1h 2m 5s" — like humanDuration, but it never drops the seconds.
+// For a running total that a console repaints every second, a formatter that
+// coarsens to minutes past the first hour is a clock that looks stopped.
+std::string humanUptime(double seconds);
 
 std::string hexId(std::size_t bytes = 8);
 double nowUnix();

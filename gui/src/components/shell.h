@@ -137,7 +137,7 @@ inline void composeSidebar(eui::Ui& ui, float width, float height) {
     ui.text("shell.status.uptime")
         .position(18.0f, stripY + 62.0f)
         .size(width - 36.0f, 18.0f)
-        .text(running ? std::string(literouter::i18n::tr("up ")) + literouter::humanDuration(state.snapshot.uptime_sec)
+        .text(running ? std::string(literouter::i18n::tr("up ")) + literouter::humanUptime(state.snapshot.uptime_sec)
                       : std::string(literouter::i18n::tr("listener closed")))
         .fontSize(12.0f)
         .lineHeight(16.0f)
