@@ -160,7 +160,7 @@
 
 ### 遥测持久化
 
-`persist_telemetry` 为 `true`（默认）时，服务会把以下数据写入 **状态目录**（见[环境变量参考手册](environment.md)）下的 `telemetry.json`，并在下一次启动时读回，因此 `literouter status`、`/ui` 控制台与 GUI 不会在重启后归零：
+`persist_telemetry` 为 `true`（默认）时，服务会把以下数据写入 **状态目录**（见[环境变量参考手册](environment.md)）下的 `telemetry-<port>.json`（`<port>` 为实例实际绑定的端口），并在下一次启动时读回，因此 `literouter status`、`/ui` 控制台与 GUI 不会在重启后归零：
 
 - 全局计数器：`total_requests` / `total_success` / `total_failure` / `bytes_out` / `tokens_*` / 平均延迟；
 - 逐中转站统计：请求数、成功/失败/中断数、重试吸收数、进出字节、token 数与延迟；

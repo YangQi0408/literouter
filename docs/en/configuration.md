@@ -160,7 +160,7 @@ You can override the default configuration path at any time via:
 
 ### Telemetry Persistence
 
-With `persist_telemetry` on (the default), the server writes the following to `telemetry.json` in the **state directory** (see the [Environment Variables Reference](environment.md)) and reads it back on the next start, so `literouter status`, the `/ui` console and the GUI do not reset to zero across a restart:
+With `persist_telemetry` on (the default), the server writes the following to `telemetry-<port>.json` in the **state directory** (the port being the one the instance actually bound) (see the [Environment Variables Reference](environment.md)) and reads it back on the next start, so `literouter status`, the `/ui` console and the GUI do not reset to zero across a restart:
 
 - Global counters: `total_requests` / `total_success` / `total_failure` / `bytes_out` / `tokens_*` / average latency;
 - Per-relay stats: requests, successes/failures/aborts, absorbed retries, bytes in and out, tokens and latency;

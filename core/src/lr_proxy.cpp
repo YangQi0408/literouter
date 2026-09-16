@@ -743,7 +743,7 @@ struct ProxyServer::Impl {
     //
     // Counters, per-relay stats and the request ring are all in memory, so
     // without this every restart reset `status` to zeros and emptied the log.
-    // They are written to `<state dir>/telemetry.json` on a short timer and on
+    // They are written to `<state dir>/telemetry-<port>.json` on a short timer and on
     // stop(), and read back once per process at the first start().
     //
     // The path is fixed when the server starts and the switch is what moves at
@@ -1959,15 +1959,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         std::scoped_lock lock{impl_->telemetry_mutex};
         impl_->log.setCapacity(static_cast<std::size_t>(std::max(16, config.server.log_capacity)));
     }
-    // Read once per process, before anything can be counted: a later start()
-    // (the console's Stop then Start) already holds this process's telemetry in
-    // memory, and re-reading the file would drag the counters backwards.
-    impl_->state_path = defaultStateDir() / "telemetry.json";
     impl_->setPersistence(config.server.persist_telemetry);
-    if (!impl_->state_restored) {
-        impl_->state_restored = true;
-        impl_->loadState();
-    }
     // Before binding, because the bind cannot report it: httplib shares the port
     // between instances, and only one of them can be the one the operator means.
     if (config.server.port != 0) {
@@ -2485,6 +2477,20 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         bound = config.server.port;
     }
     impl_->bound_port.store(bound);
+    // The telemetry file belongs to the instance, and the port is what names it.
+    // Computed here rather than before the bind for two reasons: a config asking
+    // for port 0 has no name until the kernel picks one, and the accept loop has
+    // not started yet, so nothing can be counted before the previous run's
+    // numbers are back in place.
+    //
+    // Read once per process: a later start() (the console's Stop then Start)
+    // already holds this process's telemetry in memory, and re-reading the file
+    // would drag the counters backwards.
+    impl_->state_path = defaultTelemetryPath(bound);
+    if (!impl_->state_restored) {
+        impl_->state_restored = true;
+        impl_->loadState();
+    }
     // Named by the port actually bound: a config asking for port 0 is otherwise
     // unidentifiable, and the file is what a later start reads to name the
     // process holding the port it wants.

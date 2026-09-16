@@ -83,6 +83,10 @@ std::filesystem::path defaultStateDir() {
     return userHome() / ".local" / "state" / "literouter";
 }
 
+std::filesystem::path defaultTelemetryPath(int port) {
+    return defaultStateDir() / std::format("telemetry-{}.json", port);
+}
+
 std::filesystem::path defaultPidPath(int port) {
     return defaultStateDir() / std::format("literouter-{}.pid", port);
 }

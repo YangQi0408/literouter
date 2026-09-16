@@ -484,6 +484,10 @@ void testDefaultPaths() {
     LR_CHECK_EQ(literouter::defaultConfigPath().string(), configPath.string());
     LR_CHECK_EQ(literouter::defaultStateDir().string(), stateDir.string());
     LR_CHECK_EQ(literouter::defaultPidPath(8787).string(), (stateDir / "literouter-8787.pid").string());
+    // The telemetry file is per instance too: one file per port, so two
+    // instances cannot replace each other's counters.
+    LR_CHECK_EQ(literouter::defaultTelemetryPath(8787).string(),
+                (stateDir / "telemetry-8787.json").string());
     // One file per port: two instances on two ports are two instances, and the
     // file is what tells a second start who is holding the one it wants.
     LR_CHECK_EQ(literouter::defaultPidPath(0).string(), (stateDir / "literouter-0.pid").string());

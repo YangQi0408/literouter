@@ -35,7 +35,7 @@ constexpr const char *kPassModel = "pass-model";
 
 // A scratch directory for the telemetry file these tests make a real server
 // write. Without it a run would leave the developer's own
-// ~/.local/state/literouter/telemetry.json rewritten by the fixture.
+// ~/.local/state/literouter/telemetry-<port>.json rewritten by the fixture.
 class TempDir {
 public:
     TempDir() {
@@ -1571,26 +1571,31 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
     config.server.persist_telemetry = true;
     relay_a.setMode(StubRelay::Mode::Normal);
 
-    const std::filesystem::path state_file = literouter::defaultStateDir() / "telemetry.json";
     std::error_code ec;
-    std::filesystem::remove(state_file, ec);
-    LR_CHECK_MSG(state_file.string().find("literouter-test-") != std::string::npos,
-                 "LITEROUTER_STATE_DIR is not isolated: " + state_file.string());
 
-    // 1. A run that serves one request leaves its counters and its log behind.
+    // 1. A run that serves one request leaves its counters and its log behind —
+    // in the file named after the port it ended up on.
+    literouter::ProxyServer first;
+    int port = 0;
     {
-        literouter::ProxyServer first;
         const auto started = first.start(config);
         LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
         if (!started) {
             return;
         }
-        const Hit hit =
-            postJson(first.boundPort(), "/v1/chat/completions", chatRequest(kRouteModel));
+        port = first.boundPort();
+        // Everything after this talks to the same instance's files, so the rest
+        // of the group starts on the port the first one actually got.
+        config.server.port = port;
+        const Hit hit = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
         LR_CHECK_EQ(hit.status, 200);
         LR_CHECK_EQ(first.snapshot().total_requests, static_cast<std::uint64_t>(1));
         first.stop();
     }
+
+    const std::filesystem::path state_file = literouter::defaultTelemetryPath(port);
+    LR_CHECK_MSG(state_file.string().find("literouter-test-") != std::string::npos,
+                 "LITEROUTER_STATE_DIR is not isolated: " + state_file.string());
 
     LR_CHECK_MSG(std::filesystem::is_regular_file(state_file, ec),
                  "stop() left no telemetry file behind");

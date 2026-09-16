@@ -111,7 +111,7 @@ struct ServerConfig {
     // Bytes of a body kept when log_bodies is on.
     int log_body_limit = 2048;
     // Keep telemetry across restarts: the counters, the per-relay stats and the
-    // newest slice of the request log are written to `<state dir>/telemetry.json`
+    // newest slice of the request log are written to `<state dir>/telemetry-<port>.json`
     // and read back at startup, so `status` and the console do not reset to zero
     // every time the process is restarted. Bodies are only included when
     // log_bodies is also on. Turn this off for a run that must leave nothing
@@ -159,6 +159,11 @@ std::filesystem::path userHome();
 std::filesystem::path defaultConfigDir();
 std::filesystem::path defaultConfigPath();
 std::filesystem::path defaultStateDir();
+// Where an instance keeps its telemetry between runs. Named by the port, like
+// the pid file, because two instances are two histories — sharing one file meant
+// the second writer silently replaced the first one's counters.
+std::filesystem::path defaultTelemetryPath(int port);
+
 // Where a running instance of this build records itself: one file per port,
 // since the port is what identifies an instance. Written after a successful
 // bind and removed on stop(), so a file left behind by a crash is
