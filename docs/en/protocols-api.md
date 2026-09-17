@@ -173,6 +173,12 @@ Key features supported across transformations:
 - SSE streaming chunk adaptation with aligned stop events;
 - Token `usage` statistics normalization.
 
+> **Reasoning / thinking content** is preserved across a conversion instead of dropped. An Anthropic upstream's `thinking` blocks become `reasoning_content` on the OpenAI side (`redacted_thinking` is left alone — its payload is encrypted), a Gemini upstream's `thought: true` parts go to `reasoning_content` rather than into the answer (which is where they used to end up), and the reverse direction turns `reasoning_content` / `reasoning` into a leading Anthropic `thinking` block. In a stream, an Anthropic `thinking_delta` is relayed as a `reasoning_content` delta.
+>
+> **Two deliberate asymmetries**, neither of them an oversight:
+> 1. **The request direction does not synthesize a `thinking` block.** Anthropic only accepts a thinking block back with the signature the provider issued for it, and a fabricated signature turns a request that would have succeeded into a 400 — so a client's `reasoning_content` is dropped on that path. Going the other way (Anthropic → Chat) the client's thinking block is carried over as `reasoning_content`.
+> 2. **The reverse stream (OpenAI → Anthropic) does not synthesize a thinking block yet.** That needs a second content block with its own index and start/stop frames, and a block sequence that is wrong is worse for a strict client than thinking content that is simply absent.
+
 ---
 
 ## Admin API (`/__literouter`)

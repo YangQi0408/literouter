@@ -2,9 +2,12 @@
 // OpenAI Responses, and standard OpenAI compatible).
 #include "lr_test_check.h"
 
+import nlohmann.json;
 import literouter.core;
 
 namespace {
+
+using json = nlohmann::json;
 
 using literouter::ProviderConfig;
 using literouter::resolveChatPath;
@@ -322,6 +325,141 @@ void testStreamProtocolAdapterOpenAiPassthrough() {
     LR_CHECK_EQ(adapter.finish(), "");
 }
 
+void testReasoningMapping() {
+    LR_GROUP("reasoning blocks survive a protocol conversion");
+
+    const auto parse = [](const std::string &text) { return json::parse(text, nullptr, false); };
+
+    // ── Anthropic upstream → Chat client ────────────────────────────────────
+    {
+        ProviderConfig anthropic;
+        anthropic.protocol = "anthropic";
+        const std::string upstream = R"({
+            "id":"msg_1","type":"message","role":"assistant",
+            "content":[
+              {"type":"thinking","thinking":"weighing the options","signature":"sig-abc"},
+              {"type":"redacted_thinking","data":"encrypted-blob"},
+              {"type":"text","text":"the answer"}
+            ],
+            "stop_reason":"end_turn",
+            "usage":{"input_tokens":10,"output_tokens":4}
+        })";
+        const json out = parse(adaptChatResponse(anthropic, upstream, "claude-3-5-sonnet"));
+        LR_CHECK(!out.is_discarded());
+        const auto &message = out["choices"][0]["message"];
+        LR_CHECK_EQ(message.value("reasoning_content", std::string{}), "weighing the options");
+        // The answer is still the answer: reasoning must not be folded into it.
+        LR_CHECK_EQ(message.value("content", std::string{}), "the answer");
+    }
+
+    // ── Chat upstream → Anthropic client ────────────────────────────────────
+    {
+        const std::string upstream = R"({
+            "id":"chatcmpl-1","object":"chat.completion","model":"m",
+            "choices":[{"index":0,"message":{"role":"assistant",
+                        "reasoning_content":"first the plan","content":"then the answer"},
+                        "finish_reason":"stop"}],
+            "usage":{"prompt_tokens":3,"completion_tokens":5}
+        })";
+        const json out = parse(adaptChatToAnthropic(upstream, "claude-3-5-sonnet"));
+        LR_CHECK(!out.is_discarded());
+        const auto &blocks = out["content"];
+        LR_CHECK(blocks.is_array() && blocks.size() == 2);
+        if (blocks.is_array() && blocks.size() == 2) {
+            // Anthropic reads its blocks in order, and thinking comes first.
+            LR_CHECK_EQ(blocks[0].value("type", std::string{}), "thinking");
+            LR_CHECK_EQ(blocks[0].value("thinking", std::string{}), "first the plan");
+            LR_CHECK_EQ(blocks[1].value("type", std::string{}), "text");
+            LR_CHECK_EQ(blocks[1].value("text", std::string{}), "then the answer");
+        }
+        // A bare chat answer stays a single text block.
+        const json plain = parse(adaptChatToAnthropic(
+            R"({"id":"c","choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]})", "m"));
+        LR_CHECK(!plain.is_discarded());
+        LR_CHECK_EQ(static_cast<long long>(plain["content"].size()), 1);
+        LR_CHECK_EQ(plain["content"][0].value("type", std::string{}), "text");
+    }
+
+    // ── Anthropic request → Chat upstream ───────────────────────────────────
+    {
+        const std::string request = R"({
+            "model":"m","max_tokens":100,
+            "messages":[{"role":"user","content":"q"},
+                        {"role":"assistant","content":[
+                            {"type":"thinking","thinking":"recall previous step","signature":"sig"},
+                            {"type":"text","text":"previous answer"}
+                        ]},
+                        {"role":"user","content":"follow up"}]
+        })";
+        const json out = parse(adaptAnthropicToChat(request));
+        LR_CHECK(!out.is_discarded());
+        const auto &messages = out["messages"];
+        LR_CHECK(messages.is_array());
+        bool found = false;
+        for (const auto &message : messages) {
+            if (message.value("role", std::string{}) == "assistant") {
+                found = true;
+                LR_CHECK_EQ(message.value("reasoning_content", std::string{}), "recall previous step");
+                LR_CHECK_EQ(message.value("content", std::string{}), "previous answer");
+            }
+        }
+        LR_CHECK_MSG(found, "the assistant turn went missing");
+    }
+
+    // ── Gemini upstream → Chat client ───────────────────────────────────────
+    {
+        ProviderConfig gemini;
+        gemini.protocol = "gemini";
+        const std::string upstream = R"({
+            "candidates":[{"content":{"role":"model","parts":[
+                {"text":"thinking out loud","thought":true},
+                {"text":"the answer"}
+            ]},"finishReason":"STOP"}],
+            "usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}
+        })";
+        const json out = parse(adaptChatResponse(gemini, upstream, "gemini-2.0-flash"));
+        LR_CHECK(!out.is_discarded());
+        const auto &message = out["choices"][0]["message"];
+        LR_CHECK_EQ(message.value("reasoning_content", std::string{}), "thinking out loud");
+        // This is the bug the mapping fixes: a `thought` part used to be appended
+        // to the content, so the caller was shown the model's reasoning as if it
+        // were the reply.
+        LR_CHECK_EQ(message.value("content", std::string{}), "the answer");
+    }
+
+    // ── Streaming: Anthropic thinking deltas reach an OpenAI client ─────────
+    {
+        StreamProtocolAdapter adapter("anthropic", "openai", "claude-3-5-sonnet", "req_reason");
+        const std::string started = adapter.feed(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\","
+            "\"usage\":{\"input_tokens\":5}}}\n\n");
+        LR_CHECK(started.find("message_start") == std::string::npos); // converted, not passed through
+        const std::string thinking = adapter.feed(
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,"
+            "\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step one\"}}\n\n");
+        LR_CHECK_MSG(thinking.find("\"reasoning_content\":\"step one\"") != std::string::npos,
+                     "a thinking delta did not reach the client as reasoning: " + thinking);
+        const std::string text = adapter.feed(
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,"
+            "\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n");
+        LR_CHECK(text.find("\"content\":\"answer\"") != std::string::npos);
+    }
+
+    // ── The direction not taken, stated rather than implied ─────────────────
+    {
+        // An OpenAI relay's reasoning deltas are NOT turned into an Anthropic
+        // thinking block: that needs a second content block with its own index
+        // and start/stop frames, and a block sequence that is wrong is worse to
+        // a strict client than a missing one. What matters is that the stream
+        // stays valid Anthropic rather than malformed.
+        StreamProtocolAdapter adapter("openai", "anthropic", "gpt-4o", "req_reverse");
+        const std::string out = adapter.feed(
+            "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"reasoning_content\":\"hidden\"}}]}\n\n");
+        LR_CHECK(out.find("thinking") == std::string::npos);
+        LR_CHECK(out.find("message_start") != std::string::npos);
+    }
+}
+
 void testStreamUsageObserver() {
     LR_GROUP("StreamUsageObserver reads the counts each protocol hides in its tail");
     using literouter::StreamUsageObserver;
@@ -612,6 +750,7 @@ int main() {
     testStreamProtocolAdapterGemini();
     testStreamProtocolAdapterOpenAiPassthrough();
     testStreamUsageObserver();
+    testReasoningMapping();
     testAnthropicIngressAdaptation();
     testGeminiIngressAdaptation();
     testMultiProtocolStreaming();

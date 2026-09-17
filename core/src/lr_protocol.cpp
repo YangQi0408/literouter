@@ -162,6 +162,15 @@ std::string adaptChatRequest(const ProviderConfig &provider,
                                     std::string ptype = p.value("type", "text");
                                     if (ptype == "text") {
                                         content_arr.push_back({{"type", "text"}, {"text", p.value("text", "")}});
+                                    } else if (ptype == "reasoning_content") {
+                                        // Deliberately not turned into a `thinking`
+                                        // block: extended thinking is only accepted
+                                        // back WITH the signature the provider issued
+                                        // for it, and inventing one turns a request
+                                        // that would have succeeded into a 400. The
+                                        // reasoning is dropped here instead — see
+                                        // adaptChatToAnthropic() for the direction
+                                        // where no signature has to be checked.
                                     } else if (ptype == "image_url" && p.contains("image_url")) {
                                         std::string url = p["image_url"].value("url", "");
                                         if (startsWith(url, "data:") && url.find(";base64,") != std::string::npos) {
@@ -340,6 +349,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
         json message = json::object();
         message["role"] = "assistant";
         std::string text_content;
+        std::string reasoning_content;
         json tool_calls = json::array();
 
         if (root.contains("content") && root["content"].is_array()) {
@@ -347,6 +357,13 @@ std::string adaptChatResponse(const ProviderConfig &provider,
                 std::string btype = block.value("type", "");
                 if (btype == "text" && block.contains("text")) {
                     text_content += block["text"].get<std::string>();
+                } else if (btype == "thinking" && block.contains("thinking")) {
+                    // Extended thinking: the reasoning the client asked for and
+                    // paid for, which had nowhere to go before this. It leaves as
+                    // `reasoning_content`, the field OpenAI-compatible clients and
+                    // relays read. `redacted_thinking` is left alone — its content
+                    // is encrypted and there is nothing readable to hand on.
+                    reasoning_content += block["thinking"].get<std::string>();
                 } else if (btype == "tool_use") {
                     json tc = json::object();
                     tc["id"] = block.value("id", "call_" + hexId(8));
@@ -360,6 +377,9 @@ std::string adaptChatResponse(const ProviderConfig &provider,
             }
         }
         message["content"] = text_content;
+        if (!reasoning_content.empty()) {
+            message["reasoning_content"] = reasoning_content;
+        }
         if (!tool_calls.empty()) {
             message["tool_calls"] = tool_calls;
         }
@@ -398,12 +418,21 @@ std::string adaptChatResponse(const ProviderConfig &provider,
         json message = json::object();
         message["role"] = "assistant";
         std::string text_content;
+        std::string reasoning_content;
 
         if (root.contains("candidates") && root["candidates"].is_array() && !root["candidates"].empty()) {
             const auto &cand = root["candidates"][0];
             if (cand.contains("content") && cand["content"].contains("parts")) {
                 for (const auto &p : cand["content"]["parts"]) {
-                    if (p.contains("text")) {
+                    if (!p.contains("text")) {
+                        continue;
+                    }
+                    // `thought` marks the model's reasoning. Appending it to the
+                    // content — which is what this loop used to do — handed the
+                    // caller the model's thinking as if it were the answer.
+                    if (p.value("thought", false)) {
+                        reasoning_content += p["text"].get<std::string>();
+                    } else {
                         text_content += p["text"].get<std::string>();
                     }
                 }
@@ -416,6 +445,9 @@ std::string adaptChatResponse(const ProviderConfig &provider,
             choice["finish_reason"] = "stop";
         }
         message["content"] = text_content;
+        if (!reasoning_content.empty()) {
+            message["reasoning_content"] = reasoning_content;
+        }
         choice["message"] = message;
 
         json out = json::object();
@@ -581,12 +613,19 @@ std::string adaptAnthropicToChat(std::string_view anthropic_request_json) {
                 } else if (m["content"].is_array()) {
                     if (role == "assistant") {
                         std::string text_acc;
+                        std::string reasoning_acc;
                         json tool_calls = json::array();
                         for (const auto &block : m["content"]) {
                             if (!block.is_object()) continue;
                             std::string btype = block.value("type", "");
                             if (btype == "text" && block.contains("text")) {
                                 text_acc += block["text"].get<std::string>();
+                            } else if (btype == "thinking" && block.contains("thinking")) {
+                                // Carried across so a reasoning-capable upstream
+                                // sees the conversation the client believes it is
+                                // having; an upstream that does not know the field
+                                // ignores it.
+                                reasoning_acc += block["thinking"].get<std::string>();
                             } else if (btype == "tool_use") {
                                 json tc = json::object();
                                 tc["id"] = block.value("id", "call_" + hexId(8));
@@ -601,6 +640,9 @@ std::string adaptAnthropicToChat(std::string_view anthropic_request_json) {
                             }
                         }
                         json asst_msg = {{"role", "assistant"}, {"content", text_acc}};
+                        if (!reasoning_acc.empty()) {
+                            asst_msg["reasoning_content"] = reasoning_acc;
+                        }
                         if (!tool_calls.empty()) {
                             asst_msg["tool_calls"] = tool_calls;
                         }
@@ -781,6 +823,18 @@ std::string adaptChatToAnthropic(std::string_view chat_completion_response_json,
         const auto &choice = root["choices"][0];
         if (choice.contains("message") && choice["message"].is_object()) {
             const auto &msg = choice["message"];
+            // Reasoning first, the order Anthropic puts its blocks in. The block
+            // carries no `signature`: that is issued by the provider that produced
+            // the thinking, and a fabricated one is rejected outright — so a client
+            // that echoes this turn back is handled by dropping it on the request
+            // side rather than by inventing a signature here.
+            std::string reasoning = msg.value("reasoning_content", "");
+            if (reasoning.empty()) {
+                reasoning = msg.value("reasoning", "");
+            }
+            if (!reasoning.empty()) {
+                content_blocks.push_back({{"type", "thinking"}, {"thinking", reasoning}});
+            }
             if (msg.contains("content") && msg["content"].is_string() && !msg["content"].get<std::string>().empty()) {
                 content_blocks.push_back({{"type", "text"}, {"text", msg["content"].get<std::string>()}});
             }
@@ -944,6 +998,7 @@ public:
             if (data_str.empty()) continue;
 
             std::string text_delta;
+            std::string reasoning_delta;
             std::string finish_reason;
             int out_tokens = 0;
             int in_tokens = 0;
@@ -960,6 +1015,13 @@ public:
                             if (choice.contains("delta") && choice["delta"].is_object()) {
                                 if (choice["delta"].contains("content") && choice["delta"]["content"].is_string()) {
                                     text_delta = choice["delta"]["content"].get<std::string>();
+                                }
+                                // Reasoning models name this field either way.
+                                for (const char *field : {"reasoning_content", "reasoning"}) {
+                                    if (choice["delta"].contains(field) &&
+                                        choice["delta"][field].is_string()) {
+                                        reasoning_delta += choice["delta"][field].get<std::string>();
+                                    }
                                 }
                             }
                             if (choice.contains("finish_reason") && choice["finish_reason"].is_string()) {
@@ -982,8 +1044,11 @@ public:
                             in_tokens = data["message"]["usage"].value("input_tokens", 0);
                         }
                     } else if (event_type == "content_block_delta" && data.contains("delta")) {
-                        if (data["delta"].value("type", "") == "text_delta" && data["delta"].contains("text")) {
+                        const std::string delta_type = data["delta"].value("type", "");
+                        if (delta_type == "text_delta" && data["delta"].contains("text")) {
                             text_delta = data["delta"]["text"].get<std::string>();
+                        } else if (delta_type == "thinking_delta" && data["delta"].contains("thinking")) {
+                            reasoning_delta += data["delta"]["thinking"].get<std::string>();
                         }
                     } else if (event_type == "message_delta" && data.contains("delta")) {
                         std::string stop = data["delta"].value("stop_reason", "stop");
@@ -1002,7 +1067,12 @@ public:
                         const auto &cand = data["candidates"][0];
                         if (cand.contains("content") && cand["content"].contains("parts")) {
                             for (const auto &p : cand["content"]["parts"]) {
-                                if (p.contains("text")) {
+                                if (!p.contains("text")) {
+                                    continue;
+                                }
+                                if (p.value("thought", false)) {
+                                    reasoning_delta += p["text"].get<std::string>();
+                                } else {
                                     text_delta += p["text"].get<std::string>();
                                 }
                             }
@@ -1032,6 +1102,21 @@ public:
                         {
                             {"index", 0},
                             {"delta", {{"role", "assistant"}, {"content", ""}}},
+                            {"finish_reason", nullptr}
+                        }
+                    });
+                    out += "data: " + chunk_obj.dump() + "\n\n";
+                }
+                if (!reasoning_delta.empty()) {
+                    json chunk_obj = json::object();
+                    chunk_obj["id"] = "chatcmpl-" + (stream_id_.empty() ? request_id_ : stream_id_);
+                    chunk_obj["object"] = "chat.completion.chunk";
+                    chunk_obj["created"] = static_cast<long long>(nowUnix());
+                    chunk_obj["model"] = model_;
+                    chunk_obj["choices"] = json::array({
+                        {
+                            {"index", 0},
+                            {"delta", {{"reasoning_content", reasoning_delta}}},
                             {"finish_reason", nullptr}
                         }
                     });
