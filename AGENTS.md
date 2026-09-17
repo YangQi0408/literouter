@@ -46,7 +46,7 @@ literouter/
 | `lr_proxy.cpp` | 监听与路由注册、入站协议识别、响应头闸门、遥测环形缓冲、Admin API、内置 Web 控制台 |
 | `lr_protocol.cpp` | 四种协议的请求/响应双向转换与 `StreamProtocolAdapter` |
 | `lr_router.cpp` | `candidatesFor()` 候选链推导与熔断器状态机（纯决策层，不持有 socket） |
-| `lr_upstream.cpp` | 单次 `upstreamPost()` / `probeProvider()`，不含路由逻辑 |
+| `lr_upstream.cpp` | 单次 `upstreamPost()` / `probeProvider()`、上游连接池（每线程每中转站一条，缓冲与流式共用），不含路由逻辑 |
 | `lr_config.cpp` | `ConfigStore` 加载与原子保存、路径解析、`validate()` |
 | `lr_json.cpp` | 配置与遥测的 JSON 编解码 |
 | `lr_i18n.cpp` | C++ 侧 en/zh 字典（CLI 与 GUI 共用） |

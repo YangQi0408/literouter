@@ -1130,6 +1130,245 @@ void group18RetryAfter(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
     proxy.resetStats();
 }
 
+#ifndef _WIN32
+// A relay that counts the connections it is asked to serve.
+//
+// Counting is the only way to see whether the proxy reused a socket: httplib's
+// server keeps its accepted sockets to itself and reports nothing about them, so
+// this speaks HTTP/1.1 over raw sockets instead. One thread per connection,
+// because the pool may hold more than one open at a time, and a per-request
+// response that keeps the socket alive — which is what a relay does.
+class CountingRelay {
+public:
+    CountingRelay() = default;
+    ~CountingRelay() { stop(); }
+    CountingRelay(const CountingRelay &) = delete;
+    CountingRelay &operator=(const CountingRelay &) = delete;
+
+    bool start() {
+        listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (listen_fd_ < 0) {
+            return false;
+        }
+        int reuse = 1;
+        ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+        address.sin_port = 0; // the kernel picks one
+        if (::bind(listen_fd_, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
+            return false;
+        }
+        socklen_t length = sizeof(address);
+        if (::getsockname(listen_fd_, reinterpret_cast<sockaddr *>(&address), &length) != 0) {
+            return false;
+        }
+        port_ = ::ntohs(address.sin_port);
+        if (::listen(listen_fd_, 64) != 0) {
+            return false;
+        }
+        running_ = true;
+        acceptor_ = std::thread([this] { acceptLoop(); });
+        return true;
+    }
+
+    void stop() {
+        if (!running_.exchange(false)) {
+            return;
+        }
+        if (listen_fd_ >= 0) {
+            ::shutdown(listen_fd_, SHUT_RDWR);
+            ::close(listen_fd_);
+            listen_fd_ = -1;
+        }
+        {
+            std::scoped_lock lock{fds_mutex_};
+            for (const int fd : open_fds_) {
+                ::shutdown(fd, SHUT_RDWR);
+            }
+        }
+        if (acceptor_.joinable()) {
+            acceptor_.join();
+        }
+        std::vector<std::thread> workers;
+        {
+            std::scoped_lock lock{workers_mutex_};
+            workers.swap(workers_);
+        }
+        for (auto &worker : workers) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+    }
+
+    std::string baseUrl() const { return std::format("http://127.0.0.1:{}/v1", port_); }
+    int connections() const { return connections_.load(); }
+    int requests() const { return requests_.load(); }
+    int mostRequestsOnOneConnection() const { return most_on_one_.load(); }
+
+private:
+    void acceptLoop() {
+        while (running_.load()) {
+            const int fd = ::accept(listen_fd_, nullptr, nullptr);
+            if (fd < 0) {
+                if (!running_.load()) {
+                    return;
+                }
+                continue;
+            }
+            timeval timeout{2, 0}; // an idle keep-alive socket must not pin a thread
+            ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            ++connections_;
+            {
+                std::scoped_lock lock{fds_mutex_};
+                open_fds_.push_back(fd);
+            }
+            std::scoped_lock lock{workers_mutex_};
+            workers_.emplace_back([this, fd] { serve(fd); });
+        }
+    }
+
+    // Serves requests on one connection until the peer goes away.
+    void serve(int fd) {
+        int served = 0;
+        for (;;) {
+            std::string buffer;
+            if (!readRequest(fd, buffer)) {
+                break;
+            }
+            ++requests_;
+            if (++served > most_on_one_.load()) {
+                most_on_one_.store(served);
+            }
+            if (!writeResponse(fd)) {
+                break;
+            }
+        }
+        ::close(fd);
+        std::scoped_lock lock{fds_mutex_};
+        std::erase(open_fds_, fd);
+    }
+
+    static bool readRequest(int fd, std::string &buffer) {
+        std::size_t header_end = std::string::npos;
+        while (header_end == std::string::npos) {
+            char temp[4096];
+            const ssize_t got = ::recv(fd, temp, sizeof(temp), 0);
+            if (got <= 0) {
+                return false;
+            }
+            buffer.append(temp, static_cast<std::size_t>(got));
+            header_end = buffer.find("\r\n\r\n");
+            if (buffer.size() > (1u << 20)) {
+                return false; // a request bigger than any this test sends
+            }
+        }
+        const std::string head = literouter::toLower(buffer.substr(0, header_end));
+        std::size_t body_length = 0;
+        if (const auto at = head.find("content-length:"); at != std::string::npos) {
+            try {
+                body_length = std::stoul(head.substr(at + 15));
+            } catch (...) {
+                return false;
+            }
+        }
+        const std::size_t header_size = header_end + 4;
+        while (buffer.size() - header_size < body_length) {
+            char temp[4096];
+            const ssize_t got = ::recv(fd, temp, sizeof(temp), 0);
+            if (got <= 0) {
+                return false;
+            }
+            buffer.append(temp, static_cast<std::size_t>(got));
+        }
+        return true;
+    }
+
+    // Content-Length rather than chunked, with keep-alive: httplib's client reads
+    // exactly that many bytes and hands the socket back to the pool rejoined,
+    // which is the behaviour under test.
+    static bool writeResponse(int fd) {
+        const std::string body =
+            "data: {\"id\":\"counted\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
+            "data: [DONE]\n\n";
+        const std::string head = std::format(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n"
+            "Connection: keep-alive\r\n\r\n",
+            body.size());
+        const std::string response = head + body;
+        std::size_t sent = 0;
+        while (sent < response.size()) {
+            const ssize_t wrote =
+                ::send(fd, response.data() + sent, response.size() - sent, MSG_NOSIGNAL);
+            if (wrote <= 0) {
+                return false;
+            }
+            sent += static_cast<std::size_t>(wrote);
+        }
+        return true;
+    }
+
+    int listen_fd_ = -1;
+    int port_ = 0;
+    std::atomic<bool> running_{false};
+    std::atomic<int> connections_{0};
+    std::atomic<int> requests_{0};
+    std::atomic<int> most_on_one_{0};
+    std::thread acceptor_;
+    std::mutex workers_mutex_;
+    std::vector<std::thread> workers_;
+    std::mutex fds_mutex_;
+    std::vector<int> open_fds_;
+};
+
+// One provider, one route, one counting relay, and `rounds` sequential requests
+// through the proxy. Returns the relay's observations.
+struct ReuseRun {
+    int connections = 0;
+    int requests = 0;
+    int most_on_one = 0;
+};
+
+ReuseRun measureReuse(CountingRelay &relay, bool stream, int rounds) {
+    ReuseRun run;
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false; // this fixture starts servers; no state files
+    literouter::ProviderConfig provider;
+    provider.id = "counted";
+    provider.base_url = relay.baseUrl();
+    provider.timeout_sec = 10;
+    provider.connect_timeout_sec = 2;
+    config.providers = {provider};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "counted", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    if (const auto started = proxy.start(config); !started) {
+        std::printf("   counting-relay proxy did not start: %s\n", started.error().c_str());
+        return run;
+    }
+    const int port = proxy.boundPort();
+    for (int i = 0; i < rounds; ++i) {
+        const Hit hit = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, stream));
+        if (hit.status != 200) {
+            std::printf("   request %d of the reuse run answered %d\n", i, hit.status);
+            break;
+        }
+    }
+    proxy.stop();
+    run.connections = relay.connections();
+    run.requests = relay.requests();
+    run.most_on_one = relay.mostRequestsOnOneConnection();
+    return run;
+}
+#endif // !_WIN32
+
 std::int64_t thisProcessId() {
 #ifdef _WIN32
     return static_cast<std::int64_t>(::GetCurrentProcessId());
@@ -1200,6 +1439,53 @@ void group19SingleInstance(const literouter::AppConfig &base) {
         LR_CHECK(!std::filesystem::exists(pid_file));
     }
 }
+
+#ifndef _WIN32
+void group20ConnectionReuse() {
+    LR_GROUP("20. a streamed request reuses its relay connection");
+
+    // The pool is per worker thread, so reuse can only show up as "one
+    // connection carried more than one request". Pigeonhole: with `rounds`
+    // requests spread over at most `workers` threads, some thread served two of
+    // them — asking for twice the worker count makes the assertion independent
+    // of how many threads httplib's pool has here and of how the scheduler
+    // spread the requests. The buffers leg is the control: it has pooled its
+    // connections all along, so it says the counters measure what this test
+    // thinks they measure.
+    const unsigned hardware = std::thread::hardware_concurrency();
+    const int workers = static_cast<int>(std::max(8u, hardware > 0 ? hardware - 1 : 0u));
+    const int rounds = workers * 2;
+
+    {
+        CountingRelay relay;
+        const bool up = relay.start();
+        LR_CHECK_MSG(up, "the counting relay could not bind");
+        if (up) {
+            const ReuseRun buffered = measureReuse(relay, /*stream=*/false, rounds);
+            LR_CHECK_EQ(buffered.requests, rounds);
+            LR_CHECK_MSG(buffered.most_on_one >= 2,
+                         std::format("buffered (control): {} connection(s) for {} request(s), "
+                                     "most on one connection {}",
+                                     buffered.connections, buffered.requests, buffered.most_on_one));
+            LR_CHECK(buffered.connections < buffered.requests);
+        }
+    }
+    {
+        CountingRelay relay;
+        const bool up = relay.start();
+        LR_CHECK_MSG(up, "the counting relay could not bind");
+        if (up) {
+            const ReuseRun streamed = measureReuse(relay, /*stream=*/true, rounds);
+            LR_CHECK_EQ(streamed.requests, rounds);
+            LR_CHECK_MSG(streamed.most_on_one >= 2,
+                         std::format("streamed: {} connection(s) for {} request(s), most on one "
+                                     "connection {} — the pooled connection was not reused",
+                                     streamed.connections, streamed.requests, streamed.most_on_one));
+            LR_CHECK(streamed.connections < streamed.requests);
+        }
+    }
+}
+#endif // !_WIN32
 
 void group10Restart(literouter::ProxyServer &proxy, const literouter::AppConfig &config) {
     LR_GROUP("10. stop() is clean and a second start()/stop() cycle works");
@@ -1789,6 +2075,9 @@ int main() {
         group17LatencyPercentile(relay_a, proxy);
         group18RetryAfter(relay_a, relay_b, proxy);
         group19SingleInstance(config);
+#ifndef _WIN32
+        group20ConnectionReuse();
+#endif
         // Runs last on purpose: it deliberately leaves the proxy stopped.
         group10Restart(proxy, config);
 

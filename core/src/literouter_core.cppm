@@ -469,6 +469,28 @@ UpstreamResult upstreamPost(const ProviderConfig &provider,
                             std::string_view body,
                             int timeout_sec_override = 0);
 
+// ── upstream connections ────────────────────────────────────────────────────
+//
+// A relay connection taken from the pool for the length of one response. What a
+// connection *is* — an httplib client with a socket, a TLS session and its own
+// timeouts — is the upstream unit's business, and the contract names no
+// third-party type, so the handle is deliberately opaque. The holder treats it
+// as a token: it came out of the pool, and the pool still owns it.
+using UpstreamConnection = std::shared_ptr<void>;
+
+// One client per relay per worker thread, already configured from the provider
+// (timeouts, keep-alive, trust store) and reused by every request that thread
+// makes. `root` is the scheme://host part of the relay's base_url, as
+// splitBaseUrl() returned it.
+//
+// A transfer that ended cleanly needs no matching call: the connection never
+// left the pool. A transfer that was aborted, or that failed in transport, must
+// call retireUpstreamConnection() — the socket is not one to hand to the next
+// request.
+UpstreamConnection checkoutUpstreamConnection(std::string_view root,
+                                              const ProviderConfig &provider);
+void retireUpstreamConnection(std::string_view root, const ProviderConfig &provider);
+
 // What the console's provider rows show.
 struct ProviderProbe {
     bool reachable = false;

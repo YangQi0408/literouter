@@ -212,6 +212,14 @@ void configure(h::Client &client, const ProviderConfig &provider) {
 // the two timeouts, and the CA bundle — so editing a relay's timeout or exporting
 // LITEROUTER_CA_BUNDLE does not silently keep using a socket configured
 // differently.
+//
+// Both legs draw from it. The buffered one has always done so; the streamed one
+// used to dial its own connection per attempt, which is to say the leg that
+// carries nearly all the traffic was the one paying the handshake. Reuse is safe
+// for it because httplib probes a socket before reusing it (`is_socket_alive`,
+// plus a TLS peer-closed check) and reconnects non-gracefully when the relay
+// dropped the idle connection — so a pooled socket that has gone stale costs a
+// reconnect, not a failed request.
 thread_local std::map<std::string, std::shared_ptr<h::Client>, std::less<>> g_connection_pool;
 
 constexpr std::size_t kMaxPooledConnectionsPerThread = 8;
@@ -229,10 +237,14 @@ std::string poolKey(std::string_view root, const ProviderConfig &provider) {
                        cachedCaBundlePath());
 }
 
-h::Client &acquireClient(std::string_view root, const ProviderConfig &provider,
-                         const std::string &key) {
+// A strong reference to this thread's client for `key`, dialing one if the pool
+// has none. Returned by value so a caller that outlives the next pool mutation
+// (the streamed leg holds it for the length of a response) keeps it alive.
+std::shared_ptr<h::Client> acquireClientHandle(std::string_view root,
+                                               const ProviderConfig &provider,
+                                               const std::string &key) {
     if (auto it = g_connection_pool.find(key); it != g_connection_pool.end()) {
-        return *it->second;
+        return it->second;
     }
     // A config being edited repeatedly would otherwise leave one dead entry per
     // distinct timeout value for the life of the thread.
@@ -241,7 +253,14 @@ h::Client &acquireClient(std::string_view root, const ProviderConfig &provider,
     }
     auto client = std::make_shared<h::Client>(std::string{root});
     configure(*client, provider);
-    return *g_connection_pool.emplace(key, std::move(client)).first->second;
+    return g_connection_pool.emplace(key, std::move(client)).first->second;
+}
+
+h::Client &acquireClient(std::string_view root, const ProviderConfig &provider,
+                         const std::string &key) {
+    // The pool entry is what keeps this reference valid: nothing between here
+    // and the request that follows mutates the pool.
+    return *acquireClientHandle(root, provider, key);
 }
 
 void evictClient(const std::string &key) {
@@ -319,6 +338,15 @@ UpstreamResult upstreamPost(const ProviderConfig &provider, std::string_view pat
         out.headers.emplace(toLower(name), value);
     }
     return out;
+}
+
+UpstreamConnection checkoutUpstreamConnection(std::string_view root,
+                                              const ProviderConfig &provider) {
+    return acquireClientHandle(root, provider, poolKey(root, provider));
+}
+
+void retireUpstreamConnection(std::string_view root, const ProviderConfig &provider) {
+    evictClient(poolKey(root, provider));
 }
 
 ProviderProbe probeProvider(const ProviderConfig &provider, int timeout_sec) {

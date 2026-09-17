@@ -1457,18 +1457,14 @@ struct ProxyServer::Impl {
         }
 
         auto bridge = std::make_shared<StreamBridge>();
-        auto client = std::make_shared<h::Client>(root);
-        client->set_follow_location(true);
-        client->set_connection_timeout(provider.connect_timeout_sec, 0);
-        client->set_read_timeout(provider.timeout_sec, 0);
-        client->set_write_timeout(provider.timeout_sec, 0);
-        client->set_keep_alive(true);
-        // The streamed leg dials its own connection, so it needs the same trust
-        // store the pooled path resolves — see resolveCaBundle().
-        if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
-            client->set_ca_cert_path(bundle.string());
-            client->enable_server_certificate_verification(true);
-        }
+        // The connection comes from the same per-thread pool the buffered path
+        // uses, so a streamed request does not pay for a TCP and TLS handshake
+        // the previous one already paid for. Configuration is therefore also
+        // shared with that path (follow_location, both timeouts, keep-alive, the
+        // trust store) instead of being repeated here, where it could drift.
+        UpstreamConnection connection = checkoutUpstreamConnection(root, provider);
+        auto client = std::shared_ptr<h::Client>(connection,
+                                                static_cast<h::Client *>(connection.get()));
         bridge->client = client;
 
         h::Request upstream;
@@ -1571,6 +1567,7 @@ struct ProxyServer::Impl {
                 reason = bridge->error.empty() ? "no response headers" : bridge->error;
             }
             last_error = std::format("{}: {}", provider.id, reason);
+            retireUpstreamConnection(root, provider);
             router.recordFailure(provider.id, reason, nowUnix());
             recordAttempt(provider.id, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0);
@@ -1611,6 +1608,8 @@ struct ProxyServer::Impl {
 
             last_error =
                 std::format("{}: HTTP {} {}", provider.id, status, truncateUtf8(trim(detail), 160));
+            // The transfer was cut short, so its socket is not one to hand back.
+            retireUpstreamConnection(root, provider);
             // A streamed 429 has the same thing to say about when it will be
             // ready as a buffered one does.
             router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix(),
@@ -1659,6 +1658,8 @@ struct ProxyServer::Impl {
 
             const bool is_cf_block = isCloudflareBlocked(status, error_headers, body);
             const bool is_html_err = isHtmlResponse(error_headers, body);
+            // Drained and stopped above: this socket is finished, not reusable.
+            retireUpstreamConnection(root, provider);
             const bool retryable = Router::retryableStatus(status) || is_cf_block || (status == 403 && is_html_err);
 
             if (retryable && attempt + 1 < budget) {
@@ -1784,7 +1785,8 @@ struct ProxyServer::Impl {
             stream_type,
             [this, bridge, client, provider_id, upstream_model, request_ctx, failover, absorbed,
              stream_ok, attempt_number, total_attempts, attempt_started,
-             adapter, usage_observer](std::size_t, h::DataSink &sink) -> bool {
+             adapter, usage_observer, provider_root = root, provider](std::size_t,
+                                                                     h::DataSink &sink) -> bool {
                 for (;;) {
                     std::string chunk;
                     bool done = false;
@@ -1879,6 +1881,9 @@ struct ProxyServer::Impl {
                         }
                         bridge->cv.notify_all();
                         client->stop();
+                        // Same thread as the checkout, so the pool this retires
+                        // from is the pool it came out of.
+                        retireUpstreamConnection(provider_root, provider);
                         const double latency = (nowUnix() - attempt_started) * 1000.0;
                         const std::uint64_t bytes = bridge->bytes_out.load();
                         recordAttempt(provider_id, AttemptOutcome::Aborted, latency, bytes, 0, 0);
@@ -1891,14 +1896,32 @@ struct ProxyServer::Impl {
                 }
             },
             [this, bridge, client, provider_id, request_ctx, failover, attempt_number,
-             total_attempts](bool) {
-                // Provider released: the reader must not outlive it.
+             total_attempts, provider_root = root, provider](bool) {
+                // This fires at the end of EVERY chunked response, not only when
+                // something went wrong, which makes it the place that decides
+                // whether the connection goes back to the pool or is retired.
+                //
+                // A transfer that finished left its socket in a clean state, so
+                // the client must NOT be stopped here: `stop()` closes the
+                // socket, and closing it after every streamed answer is exactly
+                // what would make the pool pointless — the next request would
+                // dial a fresh connection and pay the handshake the pool exists
+                // to avoid. A release that arrives while the reader is still on
+                // the socket is a different thing (the reader would otherwise
+                // outlive the response), and that one is stopped and retired.
+                bool finished = false;
                 {
                     std::scoped_lock lock{bridge->mutex};
-                    bridge->aborted = true;
+                    finished = bridge->finished;
+                    if (!finished) {
+                        bridge->aborted = true;
+                    }
                 }
-                bridge->cv.notify_all();
-                client->stop();
+                if (!finished) {
+                    bridge->cv.notify_all();
+                    client->stop();
+                    retireUpstreamConnection(provider_root, provider);
+                }
 
                 // finish() is idempotent, so this is a no-op on every path
                 // that already accounted for the request. It is here for the
