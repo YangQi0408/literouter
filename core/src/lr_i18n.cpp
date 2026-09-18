@@ -268,6 +268,8 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
     {"Port", "端口"},
     {"Max attempts", "最大尝试次数"},
     {"Request deadline (seconds)", "整请求最长耗时（秒）"},
+    {"Session affinity (seconds)", "会话粘性（秒）"},
+    {"0 disables it. Keeps a conversation on the relay that answered it, so the provider can reuse its cached prompt.", "0 表示关闭。让同一个会话继续走已应答过它的中转站，以便复用上游的提示词缓存。"},
     {"Price in ($ / 1M tokens)", "输入单价（美元 / 百万 token）"},
     {"Price out ($ / 1M tokens)", "输出单价（美元 / 百万 token）"},
     {"What this relay charges for input tokens. 0 leaves it unknown, and an unknown price contributes nothing to the cost estimate.", "该中转站输入 token 的单价。0 表示未填写；未填写的中转站不计入花费估算。"},

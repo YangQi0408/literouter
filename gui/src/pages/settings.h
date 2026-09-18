@@ -247,6 +247,28 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                                listenerY + 318.0f, halfWidth,
                                std::string(literouter::i18n::tr("Request deadline (seconds)")),
                                std::string(literouter::i18n::tr("0 disables it. Bounds the whole request, not one attempt.")));
+                    fieldLabel(contentUi, "settings.affinity.label", listenerX + 18.0f + halfWidth + 14.0f,
+                               listenerY + 318.0f, halfWidth,
+                               std::string(literouter::i18n::tr("Session affinity (seconds)")),
+                               std::string(literouter::i18n::tr("0 disables it. Keeps a conversation on the relay that answered it, so the provider can reuse its cached prompt.")));
+                    contentUi.stack("settings.affinity.wrap")
+                        .position(listenerX + 18.0f + halfWidth + 14.0f, listenerY + 354.0f)
+                        .size(halfWidth, 34.0f)
+                        .content([&] {
+                            components::stepper(contentUi, "settings.affinity")
+                                .theme(uiTokens())
+                                .size(halfWidth, 34.0f)
+                                .value(server.session_affinity_sec)
+                                .step(30)
+                                .min(0)
+                                .max(86400)
+                                .onChange([](long long value) {
+                                    appState().store.config().server.session_affinity_sec =
+                                        static_cast<int>(value);
+                                })
+                                .build();
+                        })
+                        .build();
                     contentUi.stack("settings.deadline.wrap")
                         .position(listenerX + 18.0f, listenerY + 354.0f)
                         .size(halfWidth, 34.0f)

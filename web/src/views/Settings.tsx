@@ -109,6 +109,13 @@ export function Settings() {
               onChange={(max_attempts) => patch({ max_attempts })}
             />
           </Field>
+          <Field label="session_affinity_sec" hint={t('hintAffinity')}>
+            <NumberField
+              value={server.session_affinity_sec}
+              min={0}
+              onChange={(session_affinity_sec) => patch({ session_affinity_sec })}
+            />
+          </Field>
           <Field label="request_deadline_sec" hint={t('hintDeadline')}>
             <NumberField
               value={server.request_deadline_sec}

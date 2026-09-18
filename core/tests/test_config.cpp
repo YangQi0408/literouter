@@ -89,6 +89,7 @@ AppConfig fullyPopulated() {
     config.server.pass_through_unknown = false;
     config.server.max_attempts = 4;
     config.server.request_deadline_sec = 45;
+    config.server.session_affinity_sec = 120;
     config.server.circuit_failure_threshold = 5;
     config.server.circuit_cooldown_sec = 60;
     config.server.skip_open_circuits = false;
@@ -166,6 +167,7 @@ void checkServerEqual(const literouter::ServerConfig &actual,
     LR_CHECK_EQ(actual.pass_through_unknown, expected.pass_through_unknown);
     LR_CHECK_EQ(actual.max_attempts, expected.max_attempts);
     LR_CHECK_EQ(actual.request_deadline_sec, expected.request_deadline_sec);
+    LR_CHECK_EQ(actual.session_affinity_sec, expected.session_affinity_sec);
     LR_CHECK_EQ(actual.circuit_failure_threshold, expected.circuit_failure_threshold);
     LR_CHECK_EQ(actual.circuit_cooldown_sec, expected.circuit_cooldown_sec);
     LR_CHECK_EQ(actual.skip_open_circuits, expected.skip_open_circuits);
@@ -308,6 +310,7 @@ void testMinimalDocuments() {
             // No deadline by default: bounding a long generation by default
             // would break the case the proxy exists to serve.
             LR_CHECK_EQ(parsed->server.request_deadline_sec, 0);
+            LR_CHECK_EQ(parsed->server.session_affinity_sec, 0);
             LR_CHECK_EQ(parsed->server.circuit_failure_threshold, 3);
             LR_CHECK_EQ(parsed->server.circuit_cooldown_sec, 30);
             LR_CHECK_EQ(parsed->server.pass_through_unknown, true);
@@ -625,6 +628,10 @@ void testValidateServer() {
                                      kWarning) != nullptr);
         config.server.request_deadline_sec = 30;
         LR_CHECK(literouter::validate(config).ok());
+        config.server.session_affinity_sec = -5;
+        LR_CHECK(findIssue(literouter::validate(config), "server.session_affinity_sec", kError) !=
+                 nullptr);
+        config.server.session_affinity_sec = 0;
         LR_CHECK(findIssue(literouter::validate(config), "server.request_deadline_sec", kWarning) ==
                  nullptr);
     }

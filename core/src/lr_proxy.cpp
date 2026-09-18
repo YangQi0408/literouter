@@ -159,6 +159,46 @@ json validationJson(const ValidationReport &report) {
     return out;
 }
 
+// ── session affinity ────────────────────────────────────────────────────────
+
+// How much of a conversation is hashed to identify it. Long enough that two
+// different chats do not collide on a shared greeting, short enough that a long
+// system prompt is not hashed whole on every request.
+constexpr std::size_t kAffinityKeyChars = 4096;
+
+// A conversation's fingerprint: the system prompt plus the first message. Those
+// are the parts a chat client keeps identical from turn to turn — and the parts
+// a provider's prompt cache keys on — while the tail is exactly what changes.
+std::string sessionKey(const json &body) {
+    std::string material;
+    const auto pull = [&material](const json &node) {
+        if (node.is_string()) {
+            material += node.get<std::string>();
+        } else if (node.is_array()) {
+            for (const auto &part : node) {
+                if (part.is_object() && part.contains("text") && part["text"].is_string()) {
+                    material += part["text"].get<std::string>();
+                }
+            }
+        }
+    };
+    if (const auto it = body.find("system"); it != body.end()) {
+        pull(*it);
+    }
+    if (const auto it = body.find("messages");
+        it != body.end() && it->is_array() && !it->empty()) {
+        const auto &first = (*it)[0];
+        if (first.is_object() && first.contains("content")) {
+            pull(first["content"]);
+        }
+    }
+    material.resize(std::min(material.size(), kAffinityKeyChars));
+    if (material.empty()) {
+        return {};
+    }
+    return std::format("{:016x}", std::hash<std::string>{}(material));
+}
+
 // ── Prometheus text exposition ──────────────────────────────────────────────
 
 // A label value, escaped as the exposition format requires: a relay id is free
@@ -817,6 +857,9 @@ struct RequestContext {
     std::string kind;
     std::string model;
     std::string body;
+    // Which conversation this request belongs to, for prompt-cache affinity.
+    // Empty when the feature is off or the body has nothing stable to key on.
+    std::string affinity_key;
     bool stream = false;
     double started = 0.0;
     AppConfig config;
@@ -855,6 +898,61 @@ struct ProxyServer::Impl {
     std::atomic<int> bound_port{0};
 
     double started_unix = 0.0;
+
+    // ── prompt-cache affinity ────────────────────────────────────────────────
+    //
+    // Which relay last answered a given conversation, and until when. Bounded on
+    // both axes: entries expire, and the table is capped so a busy proxy with
+    // many conversations cannot grow it without limit.
+    struct Affinity {
+        std::string provider;
+        double expires_unix = 0.0;
+    };
+    static constexpr std::size_t kMaxAffinityEntries = 256;
+    mutable std::mutex affinity_mutex;
+    std::map<std::string, Affinity, std::less<>> affinity;
+
+    std::string affinityProvider(const std::string &key, double now_unix) {
+        if (key.empty()) {
+            return {};
+        }
+        std::scoped_lock lock{affinity_mutex};
+        const auto it = affinity.find(key);
+        if (it == affinity.end()) {
+            return {};
+        }
+        if (it->second.expires_unix <= now_unix) {
+            affinity.erase(it);
+            return {};
+        }
+        return it->second.provider;
+    }
+
+    void rememberAffinity(const std::string &key, const std::string &provider, double ttl_sec,
+                          double now_unix) {
+        if (key.empty() || provider.empty() || ttl_sec <= 0.0) {
+            return;
+        }
+        std::scoped_lock lock{affinity_mutex};
+        if (affinity.size() >= kMaxAffinityEntries && !affinity.contains(key)) {
+            // Drop what has already expired first; only then the oldest entry, so
+            // a steady stream of new conversations cannot evict warm ones while
+            // stale ones survive.
+            std::erase_if(affinity, [now_unix](const auto &entry) {
+                return entry.second.expires_unix <= now_unix;
+            });
+            if (affinity.size() >= kMaxAffinityEntries) {
+                auto oldest = affinity.begin();
+                for (auto it = affinity.begin(); it != affinity.end(); ++it) {
+                    if (it->second.expires_unix < oldest->second.expires_unix) {
+                        oldest = it;
+                    }
+                }
+                affinity.erase(oldest);
+            }
+        }
+        affinity[std::string{key}] = Affinity{provider, now_unix + ttl_sec};
+    }
 
     mutable std::mutex telemetry_mutex;
     std::map<std::string, ProviderStat, std::less<>> stats;
@@ -1329,6 +1427,17 @@ struct ProxyServer::Impl {
         tokens_completion += completion_tokens;
     }
 
+    // Remembers which relay served a conversation, so its next turn is routed
+    // back there and the provider can reuse the cached prompt prefix.
+    void noteAffinity(const RequestContext &ctx, std::string_view provider,
+                      AttemptOutcome outcome) {
+        if (outcome != AttemptOutcome::Success) {
+            return;
+        }
+        rememberAffinity(ctx.affinity_key, std::string{provider},
+                         static_cast<double>(ctx.config.server.session_affinity_sec), nowUnix());
+    }
+
     // A relay that answered a request an earlier relay had already failed.
     // Counted separately from `successes` because "this relay caught the fall"
     // is a different fact from "this relay was asked and worked".
@@ -1469,7 +1578,23 @@ struct ProxyServer::Impl {
                          body.contains("stream") && body["stream"].is_boolean() && body["stream"].get<bool>();
         }
 
+        if (ctx.config.server.session_affinity_sec > 0) {
+            ctx.affinity_key = sessionKey(body);
+        }
+
         auto candidates = order(router.candidatesFor(ctx.model));
+        if (!ctx.affinity_key.empty()) {
+            const std::string warm = affinityProvider(ctx.affinity_key, nowUnix());
+            if (!warm.empty()) {
+                // Only the warm relay moves, and only if it is still a candidate
+                // that is not being skipped; the rest of the chain keeps the order
+                // the operator asked for.
+                std::stable_partition(candidates.begin(), candidates.end(),
+                                      [&warm](const Candidate &candidate) {
+                                          return !candidate.skipped && candidate.provider == warm;
+                                      });
+            }
+        }
         if (candidates.empty()) {
             sendError(res, 404,
                       std::format("no relay can serve `{}`. Add it to a route, or list it in a "
@@ -1607,6 +1732,11 @@ struct ProxyServer::Impl {
                           result.latency_ms, result.body.size(), usage.tokens_prompt,
                           usage.tokens_completion, payload.size(),
                           provider->price_in_per_million, provider->price_out_per_million);
+            // Only a relay that answered usefully becomes the conversation's
+            // home: pinning a conversation to whatever answered "400 context
+            // length exceeded" would bake in the failure.
+            noteAffinity(ctx, provider->id,
+                                good ? AttemptOutcome::Success : AttemptOutcome::Failure);
             if (good && attempt > 0) {
                 noteAbsorbed(provider->id);
             }
@@ -2193,6 +2323,9 @@ struct ProxyServer::Impl {
                                       latency, bytes, tokens.prompt, tokens.completion,
                                       payload_size, provider.price_in_per_million,
                                       provider.price_out_per_million);
+                        noteAffinity(request_ctx, provider_id,
+                                     stream_ok ? AttemptOutcome::Success
+                                               : AttemptOutcome::Failure);
                         if (absorbed) {
                             noteAbsorbed(provider_id);
                         }

@@ -225,6 +225,7 @@ ServerConfig serverFromJson(const json &node) {
     out.pass_through_unknown = readBool(node, "pass_through_unknown", out.pass_through_unknown);
     out.max_attempts = readInt(node, "max_attempts", out.max_attempts);
     out.request_deadline_sec = readInt(node, "request_deadline_sec", out.request_deadline_sec);
+    out.session_affinity_sec = readInt(node, "session_affinity_sec", out.session_affinity_sec);
     out.circuit_failure_threshold =
         readInt(node, "circuit_failure_threshold", out.circuit_failure_threshold);
     out.circuit_cooldown_sec = readInt(node, "circuit_cooldown_sec", out.circuit_cooldown_sec);
@@ -247,6 +248,7 @@ json serverToJson(const ServerConfig &value) {
     node["pass_through_unknown"] = value.pass_through_unknown;
     node["max_attempts"] = value.max_attempts;
     node["request_deadline_sec"] = value.request_deadline_sec;
+    node["session_affinity_sec"] = value.session_affinity_sec;
     node["circuit_failure_threshold"] = value.circuit_failure_threshold;
     node["circuit_cooldown_sec"] = value.circuit_cooldown_sec;
     node["skip_open_circuits"] = value.skip_open_circuits;

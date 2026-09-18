@@ -148,6 +148,8 @@ export interface ServerConfig {
   max_attempts: number
   /** Whole-request budget in seconds; 0 disables it. */
   request_deadline_sec: number
+  /** Seconds a conversation stays pinned to the relay that answered it; 0 off. */
+  session_affinity_sec: number
   circuit_failure_threshold: number
   circuit_cooldown_sec: number
   skip_open_circuits: boolean

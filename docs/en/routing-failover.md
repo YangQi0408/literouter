@@ -190,6 +190,19 @@ If all configured providers for a model are in the `Open` state, `literouter` wi
 
 ## Attempt Budget Control (`max_attempts`)
 
+### Session Affinity (`session_affinity_sec`)
+
+The candidate chain is ordered by `priority`/`weight`, which answers "which relay deserves to be tried first" and cannot answer a different question: **which relay has already seen this conversation**.
+
+Providers cache repeated prompt prefixes, and a cache hit is both cheaper and faster to start answering. On a long context (a repository, a document, a long system prompt) that gap can be an order of magnitude in both time-to-first-token and spend. So `server.session_affinity_sec` (0, the default, disables it; around 300 is a sensible value for chat clients):
+
+- it fingerprints a request by its **system prompt plus first message** — the parts a conversation keeps identical, and the parts a cache keys on — and maps that to the relay that last **answered it usefully**;
+- when that relay is still a candidate and is not being skipped, it moves to the front of the chain; everything else keeps its order;
+- only successes are recorded: pinning a conversation to whatever just answered "400 context length exceeded" would bake the failure in;
+- entries expire and the table is bounded (expired first, then the oldest), so it cannot grow without limit.
+
+Setting it back to 0 restores plain priority order.
+
 `max_attempts` bounds how many relays are tried and `timeout_sec` bounds one attempt; their product is the worst case a client can wait, and ten candidates at 120 seconds each is twenty minutes. `server.request_deadline_sec` (0 disables it, the default) bounds the **whole request**:
 
 - checked **between attempts**: with less than half a second left the remaining candidates are not tried at all, the request answers **504** (not 503 — the relays may be perfectly fine, they were simply not given the chance), and the log names the relay that was never tried;

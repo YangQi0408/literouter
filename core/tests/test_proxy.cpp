@@ -1996,6 +1996,113 @@ void group25CostAccounting(StubRelay &relay_a, StubRelay &relay_b) {
     proxy.stop();
 }
 
+// Prompt-cache affinity: a follow-up turn of a conversation a relay has already
+// answered is worth sending back there, because the provider can then reuse the
+// cached prefix. Priority order cannot know which relay is warm, so the test
+// makes a relay warm by failing over to it and then checks that the *next* turn
+// goes there even though priority would prefer the other one.
+void group26SessionAffinity(StubRelay &relay_a, StubRelay &relay_b) {
+    LR_GROUP("26. a conversation sticks to the relay that answered it");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+    config.server.session_affinity_sec = 300;
+
+    literouter::ProviderConfig preferred;
+    preferred.id = "preferred";
+    preferred.base_url = relay_a.baseUrl();
+    preferred.timeout_sec = 10;
+    preferred.connect_timeout_sec = 2;
+    literouter::ProviderConfig other;
+    other.id = "other";
+    other.base_url = relay_b.baseUrl();
+    other.timeout_sec = 10;
+    other.connect_timeout_sec = 2;
+    config.providers = {preferred, other};
+
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "preferred", .model = {}},
+                     literouter::RouteTarget{.provider = "other", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = proxy.boundPort();
+    relay_a.resetCounters();
+    relay_b.resetCounters();
+    relay_b.setMode(StubRelay::Mode::Normal);
+
+    // A conversation, as a client sends it: a system prompt and a first message
+    // that stay identical from turn to turn, with the tail changing.
+    const auto turn = [](int exchange) {
+        json body = json::object();
+        body["model"] = kRouteModel;
+        body["messages"] = json::array({
+            {{"role", "system"}, {"content", "You are a careful assistant."}},
+            {{"role", "user"}, {"content", "How do I configure a route?"}},
+            {{"role", "assistant"}, {"content", "You add a route entry."}},
+            {{"role", "user"}, {"content", std::format("Follow-up number {}", exchange)}},
+        });
+        return body.dump();
+    };
+
+    // Turn one: the preferred relay answers, so the conversation belongs to it.
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", turn(1)).status, 200);
+    LR_CHECK_EQ(relay_a.chatRequests(), 1);
+    LR_CHECK_EQ(relay_b.chatRequests(), 0);
+
+    // Now the preferred relay starts rate-limiting. Turn two fails over to the
+    // other relay, which becomes the warm one.
+    relay_a.setMode(StubRelay::Mode::RateLimit);
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", turn(2)).status, 200);
+    LR_CHECK_EQ(relay_b.chatRequests(), 1);
+    const int per_turn = relay_a.chatRequests(); // one answered, one rate-limited
+
+    // Turn three: priority would try the rate-limiting relay again, but the
+    // conversation is warm on the other one. That is the whole feature.
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", turn(3)).status, 200);
+    // The count is relative because the *failed* attempt above was a request to
+    // the preferred relay too: what matters is that this turn did not add one.
+    LR_CHECK_MSG(relay_a.chatRequests() == per_turn,
+                 std::format("the preferred relay was tried again ({} requests, was {}) even "
+                             "though the conversation is warm elsewhere",
+                             relay_a.chatRequests(), per_turn));
+    LR_CHECK_EQ(relay_b.chatRequests(), 2);
+
+    // A different conversation is not pinned: it goes to the preferred relay,
+    // which is still the operator's first choice.
+    relay_a.setMode(StubRelay::Mode::Normal);
+    json other_body = json::object();
+    other_body["model"] = kRouteModel;
+    other_body["messages"] = json::array({
+        {{"role", "system"}, {"content", "You are a terse assistant."}},
+        {{"role", "user"}, {"content", "Something else entirely"}},
+    });
+    const std::string other_chat = other_body.dump();
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", other_chat).status, 200);
+    LR_CHECK_MSG(relay_a.chatRequests() == per_turn + 1,
+                 "a different conversation was pinned instead of taking first choice");
+
+    // Turning the window off restores plain priority order for a warm
+    // conversation too.
+    literouter::AppConfig plain = config;
+    plain.server.session_affinity_sec = 0;
+    proxy.updateConfig(plain);
+    relay_a.setMode(StubRelay::Mode::Normal);
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", turn(4)).status, 200);
+    LR_CHECK_MSG(relay_a.chatRequests() == per_turn + 2,
+                 "turning the affinity window off did not restore priority order");
+
+    proxy.stop();
+}
+
 // Prometheus exposition: the console is for a person, this is for a graph, and
 // both must read the same numbers or one of them is lying.
 void group24MetricsEndpoint(StubRelay &relay_a) {
@@ -2581,6 +2688,7 @@ int main() {
         group22ResponsesIngress(relay_a, proxy.boundPort());
         group24MetricsEndpoint(relay_a);
         group25CostAccounting(relay_a, relay_b);
+        group26SessionAffinity(relay_a, relay_b);
 #ifndef _WIN32
         group23RequestDeadline(relay_b);
 #endif

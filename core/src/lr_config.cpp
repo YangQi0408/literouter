@@ -235,6 +235,10 @@ ValidationReport validate(const AppConfig &config) {
     if (config.server.host.empty()) {
         addIssue(report, ValidationIssue::Level::Error, "server.host", "host must not be empty");
     }
+    if (config.server.session_affinity_sec < 0) {
+        addIssue(report, ValidationIssue::Level::Error, "server.session_affinity_sec",
+                 "a negative affinity window would never expire; use 0 to disable it");
+    }
     if (config.server.request_deadline_sec < 0) {
         addIssue(report, ValidationIssue::Level::Error, "server.request_deadline_sec",
                  "a negative deadline is not a deadline; use 0 to disable it");

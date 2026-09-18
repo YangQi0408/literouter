@@ -111,6 +111,12 @@ struct ServerConfig {
     // never after the answer has begun: once bytes are committed the response
     // belongs to the client, and truncating it would be worse than finishing it.
     int request_deadline_sec = 0;
+    // How long a conversation's preference for one relay is remembered, in
+    // seconds. 0 disables it. With it on, a follow-up turn of a conversation a
+    // relay has already answered is tried on that relay first, because the
+    // provider can reuse the cached prefix of the prompt: on a long context that
+    // is real money and real latency, and priority order cannot know it.
+    int session_affinity_sec = 0;
     // Consecutive upstream failures that trip a relay's breaker.
     int circuit_failure_threshold = 3;
     // How long a tripped breaker stays open, in seconds.
