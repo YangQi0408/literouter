@@ -72,7 +72,7 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
             constexpr float kCardBottomPadding = 18.0f;
 
             // Derived card heights
-            constexpr float kListenerHeight = 412.0f;
+            constexpr float kListenerHeight = 486.0f;
             constexpr float kBreakerHeight = 96.0f + 34.0f + kCardBottomPadding;
             constexpr float kLoggingHeight = 184.0f + 32.0f + kCardBottomPadding;
             constexpr float kDisplayHeight = 236.0f + 18.0f + kCardBottomPadding;
@@ -489,6 +489,33 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                                 .checked(server.reload_on_change)
                                 .onChange([](bool value) {
                                     appState().store.config().server.reload_on_change = value;
+                                })
+                                .build();
+                        })
+                        .build();
+
+                    // Routing policy: three named choices, so a segmented control
+                    // rather than a stepper that would make the operator count.
+                    fieldLabel(contentUi, "settings.policy.label", listenerX + 18.0f,
+                               listenerY + 398.0f, fieldWidth,
+                               std::string(literouter::i18n::tr("Routing policy")),
+                               std::string(literouter::i18n::tr("How the candidate chain is ordered before the first attempt.")));
+                    contentUi.stack("settings.policy.wrap")
+                        .position(listenerX + 18.0f, listenerY + 434.0f)
+                        .size(fieldWidth, 30.0f)
+                        .content([&] {
+                            components::segmented(contentUi, "settings.policy")
+                                .theme(uiTokens())
+                                .size(fieldWidth, 30.0f)
+                                .items({std::string(literouter::i18n::tr("Priority")),
+                                        std::string(literouter::i18n::tr("Fastest")),
+                                        std::string(literouter::i18n::tr("Cheapest"))})
+                                .selected(server.routing_policy == "fastest"   ? 1
+                                          : server.routing_policy == "cheapest" ? 2
+                                                                                : 0)
+                                .onChange([](int index) {
+                                    appState().store.config().server.routing_policy =
+                                        index == 1 ? "fastest" : index == 2 ? "cheapest" : "priority";
                                 })
                                 .build();
                         })

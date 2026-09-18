@@ -123,6 +123,21 @@ export function Settings() {
               onChange={(session_affinity_sec) => patch({ session_affinity_sec })}
             />
           </Field>
+          <Field label="routing_policy" hint={t('hintPolicy')}>
+            <Select
+              value={server.routing_policy}
+              onValueChange={(routing_policy) => patch({ routing_policy })}
+            >
+              <SelectTrigger className="h-9 w-full font-mono text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="priority">priority</SelectItem>
+                <SelectItem value="fastest">fastest</SelectItem>
+                <SelectItem value="cheapest">cheapest</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
           <Field label="request_deadline_sec" hint={t('hintDeadline')}>
             <NumberField
               value={server.request_deadline_sec}

@@ -88,6 +88,7 @@ AppConfig fullyPopulated() {
     config.server.api_key = "sk-server-key";
     config.server.pass_through_unknown = false;
     config.server.max_attempts = 4;
+    config.server.routing_policy = "cheapest";
     config.server.request_deadline_sec = 45;
     config.server.session_affinity_sec = 120;
     config.server.reload_on_change = true;
@@ -167,6 +168,7 @@ void checkServerEqual(const literouter::ServerConfig &actual,
     LR_CHECK_EQ(actual.api_key, expected.api_key);
     LR_CHECK_EQ(actual.pass_through_unknown, expected.pass_through_unknown);
     LR_CHECK_EQ(actual.max_attempts, expected.max_attempts);
+    LR_CHECK_EQ(actual.routing_policy, expected.routing_policy);
     LR_CHECK_EQ(actual.request_deadline_sec, expected.request_deadline_sec);
     LR_CHECK_EQ(actual.session_affinity_sec, expected.session_affinity_sec);
     LR_CHECK_EQ(actual.reload_on_change, expected.reload_on_change);
@@ -309,6 +311,7 @@ void testMinimalDocuments() {
             LR_CHECK_EQ(parsed->server.host, "127.0.0.1");
             LR_CHECK_EQ(parsed->server.port, 8787);
             LR_CHECK_EQ(parsed->server.max_attempts, 0);
+            LR_CHECK_EQ(parsed->server.routing_policy, "priority");
             // No deadline by default: bounding a long generation by default
             // would break the case the proxy exists to serve.
             LR_CHECK_EQ(parsed->server.request_deadline_sec, 0);
@@ -635,6 +638,12 @@ void testValidateServer() {
         LR_CHECK(findIssue(literouter::validate(config), "server.session_affinity_sec", kError) !=
                  nullptr);
         config.server.session_affinity_sec = 0;
+        config.server.routing_policy = "sometimes";
+        LR_CHECK(findIssueContaining(literouter::validate(config), "not a routing policy",
+                                     kWarning) != nullptr);
+        config.server.routing_policy = "fastest";
+        LR_CHECK(literouter::validate(config).ok());
+        config.server.routing_policy = "priority";
         LR_CHECK(findIssue(literouter::validate(config), "server.request_deadline_sec", kWarning) ==
                  nullptr);
     }

@@ -1132,6 +1132,18 @@ struct ProxyServer::Impl {
         releaseInFlight();
     }
 
+    // What a latency-aware policy orders by, read under the lock: building a
+    // whole Snapshot to get two numbers per candidate would be absurd.
+    double latencyMetric(std::string_view provider) const {
+        std::scoped_lock lock{telemetry_mutex};
+        const auto it = stats.find(provider);
+        if (it == stats.end()) {
+            return 0.0;
+        }
+        return it->second.latency_ms_p95 > 0.0 ? it->second.latency_ms_p95
+                                               : it->second.latency_ms_avg;
+    }
+
     // Called under the telemetry lock from finish(), which is the one place a
     // request — as opposed to an attempt — is accounted for, so a failover adds
     // one request here and two to the relay stats, exactly as the totals do.
@@ -1743,6 +1755,39 @@ struct ProxyServer::Impl {
         }
 
         auto candidates = order(router.candidatesFor(ctx.model));
+        // The policy reorders the chain the operator's priority produced; it does
+        // not replace it. Ties keep the priority order, and a relay with no
+        // measurement yet sorts after the ones with one — it has not earned a
+        // place at the front, but it is not disqualified either.
+        if (ctx.config.server.routing_policy == "fastest" ||
+            ctx.config.server.routing_policy == "cheapest") {
+            const bool fastest = ctx.config.server.routing_policy == "fastest";
+            const auto metric_of = [&](const Candidate &candidate) -> double {
+                if (!fastest) {
+                    const ProviderConfig *provider = ctx.config.provider(candidate.provider);
+                    if (provider == nullptr ||
+                        (provider->price_in_per_million <= 0.0 &&
+                         provider->price_out_per_million <= 0.0)) {
+                        return -1.0; // unpriced: unknown, so it sorts last
+                    }
+                    return provider->price_in_per_million + provider->price_out_per_million;
+                }
+                // p95 rather than the average: a relay that is usually fast and
+                // occasionally terrible is not the one to try first. 0 means it
+                // has never been measured.
+                const double measured = latencyMetric(candidate.provider);
+                return measured > 0.0 ? measured : -1.0;
+            };
+            std::stable_sort(candidates.begin(), candidates.end(),
+                             [&](const Candidate &a, const Candidate &b) {
+                                 const double left = metric_of(a);
+                                 const double right = metric_of(b);
+                                 if (left < 0.0 || right < 0.0) {
+                                     return left >= 0.0 && right < 0.0; // measured first
+                                 }
+                                 return left < right;
+                             });
+        }
         if (!ctx.affinity_key.empty()) {
             const std::string warm = affinityProvider(ctx.affinity_key, nowUnix());
             if (!warm.empty()) {

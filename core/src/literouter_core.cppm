@@ -103,6 +103,17 @@ struct ServerConfig {
     bool pass_through_unknown = true;
     // Total candidates tried before giving up. 0 means "every candidate".
     int max_attempts = 0;
+    // How the candidate chain is ordered before the first attempt:
+    //   "priority" — the operator's own order (default);
+    //   "fastest"  — relays with a measurement first, by p95 latency, so a slow
+    //                relay stops being tried first just because it was declared
+    //                first;
+    //   "cheapest" — priced relays first, by input+output price per million;
+    //                an unpriced relay sorts last because its cost is unknown
+    //                rather than zero.
+    // Ties keep the priority order, and session affinity still wins over both:
+    // which relay has already seen this conversation is the more specific fact.
+    std::string routing_policy = "priority";
     // How long the whole request may take, across every candidate, in seconds.
     // 0 disables it. `timeout_sec` bounds one attempt and `max_attempts` bounds
     // how many there are, which together can mean several minutes on a chain of

@@ -190,6 +190,24 @@ If all configured providers for a model are in the `Open` state, `literouter` wi
 
 ## Attempt Budget Control (`max_attempts`)
 
+### Candidate Ordering Policy (`routing_policy`)
+
+The chain is ordered by `priority` (then `weight`) by default, which is the answer to "which relay did I declare should be tried first". If you would rather trust **measurements**, hand the decision to a policy:
+
+| Value | Orders by | Fits |
+|---|---|---|
+| `priority` (default) | the declared order | you know the relays' trade-offs and want to keep control |
+| `fastest` | measured **p95** latency (unmeasured last) | several relays serve the model and their latency differs |
+| `cheapest` | input price + output price (unpriced last) | several relays serve the model and their price differs |
+
+Three rules keep it from becoming "random order":
+
+1. **ties keep the priority order** (the sort is stable), so a policy only moves a relay when it has a reason to;
+2. **a relay with no measurement sorts after the measured ones** — it has not earned the front, and it is not disqualified either;
+3. **session affinity outranks both**: a relay that has already answered this conversation still moves to the front, because a prompt-cache hit is the more specific and more certain benefit (see above).
+
+`literouter bench --model <m>` shows what each relay's latency and price actually are before you pick a policy.
+
 ### Session Affinity (`session_affinity_sec`)
 
 The candidate chain is ordered by `priority`/`weight`, which answers "which relay deserves to be tried first" and cannot answer a different question: **which relay has already seen this conversation**.

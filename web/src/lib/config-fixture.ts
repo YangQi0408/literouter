@@ -14,6 +14,7 @@ export function makeServer(overrides: Partial<ServerConfig> = {}): ServerConfig 
     api_key: '',
     pass_through_unknown: true,
     max_attempts: 0,
+    routing_policy: 'priority',
     request_deadline_sec: 0,
     session_affinity_sec: 0,
     reload_on_change: false,

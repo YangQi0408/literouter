@@ -124,6 +124,9 @@ public:
     }
 
     void setMode(Mode mode) { mode_.store(mode); }
+    // A relay that answers slowly on purpose, which is the only way to give the
+    // latency-aware policy something to order by.
+    void setDelayMs(int ms) { delay_ms_.store(ms); }
     void setRetryAfter(std::optional<int> seconds) { retry_after_ = seconds; }
     void resetCounters() {
         chat_requests_.store(0);
@@ -172,6 +175,9 @@ private:
         }
         switch (mode_.load()) {
         case Mode::Normal:
+            if (const int delay = delay_ms_.load(); delay > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+            }
             res.status = 200;
             res.set_content(normal_body_, "application/json");
             return;
@@ -232,6 +238,7 @@ private:
     std::thread thread_;
     std::atomic<bool> stopped_{false};
     std::atomic<Mode> mode_{Mode::Normal};
+    std::atomic<int> delay_ms_{0};
     std::optional<int> retry_after_;
     std::atomic<int> chat_requests_{0};
     std::atomic<int> model_requests_{0};
@@ -2044,6 +2051,125 @@ void group25CostAccounting(StubRelay &relay_a, StubRelay &relay_b) {
     proxy.stop();
 }
 
+// Ordering the chain by what the relays have actually been doing, instead of
+// only by the order someone wrote down. Both policies are opt-in; the default
+// stays the operator's own order.
+void group28RoutingPolicy(StubRelay &relay_a, StubRelay &relay_b) {
+    LR_GROUP("28. a routing policy can order the chain by latency or by price");
+    const auto start_proxy = [](literouter::AppConfig &config, const std::string &policy,
+                                StubRelay &a, StubRelay &b, double price_a, double price_b) {
+        config.server.host = "127.0.0.1";
+        config.server.port = 0;
+        config.server.pass_through_unknown = false;
+        config.server.persist_telemetry = false;
+        config.server.routing_policy = policy;
+        literouter::ProviderConfig first;
+        first.id = "first";
+        first.base_url = a.baseUrl();
+        first.timeout_sec = 10;
+        first.connect_timeout_sec = 2;
+        first.priority = 10; // declared first, so priority order prefers it
+        first.price_in_per_million = price_a;
+        first.price_out_per_million = price_a;
+        literouter::ProviderConfig second;
+        second.id = "second";
+        second.base_url = b.baseUrl();
+        second.timeout_sec = 10;
+        second.connect_timeout_sec = 2;
+        second.priority = 20;
+        second.price_in_per_million = price_b;
+        second.price_out_per_million = price_b;
+        config.providers = {first, second};
+        literouter::RouteConfig route;
+        route.model = kRouteModel;
+        route.targets = {literouter::RouteTarget{.provider = "first", .model = {}},
+                         literouter::RouteTarget{.provider = "second", .model = {}}};
+        config.routes = {route};
+    };
+
+    // ── fastest ─────────────────────────────────────────────────────────────
+    {
+        literouter::AppConfig config;
+        start_proxy(config, "fastest", relay_a, relay_b, 0.0, 0.0);
+        literouter::ProxyServer proxy;
+        const auto started = proxy.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) {
+            return;
+        }
+        const int port = proxy.boundPort();
+        relay_a.resetCounters();
+        relay_b.resetCounters();
+        relay_a.setDelayMs(60);
+        relay_a.setMode(StubRelay::Mode::Normal);
+        relay_b.setMode(StubRelay::Mode::Normal);
+
+        // Turn one: neither relay has been measured, so priority decides.
+        LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+        LR_CHECK_EQ(relay_a.chatRequests(), 1);
+        LR_CHECK_EQ(relay_b.chatRequests(), 0);
+
+        // Turn two: the slow relay fails, so the fast one gets measured.
+        relay_a.setMode(StubRelay::Mode::RateLimit);
+        LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+        LR_CHECK_EQ(relay_b.chatRequests(), 1);
+        relay_a.setMode(StubRelay::Mode::Normal);
+
+        // Turn three: both have been measured now, and the fast one is first even
+        // though it was declared second.
+        const int slow_before = relay_a.chatRequests();
+        LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+        LR_CHECK_MSG(relay_a.chatRequests() == slow_before,
+                     "the 60ms relay was tried first despite a measured-fast alternative");
+        LR_CHECK_EQ(relay_b.chatRequests(), 2);
+        proxy.stop();
+    }
+
+    // ── cheapest ────────────────────────────────────────────────────────────
+    {
+        literouter::AppConfig config;
+        // Declared first and ten times the price of the other one.
+        start_proxy(config, "cheapest", relay_a, relay_b, 10.0, 1.0);
+        literouter::ProxyServer proxy;
+        const auto started = proxy.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) {
+            return;
+        }
+        const int port = proxy.boundPort();
+        relay_a.resetCounters();
+        relay_b.resetCounters();
+        relay_a.setDelayMs(0);
+        relay_a.setMode(StubRelay::Mode::Normal);
+        relay_b.setMode(StubRelay::Mode::Normal);
+
+        LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+        LR_CHECK_MSG(relay_b.chatRequests() == 1 && relay_a.chatRequests() == 0,
+                     std::format("the cheap relay was not preferred: first={} second={}",
+                                 relay_a.chatRequests(), relay_b.chatRequests()));
+        proxy.stop();
+    }
+
+    // ── the default is still the operator's order ───────────────────────────
+    {
+        literouter::AppConfig config;
+        start_proxy(config, "priority", relay_a, relay_b, 10.0, 1.0);
+        literouter::ProxyServer proxy;
+        const auto started = proxy.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) {
+            return;
+        }
+        relay_a.resetCounters();
+        relay_b.resetCounters();
+        LR_CHECK_EQ(postJson(proxy.boundPort(), "/v1/chat/completions", chatRequest(kRouteModel)).status,
+                    200);
+        LR_CHECK_MSG(relay_a.chatRequests() == 1,
+                     "the default policy stopped honouring the declared order");
+        proxy.stop();
+    }
+}
+
 // A config file that changes under a running proxy, for operators who keep the
 // file open in an editor rather than using the console.
 void group27ConfigHotReload(StubRelay &relay_a) {
@@ -2845,6 +2971,7 @@ int main() {
         group25CostAccounting(relay_a, relay_b);
         group26SessionAffinity(relay_a, relay_b);
         group27ConfigHotReload(relay_a);
+        group28RoutingPolicy(relay_a, relay_b);
 #ifndef _WIN32
         group23RequestDeadline(relay_b);
 #endif

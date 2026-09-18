@@ -224,6 +224,7 @@ ServerConfig serverFromJson(const json &node) {
     out.api_key = readString(node, "api_key");
     out.pass_through_unknown = readBool(node, "pass_through_unknown", out.pass_through_unknown);
     out.max_attempts = readInt(node, "max_attempts", out.max_attempts);
+    out.routing_policy = readString(node, "routing_policy", out.routing_policy);
     out.request_deadline_sec = readInt(node, "request_deadline_sec", out.request_deadline_sec);
     out.session_affinity_sec = readInt(node, "session_affinity_sec", out.session_affinity_sec);
     out.reload_on_change = readBool(node, "reload_on_change", out.reload_on_change);
@@ -248,6 +249,7 @@ json serverToJson(const ServerConfig &value) {
     node["api_key"] = value.api_key;
     node["pass_through_unknown"] = value.pass_through_unknown;
     node["max_attempts"] = value.max_attempts;
+    node["routing_policy"] = value.routing_policy;
     node["request_deadline_sec"] = value.request_deadline_sec;
     node["session_affinity_sec"] = value.session_affinity_sec;
     node["reload_on_change"] = value.reload_on_change;

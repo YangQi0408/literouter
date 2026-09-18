@@ -249,6 +249,13 @@ ValidationReport validate(const AppConfig &config) {
                              "will either succeed on the first candidate or time out",
                              config.server.request_deadline_sec));
     }
+    if (config.server.routing_policy != "priority" && config.server.routing_policy != "fastest" &&
+        config.server.routing_policy != "cheapest") {
+        addIssue(report, ValidationIssue::Level::Warning, "server.routing_policy",
+                 std::format("`{}` is not a routing policy; falling back to `priority` "
+                             "(known: priority, fastest, cheapest)",
+                             config.server.routing_policy));
+    }
     if (config.server.circuit_failure_threshold < 1) {
         addIssue(report, ValidationIssue::Level::Warning, "server.circuit_failure_threshold",
                  "values below 1 disable circuit breaking entirely");

@@ -160,6 +160,8 @@ export interface ServerConfig {
   api_key: string
   pass_through_unknown: boolean
   max_attempts: number
+  /** "priority" | "fastest" | "cheapest" — how the candidate chain is ordered. */
+  routing_policy: string
   /** Whole-request budget in seconds; 0 disables it. */
   request_deadline_sec: number
   /** Seconds a conversation stays pinned to the relay that answered it; 0 off. */
