@@ -68,7 +68,8 @@ You can override the default configuration path at any time via:
     "persist_telemetry": true,    // Persist counters and the request log to the state dir (see "Telemetry Persistence")
     "language": "auto",           // UI language: auto / en / zh
     "ui_scale": 1.0,              // GUI display scale: 0.8 ~ 1.5 (0.0 or 1.0 means default)
-    "web_ui": true                // Serve the built-in web console at /ui (a non-loopback host without api_key warns)
+    "web_ui": true,               // Serve the built-in web console at /ui (a non-loopback host without api_key warns)
+    "reload_on_change": false     // Apply the config file when it changes on disk (off by default)
   },
 
   "providers": [
@@ -153,6 +154,7 @@ You can override the default configuration path at any time via:
 | `max_attempts` | `size_t` | `0` | Upper limit of candidate providers to try per request. `0` means try all candidates. |
 | `request_deadline_sec` | `int` | `0` | Whole-request budget in seconds; `0` disables it. Unlike `timeout_sec` (one attempt) and `max_attempts` (how many), this bounds the number a client actually cares about: how long it will wait. Checked between attempts and while waiting for a streamed answer to start; once bytes are committed the answer is not cut short, because truncating it is worse than letting it finish. A value below 5s leaves no room for a second relay, and validation warns about it. |
 | `session_affinity_sec` | `int` | `0` | How long a conversation stays pinned to the relay that **answered it** (seconds); `0` disables it. With it on, a follow-up turn is tried first on the relay that last served that conversation, because the provider can then reuse its **prompt cache** — on a long context that is real money and real latency, and priority order cannot know which relay is warm. Recorded only after a useful answer; a relay whose breaker is open is not held; entries expire and the table is bounded. |
+| `reload_on_change` | `bool` | `false` | Watch the config file and apply it when it changes (off by default). With it on, editing and saving `config.json` takes effect within a few seconds — it rides the same 3-second tick as the telemetry flush — so no reload click and no restart. A save from the console itself does not produce a spurious "reloaded" line. It is off by default because a config that moves under a running proxy should be something the operator asked for. |
 | `circuit_failure_threshold`| `uint32` | `3` | Number of consecutive network/retriable failures before tripping a provider circuit. |
 | `circuit_cooldown_sec` | `uint32` | `30` | Cooldown duration in seconds before testing with a probe request. |
 | `skip_open_circuits` | `bool` | `true` | Whether candidate chain building should deprioritize or skip open circuit providers. |

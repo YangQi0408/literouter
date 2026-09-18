@@ -109,6 +109,13 @@ export function Settings() {
               onChange={(max_attempts) => patch({ max_attempts })}
             />
           </Field>
+          <Field label="reload_on_change" hint={t('hintReload')}>
+            <SwitchField
+              checked={server.reload_on_change}
+              onChange={(reload_on_change) => patch({ reload_on_change })}
+              label="reload_on_change"
+            />
+          </Field>
           <Field label="session_affinity_sec" hint={t('hintAffinity')}>
             <NumberField
               value={server.session_affinity_sec}

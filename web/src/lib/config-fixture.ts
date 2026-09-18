@@ -16,6 +16,7 @@ export function makeServer(overrides: Partial<ServerConfig> = {}): ServerConfig 
     max_attempts: 0,
     request_deadline_sec: 0,
     session_affinity_sec: 0,
+    reload_on_change: false,
     circuit_failure_threshold: 3,
     circuit_cooldown_sec: 30,
     skip_open_circuits: true,

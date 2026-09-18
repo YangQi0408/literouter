@@ -2030,6 +2030,104 @@ void group25CostAccounting(StubRelay &relay_a, StubRelay &relay_b) {
     proxy.stop();
 }
 
+// A config file that changes under a running proxy, for operators who keep the
+// file open in an editor rather than using the console.
+void group27ConfigHotReload(StubRelay &relay_a) {
+    LR_GROUP("27. a changed config file is applied without a restart");
+    TempDir dir;
+    const auto path = dir.path() / "config.json";
+
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+    config.server.log_capacity = 64;
+    config.server.reload_on_change = true;
+    literouter::ProviderConfig provider;
+    provider.id = "alpha";
+    provider.base_url = relay_a.baseUrl();
+    provider.timeout_sec = 10;
+    provider.connect_timeout_sec = 2;
+    config.providers = {provider};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "alpha", .model = {}}};
+    config.routes = {route};
+
+    {
+        literouter::ConfigStore seed;
+        seed.config() = config;
+        const auto written = seed.saveAs(path);
+        LR_CHECK_MSG(written.has_value(), written ? "" : written.error());
+    }
+
+    literouter::ProxyServer proxy;
+    proxy.setConfigPath(path.string());
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    LR_CHECK_EQ(proxy.config().server.log_capacity, 64);
+
+    // The operator edits the file: one field, the way an editor would save it.
+    literouter::AppConfig edited = config;
+    edited.server.log_capacity = 500;
+    {
+        literouter::ConfigStore store;
+        store.config() = edited;
+        const auto written = store.saveAs(path);
+        LR_CHECK_MSG(written.has_value(), written ? "" : written.error());
+    }
+
+    // The watcher runs on the flush tick, so this is a poll with a deadline
+    // rather than a sleep of a guessed length.
+    bool applied = false;
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        if (proxy.config().server.log_capacity == 500) {
+            applied = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    LR_CHECK_MSG(applied, "the file change was not applied");
+
+    bool saw_reload = false;
+    for (const auto &entry : proxy.logsSince(0, 200)) {
+        if (entry.message.find("reloaded from") != std::string::npos) {
+            saw_reload = true;
+        }
+    }
+    LR_CHECK_MSG(saw_reload, "no log entry says the config was reloaded");
+
+    // A server that is not watching must not pick the change up: this is opt-in
+    // because a config that moves under a running proxy is a surprise otherwise.
+    literouter::AppConfig quiet = edited;
+    quiet.server.reload_on_change = false;
+    quiet.server.log_capacity = 128;
+    proxy.updateConfig(quiet);
+    {
+        literouter::ConfigStore store;
+        store.config() = quiet;
+        const auto written = store.saveAs(path);
+        LR_CHECK_MSG(written.has_value(), written ? "" : written.error());
+    }
+    literouter::AppConfig later = quiet;
+    later.server.log_capacity = 777;
+    {
+        literouter::ConfigStore store;
+        store.config() = later;
+        const auto written = store.saveAs(path);
+        LR_CHECK_MSG(written.has_value(), written ? "" : written.error());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+    LR_CHECK_MSG(proxy.config().server.log_capacity == 128,
+                 "a proxy with reload_on_change off applied a file change anyway");
+
+    proxy.stop();
+}
+
 // Prompt-cache affinity: a follow-up turn of a conversation a relay has already
 // answered is worth sending back there, because the provider can then reuse the
 // cached prefix. Priority order cannot know which relay is warm, so the test
@@ -2723,6 +2821,7 @@ int main() {
         group24MetricsEndpoint(relay_a);
         group25CostAccounting(relay_a, relay_b);
         group26SessionAffinity(relay_a, relay_b);
+        group27ConfigHotReload(relay_a);
 #ifndef _WIN32
         group23RequestDeadline(relay_b);
 #endif

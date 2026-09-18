@@ -1342,6 +1342,86 @@ struct ProxyServer::Impl {
                                  state_path.string()));
     }
 
+    // Swaps the routing model in one place, because two callers need it: the
+    // console's edit and the file watcher below. In-flight requests keep the
+    // config they began with; the next request sees this one.
+    void applyConfig(const AppConfig &config) {
+        {
+            std::scoped_lock lock{config_mutex};
+            this->config = config;
+        }
+        router.setConfig(config);
+        {
+            std::scoped_lock lock{telemetry_mutex};
+            log.setCapacity(static_cast<std::size_t>(std::max(16, config.server.log_capacity)));
+        }
+        // A live edit decides whether the next flush writes anything, and marking
+        // it dirty is what makes switching the flag on take effect now rather than
+        // at the next request.
+        setPersistence(config.server.persist_telemetry);
+        markStateDirty();
+    }
+
+    // ── config file watching ─────────────────────────────────────────────────
+    //
+    // Piggybacked on the flush tick rather than given a thread of its own: that
+    // thread already exists, and three seconds is a fine resolution for a human
+    // editing a file. Off unless server.reload_on_change is set.
+    std::filesystem::file_time_type config_stamp{};
+    std::uintmax_t config_size = 0;
+    bool config_stamp_valid = false;
+
+    void rememberConfigStamp() {
+        const std::string path = configPath();
+        if (path.empty()) {
+            config_stamp_valid = false;
+            return;
+        }
+        std::error_code ec;
+        const auto stamp = std::filesystem::last_write_time(path, ec);
+        if (ec) {
+            config_stamp_valid = false;
+            return;
+        }
+        config_stamp = stamp;
+        config_size = std::filesystem::file_size(path, ec);
+        config_stamp_valid = !ec;
+    }
+
+    void checkConfigFile() {
+        const std::string path = configPath();
+        if (path.empty() || !snapshotConfig().server.reload_on_change) {
+            return;
+        }
+        std::error_code ec;
+        const auto stamp = std::filesystem::last_write_time(path, ec);
+        if (ec) {
+            return; // the file went away; the server keeps the config it has
+        }
+        const std::uintmax_t size = std::filesystem::file_size(path, ec);
+        if (ec) {
+            return;
+        }
+        if (config_stamp_valid && stamp == config_stamp && size == config_size) {
+            return;
+        }
+        rememberConfigStamp();
+
+        auto loaded = ConfigStore::load(path);
+        if (!loaded) {
+            recordSystem(std::format("config changed on disk but did not load: {}", loaded.error()),
+                         "error");
+            return;
+        }
+        // The console's own save writes the file too; reloading what is already
+        // running would only log a line that says nothing happened.
+        if (toJsonString(loaded->config()) == toJsonString(snapshotConfig())) {
+            return;
+        }
+        applyConfig(loaded->config());
+        recordSystem(std::format("config reloaded from {} (file changed)", path));
+    }
+
     void startFlusher() {
         if (flusher.joinable()) {
             return;
@@ -1360,6 +1440,7 @@ struct ProxyServer::Impl {
                 if (state_dirty.exchange(false, std::memory_order_relaxed)) {
                     writeState();
                 }
+                checkConfigFile();
             }
         });
     }
@@ -3074,6 +3155,8 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     }
 
     impl_->recordSystem(std::format("listening on http://{}:{}", host, bound));
+    // Remember what the config file looks like now, so that a change is a change.
+    impl_->rememberConfigStamp();
     // Started last: everything above can still fail and return, and a flusher
     // is only wanted once there is a server whose telemetry it can write.
     impl_->startFlusher();
@@ -3122,20 +3205,7 @@ void ProxyServer::stop() {
 }
 
 void ProxyServer::updateConfig(const AppConfig &config) {
-    {
-        std::scoped_lock lock{impl_->config_mutex};
-        impl_->config = config;
-    }
-    impl_->router.setConfig(config);
-    {
-        std::scoped_lock lock{impl_->telemetry_mutex};
-        impl_->log.setCapacity(static_cast<std::size_t>(std::max(16, config.server.log_capacity)));
-    }
-    // A live edit decides whether the next flush writes anything, and marking
-    // it dirty is what makes switching the flag on take effect now rather than
-    // at the next request.
-    impl_->setPersistence(config.server.persist_telemetry);
-    impl_->markStateDirty();
+    impl_->applyConfig(config);
 }
 
 AppConfig ProxyServer::config() const {

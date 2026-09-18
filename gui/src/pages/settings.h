@@ -477,6 +477,23 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                         })
                         .build();
 
+                    contentUi.stack("settings.reload.wrap")
+                        .position(listenerX + 18.0f + halfWidth + 14.0f, listenerY + 354.0f)
+                        .size(halfWidth, 34.0f)
+                        .content([&] {
+                            components::toggleSwitch(contentUi, "settings.reload")
+                                .theme(uiTokens())
+                                .size(halfWidth, 34.0f)
+                                .text(std::string(literouter::i18n::tr("Reload when the file changes")))
+                                .fontSize(13.0f)
+                                .checked(server.reload_on_change)
+                                .onChange([](bool value) {
+                                    appState().store.config().server.reload_on_change = value;
+                                })
+                                .build();
+                        })
+                        .build();
+
                     // Logging card
                     detail::settingsCard(contentUi, "settings.logging", loggingX, loggingY, columnWidth, kLoggingHeight,
                                          std::string(literouter::i18n::tr("Logging")),

@@ -117,6 +117,10 @@ struct ServerConfig {
     // provider can reuse the cached prefix of the prompt: on a long context that
     // is real money and real latency, and priority order cannot know it.
     int session_affinity_sec = 0;
+    // Watch the config file and apply it when it changes, within a few seconds.
+    // Off by default: a config that changes under a running proxy is a surprise
+    // unless the operator asked for it.
+    bool reload_on_change = false;
     // Consecutive upstream failures that trip a relay's breaker.
     int circuit_failure_threshold = 3;
     // How long a tripped breaker stays open, in seconds.

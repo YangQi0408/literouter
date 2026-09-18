@@ -150,6 +150,8 @@ export interface ServerConfig {
   request_deadline_sec: number
   /** Seconds a conversation stays pinned to the relay that answered it; 0 off. */
   session_affinity_sec: number
+  /** Apply the config file when it changes on disk. */
+  reload_on_change: boolean
   circuit_failure_threshold: number
   circuit_cooldown_sec: number
   skip_open_circuits: boolean
