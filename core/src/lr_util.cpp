@@ -487,6 +487,54 @@ std::string humanUptime(double seconds) {
     return std::format("{}s", secs);
 }
 
+std::string redactSecrets(std::string_view text) {
+    if (text.empty()) {
+        return std::string{text};
+    }
+    std::string out{text};
+
+    // One pass per rule. The order matters only in that the private-key block
+    // goes first: the value rules would otherwise chew it into fragments.
+    // ECMAScript grammar, so case-insensitivity is a construction flag rather
+    // than the `(?i)` inline form some engines accept — writing `(?i)` here
+    // would make the pattern match the literal text "(?i)" instead.
+    using Flags = std::regex_constants::syntax_option_type;
+    struct Rule {
+        const char *pattern;
+        const char *replacement;
+        Flags flags = std::regex_constants::ECMAScript;
+    };
+    const Rule rules[] = {
+        // A PEM block, whatever it wraps.
+        {R"(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----)",
+         "[redacted private key]"},
+        // A bearer token, in a header line or pasted into a prompt.
+        {R"((bearer\s+)[A-Za-z0-9._~+/=-]{16,})", "$1[redacted]",
+         std::regex_constants::ECMAScript | std::regex_constants::icase},
+        // Known key prefixes. The prefix survives, so a reader can tell what it
+        // was without being able to use it.
+        {R"(\b(sk-ant-|sk-proj-|sk-|AIza|ghp_|gho_|github_pat_|xoxb-|xoxp-|AKIA|glpat-)[A-Za-z0-9_-]{16,})",
+         "$1[redacted]"},
+        // A JWT: three base64url segments, the first of which decodes to `{"`.
+        {R"(\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})", "[redacted jwt]"},
+        // A labelled value — `api_key: abc…`, `"token":"abc…"` — where the value
+        // is long enough to be a credential rather than a word.
+        {R"(((?:api[_-]?key|access[_-]?token|auth[_-]?token|secret|password)\"?\s*[:=]\s*\"?)([A-Za-z0-9._~+/-]{16,}))",
+         "$1[redacted]", std::regex_constants::ECMAScript | std::regex_constants::icase},
+    };
+    for (const auto &rule : rules) {
+        try {
+            const std::regex pattern{rule.pattern, rule.flags};
+            out = std::regex_replace(out, pattern, rule.replacement);
+        } catch (const std::regex_error &) {
+            // A pattern this build cannot compile is a bug, but it must not take
+            // a request down with it: the body is logged unredacted instead.
+            continue;
+        }
+    }
+    return out;
+}
+
 std::string hexId(std::size_t bytes) {
     // std::random_device on some libc++ builds is deterministic; mixing in the
     // clock and the thread id costs nothing and makes a collision unlikely

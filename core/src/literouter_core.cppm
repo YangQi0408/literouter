@@ -806,6 +806,18 @@ bool endsWith(std::string_view text, std::string_view suffix);
 // Truncates to `limit` bytes on a UTF-8 boundary and appends "…".
 std::string truncateUtf8(std::string_view text, std::size_t limit);
 
+// Masks things that look like credentials in text that is about to be kept:
+// the bodies the log stores when server.log_bodies is on, which are prompts as
+// often as not, and people paste keys into prompts.
+//
+// Deliberately narrow — known key prefixes, a bearer header, a JWT, a private
+// key block, and an `api_key: <long value>` pair. A false positive costs a
+// masked word in a log nobody reads; a false negative costs a leaked key, so
+// the patterns are the ones that are almost never ordinary prose — and the
+// point is not to be a secret scanner, only to stop the obvious ones from
+// being written down.
+std::string redactSecrets(std::string_view text);
+
 // "1.2k", "3.4M" — for the console's compact metric tiles.
 std::string humanCount(std::uint64_t value);
 // "820ms", "12.4s"

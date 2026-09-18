@@ -1041,11 +1041,14 @@ struct ProxyServer::Impl {
     // The answer as the log would keep it: only when the operator asked for
     // bodies, and only up to the limit they set. The request body is capped the
     // same way inside finish().
+    // Redacted before it is truncated, never after: a truncated key is still a
+    // prefix of a key, while a masked one is not a key at all.
     std::string logged_body(const RequestContext &ctx, std::string_view body) const {
         if (!ctx.config.server.log_bodies) {
             return {};
         }
-        return truncateUtf8(body, static_cast<std::size_t>(ctx.config.server.log_body_limit));
+        return truncateUtf8(redactSecrets(body),
+                            static_cast<std::size_t>(ctx.config.server.log_body_limit));
     }
 
     struct AttemptFacts {
@@ -1095,7 +1098,7 @@ struct ProxyServer::Impl {
         entry.response_body = std::move(facts.response_body);
         if (ctx.config.server.log_bodies) {
             const auto limit = static_cast<std::size_t>(ctx.config.server.log_body_limit);
-            entry.request_body = truncateUtf8(ctx.body, limit);
+            entry.request_body = truncateUtf8(redactSecrets(ctx.body), limit);
         }
 
         std::scoped_lock lock{telemetry_mutex};
@@ -1473,8 +1476,9 @@ struct ProxyServer::Impl {
         entry.ttfb_ms = latency_ms;
         entry.message = std::move(message);
         if (ctx.config.server.log_bodies) {
-            entry.request_body =
-                truncateUtf8(ctx.body, static_cast<std::size_t>(ctx.config.server.log_body_limit));
+            entry.request_body = truncateUtf8(
+                redactSecrets(ctx.body),
+                static_cast<std::size_t>(ctx.config.server.log_body_limit));
         }
         appendLog(std::move(entry));
     }
@@ -2370,10 +2374,13 @@ struct ProxyServer::Impl {
                     const bool writable = !sink.is_writable || sink.is_writable();
                     if (writable && log_body && streamed_body->size() < log_body_limit) {
                         // Capped as it goes, so a long answer cannot make the log
-                        // grow beyond what the operator allowed for an entry.
-                        streamed_body->append(
-                            send_chunk, 0, std::min(send_chunk.size(),
-                                                    log_body_limit - streamed_body->size()));
+                        // grow beyond what the operator allowed for an entry, and
+                        // redacted for the same reason the request body is: a
+                        // relay's answer can quote a key back.
+                        const std::string masked = redactSecrets(std::string_view{send_chunk}.substr(
+                            0, std::min(send_chunk.size(),
+                                        log_body_limit - streamed_body->size())));
+                        streamed_body->append(masked);
                     }
                     if (!writable || !sink.write(send_chunk.data(), send_chunk.size())) {
                         // The client hung up. Tell the reader, and unblock it

@@ -1457,6 +1457,21 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
     LR_CHECK_EQ(streamed.status, 200);
     relay_a.setMode(StubRelay::Mode::Normal);
 
+    // The accounting for a streamed answer happens on the server side of the
+    // socket, so a client can be holding the whole body before the provider's
+    // done callback has run. Every wait in this suite is a poll with a deadline
+    // for exactly this reason.
+    const auto waitForRequests = [&proxy](std::uint64_t expected) {
+        for (int attempt = 0; attempt < 200; ++attempt) {
+            if (proxy.snapshot().total_requests >= expected) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
+    };
+    LR_CHECK_MSG(waitForRequests(4), "the four requests this group made were not all accounted for");
+
     // ── the counters ────────────────────────────────────────────────────────
     const literouter::Snapshot after = proxy.snapshot();
     LR_CHECK(after.total_requests >= 4);
@@ -1570,6 +1585,25 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
     LR_CHECK_MSG(saw_text_body, "LogEntry.response_body never written, with log_bodies on");
     LR_CHECK_MSG(saw_stream, "no log entry recorded a streamed request");
     LR_CHECK_MSG(saw_failover, "no log entry recorded a failover");
+
+    // Credentials pasted into a prompt are masked on the way into the log: a log
+    // that leaks the very key it was used to debug is worse than no log.
+    const std::string leaky =
+        R"({"model":"route-model","messages":[{"role":"user","content":"use sk-proj-abcdefghijklmnopqrstuvwx"},)"
+        R"({"role":"user","content":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz"}]})";
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", leaky).status, 200);
+    bool saw_masked = false;
+    for (const auto &entry : proxy.logsSince(0, 500)) {
+        if (entry.request_body.find("[redacted]") != std::string::npos) {
+            saw_masked = true;
+        }
+        LR_CHECK_MSG(entry.request_body.find("sk-proj-abcdefghijklmnopqrstuvwx") ==
+                         std::string::npos,
+                     "a key was written to the log verbatim");
+        LR_CHECK_MSG(entry.request_body.find("abcdefghijklmnopqrstuvwxyz") == std::string::npos,
+                     "a bearer token was written to the log verbatim");
+    }
+    LR_CHECK_MSG(saw_masked, "no log entry recorded a masked credential");
 
     // Bodies are a choice, not a default: with the switch off the same traffic
     // must not put prompts in the log.

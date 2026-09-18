@@ -199,6 +199,33 @@ void testHumanUptime() {
     LR_CHECK_EQ(literouter::humanUptime(90061.0), "1d 1h 1m 1s");
 }
 
+void testRedactSecrets() {
+    LR_GROUP("redactSecrets masks credentials and leaves prose alone");
+    using literouter::redactSecrets;
+
+    // The shapes people paste into prompts: a curl with a bearer token, a key
+    // from a provider dashboard, a JWT, a labelled assignment, a PEM block.
+    LR_CHECK_EQ(redactSecrets("curl -H 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwx' x"),
+                "curl -H 'Authorization: Bearer [redacted]' x");
+    LR_CHECK_EQ(redactSecrets(R"({"api_key":"sk-proj-abcdefghijklmnopqrstuv"})"),
+                R"({"api_key":"sk-proj-[redacted]"})");
+    LR_CHECK(redactSecrets("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnop")
+                 .find("[redacted jwt]") != std::string::npos);
+    LR_CHECK(redactSecrets("api_key: abcdefghijklmnopqrstuvwxyz012345")
+                 .find("[redacted]") != std::string::npos);
+    const std::string pem =
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1234\n-----END RSA PRIVATE KEY-----";
+    LR_CHECK_EQ(redactSecrets(pem), "[redacted private key]");
+
+    // Prose is not a credential: a bare prefix, a short token and ordinary
+    // words must survive untouched, or the log stops being evidence.
+    LR_CHECK_EQ(redactSecrets("the sk- prefix marks an OpenAI key"), "the sk- prefix marks an OpenAI key");
+    LR_CHECK_EQ(redactSecrets("Bearer short"), "Bearer short");
+    LR_CHECK_EQ(redactSecrets("password: hunter2"), "password: hunter2");
+    LR_CHECK_EQ(redactSecrets(""), "");
+    LR_CHECK_EQ(redactSecrets("nothing to hide here"), "nothing to hide here");
+}
+
 void testHexId() {
     LR_GROUP("hexId");
     const std::string id = literouter::hexId();
@@ -364,6 +391,7 @@ int main() {
     testHumanBytes();
     testHumanDuration();
     testHumanUptime();
+    testRedactSecrets();
     testHexId();
     testSecureEquals();
     testSplitBaseUrl();

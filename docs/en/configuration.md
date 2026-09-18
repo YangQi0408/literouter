@@ -157,7 +157,7 @@ You can override the default configuration path at any time via:
 | `circuit_cooldown_sec` | `uint32` | `30` | Cooldown duration in seconds before testing with a probe request. |
 | `skip_open_circuits` | `bool` | `true` | Whether candidate chain building should deprioritize or skip open circuit providers. |
 | `log_capacity` | `size_t` | `200` | Maximum capacity of the in-memory circular log buffer. |
-| `log_bodies` | `bool` | `false` | Whether to record request and response bodies in the log buffer. |
+| `log_bodies` | `bool` | `false` | Whether to record request and response bodies in the log buffer. **Obvious credentials are still masked** (the known `sk-`/`AIza`/`ghp_` prefixes, `Bearer <token>`, JWTs, private-key blocks, `api_key: <long value>`), because prompts are where people paste them; masking happens before truncation, so a partial key is never left behind. |
 | `log_body_limit` | `size_t` | `2048` | Maximum bytes stored per body when `log_bodies` is true. |
 | `persist_telemetry` | `bool` | `true` | Whether counters, per-relay stats and the request log are persisted to the state directory and read back at startup. See "Telemetry Persistence" below. |
 | `language` | `string` | `"auto"` | UI language: `auto` (follow the system locale) / `en` / `zh`. Shared by the CLI and the GUI. |

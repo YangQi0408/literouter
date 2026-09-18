@@ -157,7 +157,7 @@
 | `circuit_cooldown_sec` | `uint32` | `30` | 熔断冷却期时长（秒）。冷却期间该中转站被自动降级至候选链最末端。 |
 | `skip_open_circuits` | `bool` | `true` | 路由调度构建候选链时，是否跳过处于熔断 Open 状态的中转站（除非无其他候选可用）。 |
 | `log_capacity` | `size_t` | `200` | 内存环形日志缓冲区的最大条目容量。超出会自动覆盖最旧记录。 |
-| `log_bodies` | `bool` | `false` | 是否在内存日志中抓取并保存请求体和响应体文本。 |
+| `log_bodies` | `bool` | `false` | 是否在内存日志中抓取并保存请求体和响应体文本。**开启时仍会对明显凭据打码**（`sk-`/`AIza`/`ghp_` 等已知前缀、`Bearer <token>`、JWT、私钥块、`api_key: <长值>`），因为它们常常就贴在提示词里；打码发生在截断之前，因此不会只留下一截密钥。 |
 | `log_body_limit` | `size_t` | `2048` | 开启 `log_bodies` 时单个报文体截断保存的最大字节数。 |
 | `persist_telemetry` | `bool` | `true` | 是否把计数器、逐中转站统计与请求日志持久化到状态目录，重启后自动读回。详见下方“遥测持久化”。 |
 | `language` | `string` | `"auto"` | 界面语言：`auto`（跟随系统区域）/ `en` / `zh`。CLI 与 GUI 共用同一份字典。 |
