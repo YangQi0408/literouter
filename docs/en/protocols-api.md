@@ -279,12 +279,29 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   - a provider object (`base_url`, `api_key`, `protocol`, `headers`, `timeout_sec`) — probes an unsaved entry, which is what a form wants.
 - **Action**: Runs a live connectivity probe and fetches available model names from upstream.
 
-### 6. Graceful Shutdown
+### 6. Prometheus Metrics
+
+- **Request**: `GET /__literouter/metrics`
+- **Response**: Prometheus text format (`text/plain; version=0.0.4`), carrying the *same* numbers as `/__literouter/status` — the console is for a person, this is for a graph, and both read one snapshot.
+- **Metrics**: `literouter_running`, `literouter_uptime_seconds`, `literouter_requests_total` / `successes_total` / `failures_total`, `literouter_active_requests`, `literouter_breakers_open`, `literouter_bytes_out_total`, `literouter_tokens_*_total`, `literouter_latency_ms_avg`, plus per-relay `literouter_relay_*{relay="<id>"}` (requests, successes, failures, client aborts, absorbed retries, bytes in and out, tokens, `latency_ms_last|avg|p95`, `last_used_unixtime`, `healthy`, `cooldown_seconds`).
+- **Auth**: the same `server.api_key` gate as every other management endpoint, which a scraper satisfies with `bearer_token` / `authorization`.
+- **Example** (`prometheus.yml`):
+  ```yaml
+  scrape_configs:
+    - job_name: literouter
+      authorization:
+        credentials_file: /etc/literouter/key
+      static_configs:
+        - targets: ["127.0.0.1:8787"]
+      metrics_path: /__literouter/metrics
+  ```
+
+### 7. Graceful Shutdown
 
 - **Request**: `POST /__literouter/shutdown`
 - **Action**: Gracefully drains connections and terminates the proxy process.
 
-### 7. Read the running config (redacted)
+### 8. Read the running config (redacted)
 
 - **Request**: `GET /__literouter/config`
 - **Response**:
@@ -298,7 +315,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   ```
 - **Redaction**: an `api_key` that is a `${VAR}` reference is returned as written — it names a variable, not a key. A literal key is replaced by an empty string and marked `"api_key_source": "literal"`. **A real secret never crosses the network.**
 
-### 8. Update & Persist Running Config
+### 9. Update & Persist Running Config
 
 - **Request**: `PUT /__literouter/config`
 - **Request Body**: `{ "config": <AppConfig> }` or bare `<AppConfig>` object

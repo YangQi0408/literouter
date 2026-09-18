@@ -1898,6 +1898,85 @@ void group12HangingRelay(HangingRelay &hanger, StubRelay &relay_b,
 
 #endif
 
+// Prometheus exposition: the console is for a person, this is for a graph, and
+// both must read the same numbers or one of them is lying.
+void group24MetricsEndpoint(StubRelay &relay_a) {
+    LR_GROUP("24. the metrics endpoint exposes the same numbers as the console");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+    literouter::ProviderConfig provider;
+    provider.id = "alpha";
+    provider.base_url = relay_a.baseUrl();
+    provider.timeout_sec = 10;
+    provider.connect_timeout_sec = 2;
+    config.providers = {provider};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "alpha", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = proxy.boundPort();
+    relay_a.setMode(StubRelay::Mode::Normal);
+    proxy.resetStats();
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+
+    const Hit scrape = getPath(port, "/__literouter/metrics");
+    LR_CHECK_EQ(scrape.status, 200);
+    LR_CHECK_MSG(scrape.content_type.find("text/plain") != std::string::npos,
+                 "the scraper got " + scrape.content_type);
+    const std::string &body = scrape.body;
+
+    // The shape a scraper needs before it can read anything: a TYPE line per
+    // metric family, and `_total` on the counters.
+    LR_CHECK(body.find("# TYPE literouter_requests_total counter") != std::string::npos);
+    LR_CHECK(body.find("# TYPE literouter_relay_latency_ms_avg gauge") != std::string::npos);
+    LR_CHECK(body.find("literouter_build_info{version=\"") != std::string::npos);
+
+    // And the numbers themselves, against the snapshot the console would render.
+    const literouter::Snapshot snapshot = proxy.snapshot();
+    LR_CHECK(body.find(std::format("literouter_requests_total {}", snapshot.total_requests)) !=
+             std::string::npos);
+    LR_CHECK(body.find(std::format("literouter_relay_requests_total{{relay=\"alpha\"}} {}",
+                                   snapshot.providers[0].requests)) != std::string::npos);
+    LR_CHECK_MSG(body.find("literouter_relay_healthy{relay=\"alpha\"} 1") != std::string::npos,
+                 "a healthy relay was not reported as healthy:\n" + body);
+    LR_CHECK(body.find("literouter_bytes_out_total 0") == std::string::npos ||
+             snapshot.bytes_out == 0);
+
+    // Every non-comment line must be parseable as `name[{labels}] value`, because
+    // one malformed line makes the whole scrape fail.
+    std::size_t cursor = 0;
+    while (cursor <= body.size()) {
+        const std::size_t newline = body.find('\n', cursor);
+        const std::string line =
+            body.substr(cursor, newline == std::string::npos ? std::string::npos : newline - cursor);
+        cursor = newline == std::string::npos ? body.size() + 1 : newline + 1;
+        if (line.empty() || literouter::startsWith(line, "#")) {
+            continue;
+        }
+        const auto at = line.rfind(' ');
+        LR_CHECK_MSG(at != std::string::npos, "no value on a metrics line: " + line);
+        if (at == std::string::npos) {
+            continue;
+        }
+        const std::string value = line.substr(at + 1);
+        LR_CHECK_MSG(!value.empty() && (std::isdigit(static_cast<unsigned char>(value[0])) ||
+                                        value[0] == '-' || value[0] == '+'),
+                     "a metrics value is not a number: " + line);
+    }
+
+    proxy.stop();
+}
+
 // The fourth ingress. It had no streamed coverage at all — and its streamed
 // form had no conversion branch either, so a client asking for
 // `stream: true` on /v1/responses received an empty body.
@@ -2402,6 +2481,7 @@ int main() {
         group19SingleInstance(config);
         group21NoFieldLies(relay_a, relay_b);
         group22ResponsesIngress(relay_a, proxy.boundPort());
+        group24MetricsEndpoint(relay_a);
 #ifndef _WIN32
         group23RequestDeadline(relay_b);
 #endif

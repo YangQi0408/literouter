@@ -159,6 +159,118 @@ json validationJson(const ValidationReport &report) {
     return out;
 }
 
+// ── Prometheus text exposition ──────────────────────────────────────────────
+
+// A label value, escaped as the exposition format requires: a relay id is free
+// text, and an unescaped quote in one would corrupt every line after it.
+std::string metricLabel(std::string_view value) {
+    std::string out;
+    out.reserve(value.size());
+    for (const char c : value) {
+        switch (c) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        default: out.push_back(c); break;
+        }
+    }
+    return out;
+}
+
+// `# TYPE`/`# HELP` then one line per sample. Counters keep their `_total`
+// suffix, gauges do not, and the same snapshot the console renders is what a
+// scraper reads — one source of truth for both.
+std::string metricsText(const Snapshot &snapshot) {
+    std::string out;
+    const auto header = [&out](std::string_view name, std::string_view type, std::string_view help) {
+        out += std::format("# HELP {} {}\n# TYPE {} {}\n", name, help, name, type);
+    };
+    const auto sample = [&out](std::string_view name, const std::string &labels, double value) {
+        if (value == std::floor(value) && std::abs(value) < 1e15) {
+            out += std::format("{}{} {}\n", name, labels, static_cast<long long>(value));
+        } else {
+            out += std::format("{}{} {:.3f}\n", name, labels, value);
+        }
+    };
+    const auto counter = [&out](std::string_view name, const std::string &labels,
+                                std::uint64_t value) {
+        out += std::format("{}{} {}\n", name, labels, value);
+    };
+
+    header("literouter_build_info", "gauge", "Build information; the value is always 1.");
+    out += std::format("literouter_build_info{{version=\"{}\"}} 1\n", metricLabel(snapshot.version));
+
+    header("literouter_running", "gauge", "1 while the listener is accepting requests.");
+    sample("literouter_running", "", snapshot.running ? 1 : 0);
+    header("literouter_uptime_seconds", "gauge", "Seconds since this listener started.");
+    sample("literouter_uptime_seconds", "", snapshot.uptime_sec);
+    header("literouter_active_requests", "gauge", "Requests currently in flight.");
+    sample("literouter_active_requests", "", static_cast<double>(snapshot.active_requests));
+    header("literouter_breakers_open", "gauge", "Relays whose breaker is open right now.");
+    sample("literouter_breakers_open", "", snapshot.breakers_open);
+
+    header("literouter_requests_total", "counter", "Requests finished, by outcome.");
+    counter("literouter_requests_total", "", snapshot.total_requests);
+    counter("literouter_successes_total", "", snapshot.total_success);
+    counter("literouter_failures_total", "", snapshot.total_failure);
+    header("literouter_log_entries_total", "counter",
+           "Request log entries written since this instance started.");
+    counter("literouter_log_entries_total", "", snapshot.log_seq);
+    header("literouter_bytes_out_total", "counter", "Response bytes relayed to clients.");
+    counter("literouter_bytes_out_total", "", snapshot.bytes_out);
+    header("literouter_tokens_total", "counter", "Tokens reported by relays.");
+    counter("literouter_tokens_prompt_total", "", snapshot.tokens_prompt);
+    counter("literouter_tokens_completion_total", "", snapshot.tokens_completion);
+    header("literouter_latency_ms_avg", "gauge",
+           "Exponentially weighted average request latency, in milliseconds.");
+    sample("literouter_latency_ms_avg", "", snapshot.latency_ms_avg);
+
+    header("literouter_relay_requests_total", "counter", "Attempts sent to a relay.");
+    header("literouter_relay_successes_total", "counter", "Attempts a relay answered usefully.");
+    header("literouter_relay_failures_total", "counter", "Attempts a relay failed.");
+    header("literouter_relay_aborted_total", "counter",
+           "Attempts the client abandoned, which count against nobody.");
+    header("literouter_relay_retries_in_total", "counter",
+           "Attempts a relay absorbed after another one failed.");
+    header("literouter_relay_bytes_in_total", "counter", "Request bytes sent to a relay.");
+    header("literouter_relay_bytes_out_total", "counter", "Response bytes received from a relay.");
+    header("literouter_relay_tokens_prompt_total", "counter", "Prompt tokens a relay reported.");
+    header("literouter_relay_tokens_completion_total", "counter",
+           "Completion tokens a relay reported.");
+    header("literouter_relay_latency_ms_last", "gauge", "Latency of a relay's last attempt.");
+    header("literouter_relay_latency_ms_avg", "gauge", "A relay's average latency.");
+    header("literouter_relay_latency_ms_p95", "gauge",
+           "A relay's 95th percentile latency over its recent attempts.");
+    header("literouter_relay_last_used_unixtime", "gauge", "When a relay was last tried.");
+    header("literouter_relay_healthy", "gauge",
+           "1 when a relay is usable, 0 while its breaker is open or it is disabled.");
+    header("literouter_relay_cooldown_seconds", "gauge",
+           "Seconds left in a relay's breaker window.");
+    for (const auto &stat : snapshot.providers) {
+        const std::string labels = std::format("{{relay=\"{}\"}}", metricLabel(stat.provider));
+        counter("literouter_relay_requests_total", labels, stat.requests);
+        counter("literouter_relay_successes_total", labels, stat.successes);
+        counter("literouter_relay_failures_total", labels, stat.failures);
+        counter("literouter_relay_aborted_total", labels, stat.aborted);
+        counter("literouter_relay_retries_in_total", labels, stat.retries_in);
+        counter("literouter_relay_bytes_in_total", labels, stat.bytes_in);
+        counter("literouter_relay_bytes_out_total", labels, stat.bytes_out);
+        counter("literouter_relay_tokens_prompt_total", labels, stat.tokens_prompt);
+        counter("literouter_relay_tokens_completion_total", labels, stat.tokens_completion);
+        sample("literouter_relay_latency_ms_last", labels, stat.latency_ms_last);
+        sample("literouter_relay_latency_ms_avg", labels, stat.latency_ms_avg);
+        sample("literouter_relay_latency_ms_p95", labels, stat.latency_ms_p95);
+        sample("literouter_relay_last_used_unixtime", labels, stat.last_used_unix);
+    }
+    for (const auto &health : snapshot.health) {
+        const std::string labels = std::format("{{relay=\"{}\"}}", metricLabel(health.provider));
+        sample("literouter_relay_healthy", labels,
+               health.state == ProviderHealth::State::Healthy ? 1 : 0);
+        sample("literouter_relay_cooldown_seconds", labels, health.cooldown_remaining);
+    }
+    return out;
+}
+
 constexpr std::size_t kMaxRequestBody = 16ull * 1024 * 1024;
 // How much un-drained upstream data may sit in a bridge before the reader stops
 // pulling. Bounded so a fast relay cannot balloon the process, high enough that
@@ -2615,6 +2727,15 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     server.Get(admin + "/status", [this](const h::Request &, h::Response &res) {
         res.status = 200;
         res.set_content(toJsonString(snapshot()), "application/json");
+    });
+
+    // The same numbers the console renders, in the format a scraper reads. On
+    // the management surface, so it inherits the same key check as everything
+    // else there: a scraper can send a bearer token, and these counters reveal
+    // which relays exist and how they behave.
+    server.Get(admin + "/metrics", [this](const h::Request &, h::Response &res) {
+        res.status = 200;
+        res.set_content(metricsText(snapshot()), "text/plain; version=0.0.4; charset=utf-8");
     });
 
     server.Get(admin + "/logs", [this](const h::Request &req, h::Response &res) {
