@@ -722,7 +722,25 @@ inline void composeLogDetail(eui::Ui& ui, const eui::Screen& screen) {
                                  (entry.stream ? std::string(" · ") + std::string(literouter::i18n::tr("streamed")) : ""),
                              entry.failover ? p.warn : p.text);
 
-            const float messageY = rowY0 + rowGap * 2.0f + 40.0f;
+            // Where the request's time went. One row for all three, in the order
+            // they are spent, because three more labelled cells would not fit the
+            // grid and the numbers only mean anything together.
+            const std::string timing = [&entry] {
+                std::string text = std::string(literouter::i18n::tr("wait")) + " " +
+                                   literouter::humanMillis(entry.wait_ms) + "  ·  " +
+                                   std::string(literouter::i18n::tr("first byte")) + " " +
+                                   literouter::humanMillis(entry.ttfb_ms);
+                if (entry.stream_ms > 0.0) {
+                    text += "  ·  " + std::string(literouter::i18n::tr("stream")) + " " +
+                            literouter::humanMillis(entry.stream_ms);
+                }
+                return text;
+            }();
+            detail::keyValue(ui, "overlays.logdetail.timing", 28.0f, rowY0 + rowGap * 3.0f,
+                             colWidth * 2.0f + 12.0f,
+                             std::string(literouter::i18n::tr("TIMING")), timing, p.textMuted);
+
+            const float messageY = rowY0 + rowGap * 3.0f + 40.0f;
             fieldLabel(ui, "overlays.logdetail.message.label", 28.0f, messageY, panelWidth - 56.0f,
                        std::string(literouter::i18n::tr("MESSAGE")));
             ui.rect("overlays.logdetail.message.bg")

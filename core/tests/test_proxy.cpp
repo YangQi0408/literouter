@@ -1518,10 +1518,25 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
         if (!entry.response_body.empty()) {
             saw_text_body = true;
         }
+        // The phases: a buffered answer is one number (the relay's time to its
+        // first byte, since httplib cannot separate connect from answer), and a
+        // streamed one splits into "started answering" and "finished answering".
+        LR_CHECK_MSG(entry.ttfb_ms > 0.0, "LogEntry.ttfb_ms never written" + where);
+        LR_CHECK_MSG(entry.ttfb_ms <= entry.latency_ms + 1.0,
+                     "ttfb is larger than the request it belongs to" + where);
+        if (entry.attempt > 1) {
+            LR_CHECK_MSG(entry.wait_ms > 0.0,
+                         "an entry that followed an earlier candidate recorded no wait" + where);
+        }
         if (entry.stream) {
             saw_stream = true;
+            LR_CHECK_MSG(entry.stream_ms > 0.0,
+                         "a streamed entry recorded no streaming phase" + where);
             LR_CHECK_MSG(!entry.response_body.empty(),
                          "a streamed answer wrote no response body, with log_bodies on");
+        } else {
+            LR_CHECK_MSG(entry.stream_ms == 0.0,
+                         "a buffered entry recorded a streaming phase" + where);
         }
         if (entry.failover) {
             saw_failover = true;

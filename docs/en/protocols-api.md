@@ -251,6 +251,16 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   - `since`: Retrieve logs strictly newer than sequence ID `id`;
   - `limit`: Maximum number of entries (default 100).
 
+  Each entry splits its latency into **three phases** (`wait_ms` / `ttfb_ms` / `stream_ms`), in the order they are spent:
+
+  | Field | Meaning |
+  |---|---|
+  | `wait_ms` | From the request arriving to *this relay* being tried — queueing plus whatever earlier candidates cost, which is what makes the price of a failover chain visible |
+  | `ttfb_ms` | From the attempt starting to the first response byte: the relay's own thinking time. A buffered answer cannot be split further (httplib reports one number for connect-plus-answer), so there it is the whole call |
+  | `stream_ms` | From the first byte to the last: the streaming phase, always 0 for a buffered answer |
+
+  A streamed request is therefore the one case where "how long it took to start answering" and "how long the answer took" are separable — the two numbers that matter when comparing relays.
+
 ### 3. Hot Reload Configuration
 
 - **Request**: `POST /__literouter/reload`

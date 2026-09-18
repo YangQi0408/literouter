@@ -421,6 +421,9 @@ struct StreamBridge {
     bool aborted = false;
 
     int status = 0;
+    // When the relay's first response byte arrived, which is where its own
+    // thinking time ends and the streaming of the answer begins.
+    double headers_unix = 0.0;
     std::vector<std::pair<std::string, std::string>> headers;
     std::string error;
     // The transport's own code, not just its text: the retry below is only for
@@ -604,6 +607,9 @@ LogEntry logEntryFromJson(const json &item) {
     entry.attempt = item.value("attempt", 1);
     entry.attempts_total = item.value("attempts_total", 1);
     entry.latency_ms = item.value("latency_ms", 0.0);
+    entry.wait_ms = item.value("wait_ms", 0.0);
+    entry.ttfb_ms = item.value("ttfb_ms", 0.0);
+    entry.stream_ms = item.value("stream_ms", 0.0);
     entry.bytes = item.value("bytes", std::uint64_t{0});
     entry.message = item.value("message", std::string{});
     entry.request_body = item.value("request_body", std::string{});
@@ -832,6 +838,10 @@ struct ProxyServer::Impl {
         int status = 0;
         std::uint64_t bytes = 0;
         std::string message;
+        // Where the time went — see LogEntry for what each of the three means.
+        double wait_ms = 0.0;
+        double ttfb_ms = 0.0;
+        double stream_ms = 0.0;
         // The answer as the client received it. Only kept when log_bodies is on
         // (the caller passes what it already capped).
         std::string response_body;
@@ -858,6 +868,9 @@ struct ProxyServer::Impl {
         entry.attempt = facts.attempt;
         entry.attempts_total = facts.attempts_total;
         entry.latency_ms = (nowUnix() - ctx.started) * 1000.0;
+        entry.wait_ms = facts.wait_ms;
+        entry.ttfb_ms = facts.ttfb_ms;
+        entry.stream_ms = facts.stream_ms;
         entry.bytes = facts.bytes;
         entry.message = std::move(facts.message);
         entry.response_body = std::move(facts.response_body);
@@ -1197,7 +1210,7 @@ struct ProxyServer::Impl {
     // without them a failover reads as "something went wrong, somewhere,
     // eventually".
     void logFailover(const RequestContext &ctx, const std::string &provider, int attempt,
-                     std::string upstream_model, double latency_ms, int status,
+                     std::string upstream_model, double latency_ms, double wait_ms, int status,
                      std::string message, int attempts_total) {
         LogEntry entry;
         entry.level = "warn";
@@ -1212,6 +1225,9 @@ struct ProxyServer::Impl {
         entry.attempts_total = attempts_total > 0 ? attempts_total : 1;
         entry.failover = true;
         entry.latency_ms = latency_ms;
+        entry.wait_ms = wait_ms;
+        // A relay that never answered spent its whole latency getting there.
+        entry.ttfb_ms = latency_ms;
         entry.message = std::move(message);
         if (ctx.config.server.log_bodies) {
             entry.request_body =
@@ -1381,7 +1397,9 @@ struct ProxyServer::Impl {
                 continue;
             }
 
+            const double attempt_started = nowUnix();
             UpstreamResult result = upstreamPost(*provider, path, payload);
+            const auto waited_ms = [&] { return (attempt_started - ctx.started) * 1000.0; };
             if (!result.ok) {
                 last_error = std::format("{}: {}", provider->id, result.error);
                 last_status = 502;
@@ -1407,7 +1425,7 @@ struct ProxyServer::Impl {
                 recordAttempt(provider->id, AttemptOutcome::Failure, result.latency_ms, 0, 0, 0,
                               payload.size());
                 logFailover(ctx, provider->id, static_cast<int>(attempt), upstream_model,
-                            result.latency_ms, result.status,
+                            result.latency_ms, waited_ms(), result.status,
                             std::format("{} — failing over", last_error),
                             static_cast<int>(budget));
                 continue;
@@ -1480,6 +1498,11 @@ struct ProxyServer::Impl {
                          .status = result.status,
                          .bytes = out_body.size(),
                          .message = std::format("{} → {}", ctx.model, upstream_model),
+                         // A buffered answer arrives in one piece: httplib reports one
+                         // number for connect-plus-answer, so that number is the relay's
+                         // time to first byte and there is no streaming phase to report.
+                         .wait_ms = waited_ms(),
+                         .ttfb_ms = result.latency_ms,
                          .response_body = logged_body(ctx, out_body),
                          .failover = attempt > 0,
                          .attempt = static_cast<int>(attempt) + 1,
@@ -1576,6 +1599,7 @@ struct ProxyServer::Impl {
             upstream.response_handler = [bridge](const h::Response &response) {
                 std::scoped_lock lock{bridge->mutex};
                 bridge->status = response.status;
+                bridge->headers_unix = nowUnix();
                 bridge->headers.clear();
                 for (const auto &[name, value] : response.headers) {
                     bridge->headers.emplace_back(name, value);
@@ -1634,6 +1658,10 @@ struct ProxyServer::Impl {
         };
 
         const double attempt_started = nowUnix();
+        // Everything before this attempt — the proxy's own hand-off and whatever
+        // earlier candidates cost — is "wait", and it is the number that makes a
+        // failover chain's price visible.
+        const auto waited_ms = [&] { return (attempt_started - ctx.started) * 1000.0; };
         open_transport();
         bool got_headers = wait_for_gate();
         if (!got_headers) {
@@ -1683,7 +1711,7 @@ struct ProxyServer::Impl {
             recordAttempt(provider.id, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0);
             logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
-                        (nowUnix() - attempt_started) * 1000.0, 0,
+                        (nowUnix() - attempt_started) * 1000.0, waited_ms(), 0,
                         std::format("{} — failing over", reason), static_cast<int>(budget));
             return 502;
         }
@@ -1730,7 +1758,7 @@ struct ProxyServer::Impl {
             recordAttempt(provider.id, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
             logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
-                        (nowUnix() - attempt_started) * 1000.0, status,
+                        (nowUnix() - attempt_started) * 1000.0, waited_ms(), status,
                         std::format("HTTP {} — failing over", status), static_cast<int>(budget));
             return status;
         }
@@ -1785,7 +1813,7 @@ struct ProxyServer::Impl {
                 recordAttempt(provider.id, AttemptOutcome::Failure,
                               (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
                 logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
-                            (nowUnix() - attempt_started) * 1000.0, status,
+                            (nowUnix() - attempt_started) * 1000.0, waited_ms(), status,
                             std::format("{} — failing over", last_error),
                             static_cast<int>(budget));
                 return status;
@@ -1920,6 +1948,21 @@ struct ProxyServer::Impl {
              stream_ok, attempt_number, total_attempts, attempt_started,
              adapter, usage_observer, provider_root = root, provider, log_body, log_body_limit,
              streamed_body, payload_size](std::size_t, h::DataSink &sink) -> bool {
+                // Where this attempt's time went. `headers_unix` is the first
+                // response byte, which is the boundary between the relay thinking
+                // and the answer arriving; before it, the whole elapsed time is
+                // the relay's (or a failure's).
+                const auto phases = [&bridge, attempt_started](double fallback_ttfb) {
+                    double first_byte = 0.0;
+                    {
+                        std::scoped_lock lock{bridge->mutex};
+                        first_byte = bridge->headers_unix;
+                    }
+                    const std::pair<double, double> out{
+                        first_byte > 0.0 ? (first_byte - attempt_started) * 1000.0 : fallback_ttfb,
+                        first_byte > 0.0 ? (nowUnix() - first_byte) * 1000.0 : 0.0};
+                    return out;
+                };
                 for (;;) {
                     std::string chunk;
                     bool done = false;
@@ -1970,6 +2013,12 @@ struct ProxyServer::Impl {
                         const double latency = (nowUnix() - attempt_started) * 1000.0;
                         const std::uint64_t bytes = bridge->bytes_out.load();
                         const TokenUsage tokens = usage_observer->usage();
+                        // A stream is the one case where the two halves of a
+                        // relay's cost are separable: how long it took to start
+                        // answering, and how long the answer took to arrive.
+                        const std::pair<double, double> measured = phases(latency);
+                        const double ttfb = measured.first;
+                        const double streamed_for = measured.second;
                         recordAttempt(provider_id,
                                       stream_ok ? AttemptOutcome::Success
                                                 : AttemptOutcome::Failure,
@@ -1985,6 +2034,9 @@ struct ProxyServer::Impl {
                                              .message = std::format("stream complete · {} · {}",
                                                                     humanBytes(bytes),
                                                                     humanMillis(latency)),
+                                             .wait_ms = (attempt_started - request_ctx.started) * 1000.0,
+                                             .ttfb_ms = ttfb,
+                                             .stream_ms = streamed_for,
                                              .response_body = log_body ? *streamed_body
                                                                        : std::string{},
                                              .failover = failover,
@@ -2035,6 +2087,7 @@ struct ProxyServer::Impl {
                         retireUpstreamConnection(provider_root, provider);
                         const double latency = (nowUnix() - attempt_started) * 1000.0;
                         const std::uint64_t bytes = bridge->bytes_out.load();
+                        const std::pair<double, double> measured = phases(latency);
                         recordAttempt(provider_id, AttemptOutcome::Aborted, latency, bytes, 0, 0,
                                       payload_size);
                         finish(request_ctx,
@@ -2043,6 +2096,9 @@ struct ProxyServer::Impl {
                                 .status = 0,
                                 .bytes = bytes,
                                 .message = "client disconnected before the stream ended",
+                                .wait_ms = (attempt_started - request_ctx.started) * 1000.0,
+                                .ttfb_ms = measured.first,
+                                .stream_ms = measured.second,
                                 .response_body = log_body ? *streamed_body : std::string{},
                                 .failover = failover,
                                 .attempt = attempt_number,

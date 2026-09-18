@@ -1,5 +1,6 @@
 import { Badge } from '@/components/ui/badge'
 import type { LogEntry } from '@/lib/api'
+import { humanMillis } from '@/lib/format'
 import { levelBadgeClass, statusBadgeClass } from '@/lib/present'
 import { useI18n } from '@/lib/i18n'
 
@@ -59,7 +60,22 @@ export function LogTable({ entries }: { entries: LogEntry[] }) {
                     {entry.status || '—'}
                   </Badge>
                 </td>
-                <td className="text-right font-mono text-xs tnum">
+                <td
+                  className="text-right font-mono text-xs tnum"
+                  // Where the time went, on hover: the phases only mean anything
+                  // together, and a column each would not fit the table.
+                  title={
+                    entry.latency_ms
+                      ? [
+                          `${t('wait')} ${humanMillis(entry.wait_ms)}`,
+                          `${t('first byte')} ${humanMillis(entry.ttfb_ms)}`,
+                          entry.stream_ms > 0 ? `${t('stream')} ${humanMillis(entry.stream_ms)}` : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')
+                      : undefined
+                  }
+                >
                   {entry.latency_ms ? Math.round(entry.latency_ms) : ''}
                 </td>
                 <td className="max-w-[34rem] text-xs break-words text-muted-foreground">

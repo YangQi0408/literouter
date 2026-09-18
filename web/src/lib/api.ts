@@ -27,6 +27,11 @@ export interface LogEntry {
   attempt: number
   attempts_total: number
   latency_ms: number
+  /** Where that latency went: waiting for an earlier candidate, the relay's time
+   *  to its first byte, and the streaming phase (0 when it arrived at once). */
+  wait_ms: number
+  ttfb_ms: number
+  stream_ms: number
   bytes: number
   message: string
 }

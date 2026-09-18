@@ -353,6 +353,18 @@ struct LogEntry {
     int attempt = 1;
     int attempts_total = 1;
     double latency_ms = 0.0;
+    // Where that latency went, in the order it was spent:
+    //   wait_ms   — from the request arriving to this relay being tried, which
+    //               is queueing plus whatever earlier candidates cost;
+    //   ttfb_ms   — from the attempt starting to its first response byte (the
+    //               relay's own thinking time);
+    //   stream_ms — from the first byte to the last one whne the relay streamed
+    //               its answer, and 0 when it arrived in one piece.
+    // A buffered answer cannot be split further: httplib reports one number for
+    // connect-plus-answer, so it reports that as ttfb.
+    double wait_ms = 0.0;
+    double ttfb_ms = 0.0;
+    double stream_ms = 0.0;
     std::uint64_t bytes = 0;
     std::string message;
     std::string request_body;     // only when server.log_bodies

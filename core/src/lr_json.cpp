@@ -503,6 +503,9 @@ std::string toJsonString(const LogEntry &entry) {
     node["attempt"] = entry.attempt;
     node["attempts_total"] = entry.attempts_total;
     node["latency_ms"] = entry.latency_ms;
+    node["wait_ms"] = entry.wait_ms;
+    node["ttfb_ms"] = entry.ttfb_ms;
+    node["stream_ms"] = entry.stream_ms;
     node["bytes"] = entry.bytes;
     node["message"] = entry.message;
     if (!entry.request_body.empty()) {
