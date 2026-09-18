@@ -66,6 +66,7 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
     {"AVG LATENCY", "平均延迟"},
     {"TOKENS", "Token 数"},
     {"BYTES OUT", "下发流量"},
+    {"BYTES IN / OUT", "进出流量"},
     {"RELAY TRAFFIC", "中转流量"},
     {"CIRCUIT BREAKER", "熔断告警"},
     {"RELAYS", "中转站列表"},

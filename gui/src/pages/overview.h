@@ -38,7 +38,7 @@ inline float composeMetricRow(eui::Ui& ui, float x, float y, float width) {
         std::string(literouter::i18n::tr("IN FLIGHT")),
         std::string(literouter::i18n::tr("AVG LATENCY")),
         std::string(literouter::i18n::tr("TOKENS")),
-        std::string(literouter::i18n::tr("BYTES OUT"))
+        std::string(literouter::i18n::tr("BYTES IN / OUT"))
     };
     const std::string values[6] = {
         literouter::humanCount(snap.total_requests),
@@ -143,6 +143,9 @@ inline void composeRelayCard(eui::Ui& ui, float x, float y, float width, std::si
     const std::uint64_t failures = stat != nullptr ? stat->failures : 0;
     const double latency = stat != nullptr ? stat->latency_ms_avg : 0.0;
     const std::uint64_t bytesOut = stat != nullptr ? stat->bytes_out : 0;
+    // Both directions, because "how much did this relay cost me in traffic" is
+    // only half a picture: the request is usually the expensive half.
+    const std::uint64_t bytesIn = stat != nullptr ? stat->bytes_in : 0;
 
     const float height = 150.0f;
     const std::string displayName = providerDisplayName(provider);
@@ -208,7 +211,9 @@ inline void composeRelayCard(eui::Ui& ui, float x, float y, float width, std::si
             fieldValue(ui, base + ".latency", 18.0f + (columnWidth + columnGap) * 4.0f, 82.0f,
                        columnWidth, literouter::i18n::tr("AVG LATENCY"), literouter::humanMillis(latency), p.text);
             fieldValue(ui, base + ".bytes", 18.0f + (columnWidth + columnGap) * 5.0f, 82.0f,
-                       columnWidth, literouter::i18n::tr("BYTES OUT"), literouter::humanBytes(bytesOut), p.text);
+                       columnWidth, literouter::i18n::tr("BYTES IN / OUT"),
+                       literouter::humanBytes(bytesIn) + " / " + literouter::humanBytes(bytesOut),
+                       p.text);
 
             const std::string error = health != nullptr ? health->last_error : std::string{};
             ui.text(base + ".error")

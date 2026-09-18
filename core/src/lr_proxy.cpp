@@ -806,27 +806,58 @@ struct ProxyServer::Impl {
 
     // The one place a request is accounted for. Called exactly once per
     // request, on every path, including the ones that never reached a relay.
-    void finish(const RequestContext &ctx, std::string provider, int status,
-                std::uint64_t bytes, std::string message, bool failover = false,
-                int attempt = 1, int attempts_total = 1) {
+    // What one finished request owes the log. A struct rather than eight more
+    // positional arguments: `status, bytes, message, failover, attempt...` at a
+    // call site said nothing about which was which, and adding the upstream
+    // model and the response body made that worse rather than better.
+    // The answer as the log would keep it: only when the operator asked for
+    // bodies, and only up to the limit they set. The request body is capped the
+    // same way inside finish().
+    std::string logged_body(const RequestContext &ctx, std::string_view body) const {
+        if (!ctx.config.server.log_bodies) {
+            return {};
+        }
+        return truncateUtf8(body, static_cast<std::size_t>(ctx.config.server.log_body_limit));
+    }
+
+    struct AttemptFacts {
+        std::string provider;
+        // What the relay was actually asked for, which differs from what the
+        // client asked for whenever a route renames the model. Empty when no
+        // relay was reached.
+        std::string upstream_model;
+        int status = 0;
+        std::uint64_t bytes = 0;
+        std::string message;
+        // The answer as the client received it. Only kept when log_bodies is on
+        // (the caller passes what it already capped).
+        std::string response_body;
+        bool failover = false;
+        int attempt = 1;
+        int attempts_total = 1;
+    };
+
+    void finish(const RequestContext &ctx, AttemptFacts facts) {
         if (ctx.reported->exchange(true)) {
             return;
         }
 
         LogEntry entry;
-        entry.level = status >= 200 && status < 300 ? "info" : "error";
+        entry.level = facts.status >= 200 && facts.status < 300 ? "info" : "error";
         entry.request_id = ctx.id;
         entry.kind = ctx.kind;
         entry.model = ctx.model;
-        entry.provider = std::move(provider);
-        entry.status = status;
+        entry.provider = std::move(facts.provider);
+        entry.upstream_model = std::move(facts.upstream_model);
+        entry.status = facts.status;
         entry.stream = ctx.stream;
-        entry.failover = failover;
-        entry.attempt = attempt;
-        entry.attempts_total = attempts_total;
+        entry.failover = facts.failover;
+        entry.attempt = facts.attempt;
+        entry.attempts_total = facts.attempts_total;
         entry.latency_ms = (nowUnix() - ctx.started) * 1000.0;
-        entry.bytes = bytes;
-        entry.message = std::move(message);
+        entry.bytes = facts.bytes;
+        entry.message = std::move(facts.message);
+        entry.response_body = std::move(facts.response_body);
         if (ctx.config.server.log_bodies) {
             const auto limit = static_cast<std::size_t>(ctx.config.server.log_body_limit);
             entry.request_body = truncateUtf8(ctx.body, limit);
@@ -834,12 +865,12 @@ struct ProxyServer::Impl {
 
         std::scoped_lock lock{telemetry_mutex};
         ++total_requests;
-        if (status >= 200 && status < 300) {
+        if (facts.status >= 200 && facts.status < 300) {
             ++total_success;
-        } else if (status > 0) {
+        } else if (facts.status > 0) {
             ++total_failure;
         }
-        bytes_out += bytes;
+        bytes_out += facts.bytes;
         if (entry.latency_ms > 0.0) {
             latency_ms_avg = latency_ms_avg == 0.0
                                  ? entry.latency_ms
@@ -1117,9 +1148,12 @@ struct ProxyServer::Impl {
     // serving perfectly. Hence three outcomes rather than a bool.
     enum class AttemptOutcome { Success, Failure, Aborted };
 
+    // `bytes` is what went downstream; `bytes_in` is what went upstream, which
+    // is the number that tells an operator whether a relay is being fed the
+    // context it was told to expect.
     void recordAttempt(std::string_view provider, AttemptOutcome outcome, double latency_ms,
                        std::uint64_t bytes, std::uint64_t prompt_tokens,
-                       std::uint64_t completion_tokens) {
+                       std::uint64_t completion_tokens, std::uint64_t bytes_in = 0) {
         std::scoped_lock lock{telemetry_mutex};
         auto &stat = statFor(provider);
         ++stat.requests;
@@ -1129,6 +1163,7 @@ struct ProxyServer::Impl {
         case AttemptOutcome::Aborted: ++stat.aborted; break;
         }
         stat.bytes_out += bytes;
+        stat.bytes_in += bytes_in;
         stat.tokens_prompt += prompt_tokens;
         stat.tokens_completion += completion_tokens;
         stat.last_used_unix = nowUnix();
@@ -1152,17 +1187,28 @@ struct ProxyServer::Impl {
         ++statFor(provider).retries_in;
     }
 
+    // A relay that was passed over, as its own entry: the request's own entry is
+    // written once at the end and cannot say which candidate failed. This is the
+    // line an operator reads when asking why a request moved on, so it carries
+    // the attempt's latency and the model the relay was actually asked for —
+    // without them a failover reads as "something went wrong, somewhere,
+    // eventually".
     void logFailover(const RequestContext &ctx, const std::string &provider, int attempt,
-                     int status, std::string message) {
+                     std::string upstream_model, double latency_ms, int status,
+                     std::string message, int attempts_total) {
         LogEntry entry;
         entry.level = "warn";
         entry.request_id = ctx.id;
         entry.kind = ctx.kind;
         entry.model = ctx.model;
+        entry.upstream_model = std::move(upstream_model);
         entry.provider = provider;
         entry.status = status;
+        entry.stream = ctx.stream;
         entry.attempt = attempt + 1;
+        entry.attempts_total = attempts_total > 0 ? attempts_total : 1;
         entry.failover = true;
+        entry.latency_ms = latency_ms;
         entry.message = std::move(message);
         if (ctx.config.server.log_bodies) {
             entry.request_body =
@@ -1246,7 +1292,7 @@ struct ProxyServer::Impl {
         const json body = json::parse(effective_req_body, nullptr, false);
         if (body.is_discarded() || !body.is_object()) {
             sendError(res, 400, "request body is not a JSON object");
-            finish(ctx, {}, res.status, 0, "malformed JSON body");
+            finish(ctx, {.status = res.status, .message = "malformed JSON body"});
             return;
         }
 
@@ -1257,7 +1303,7 @@ struct ProxyServer::Impl {
         }
         if (ctx.model.empty()) {
             sendError(res, 400, "`model` is required");
-            finish(ctx, {}, res.status, 0, "missing model");
+            finish(ctx, {.status = res.status, .message = "missing model"});
             return;
         }
 
@@ -1277,7 +1323,7 @@ struct ProxyServer::Impl {
                                   "relay's `models` array.",
                                   ctx.model),
                       "invalid_request_error", "model_not_found");
-            finish(ctx, {}, res.status, 0, "no candidate");
+            finish(ctx, {.status = res.status, .message = "no candidate"});
             return;
         }
 
@@ -1337,6 +1383,8 @@ struct ProxyServer::Impl {
                 last_error = std::format("{}: {}", provider->id, result.error);
                 last_status = 502;
                 router.recordFailure(provider->id, result.error, nowUnix());
+                // No response at all: the request never reached the relay's
+                // socket, so it counts as nothing sent.
                 recordAttempt(provider->id, AttemptOutcome::Failure, result.latency_ms, 0, 0, 0);
                 continue;
             }
@@ -1353,9 +1401,12 @@ struct ProxyServer::Impl {
                 last_status = result.status;
                 router.recordFailure(provider->id, last_error, nowUnix(),
                                      retryAfterSeconds(result.headers));
-                recordAttempt(provider->id, AttemptOutcome::Failure, result.latency_ms, 0, 0, 0);
-                logFailover(ctx, provider->id, static_cast<int>(attempt), result.status,
-                            std::format("{} — failing over", last_error));
+                recordAttempt(provider->id, AttemptOutcome::Failure, result.latency_ms, 0, 0, 0,
+                              payload.size());
+                logFailover(ctx, provider->id, static_cast<int>(attempt), upstream_model,
+                            result.latency_ms, result.status,
+                            std::format("{} — failing over", last_error),
+                            static_cast<int>(budget));
                 continue;
             }
 
@@ -1382,7 +1433,7 @@ struct ProxyServer::Impl {
             recordAttempt(provider->id,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
                           result.latency_ms, result.body.size(), usage.tokens_prompt,
-                          usage.tokens_completion);
+                          usage.tokens_completion, payload.size());
             if (good && attempt > 0) {
                 noteAbsorbed(provider->id);
             }
@@ -1421,10 +1472,15 @@ struct ProxyServer::Impl {
             }
             res.set_content(out_body, out_content_type);
 
-            finish(ctx, provider->id, result.status, out_body.size(),
-                   std::format("{} → {}", ctx.model, upstream_model),
-                   /*failover=*/attempt > 0, static_cast<int>(attempt) + 1,
-                   static_cast<int>(budget));
+            finish(ctx, {.provider = provider->id,
+                         .upstream_model = upstream_model,
+                         .status = result.status,
+                         .bytes = out_body.size(),
+                         .message = std::format("{} → {}", ctx.model, upstream_model),
+                         .response_body = logged_body(ctx, out_body),
+                         .failover = attempt > 0,
+                         .attempt = static_cast<int>(attempt) + 1,
+                         .attempts_total = static_cast<int>(budget)});
             return;
         }
 
@@ -1435,8 +1491,11 @@ struct ProxyServer::Impl {
             last_error = std::format("every relay for `{}` was skipped or disabled", ctx.model);
         }
         sendError(res, status, last_error, "upstream_error", "all_relays_failed");
-        finish(ctx, {}, status, 0, last_error, /*failover=*/budget > 1,
-               static_cast<int>(budget), static_cast<int>(budget));
+        finish(ctx, {.status = status,
+                     .message = last_error,
+                     .failover = budget > 1,
+                     .attempt = static_cast<int>(budget),
+                     .attempts_total = static_cast<int>(budget)});
     }
 
     // Runs one streaming attempt. Returns 0 when the response was committed —
@@ -1523,6 +1582,11 @@ struct ProxyServer::Impl {
             return true;
         };
 
+        // What the relay was asked for: the route's model when it renames, the
+        // client's otherwise. Declared before the gate because every outcome —
+        // including the failovers, which log their own entry — records it.
+        const std::string upstream_model = candidate.model.empty() ? ctx.model : candidate.model;
+
         const double attempt_started = nowUnix();
         std::thread reader([bridge, client, upstream = std::move(upstream)]() mutable {
             auto result = client->send(upstream);
@@ -1571,8 +1635,9 @@ struct ProxyServer::Impl {
             router.recordFailure(provider.id, reason, nowUnix());
             recordAttempt(provider.id, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0);
-            logFailover(ctx, provider.id, static_cast<int>(attempt), 0,
-                        std::format("{} — failing over", reason));
+            logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
+                        (nowUnix() - attempt_started) * 1000.0, 0,
+                        std::format("{} — failing over", reason), static_cast<int>(budget));
             return 502;
         }
 
@@ -1581,6 +1646,7 @@ struct ProxyServer::Impl {
             std::scoped_lock lock{bridge->mutex};
             status = bridge->status;
         }
+
 
         if (Router::retryableStatus(status) && attempt + 1 < budget) {
             // Drain the error body first: it is the diagnostic the log keeps,
@@ -1615,9 +1681,10 @@ struct ProxyServer::Impl {
             router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix(),
                                  retryAfterSeconds(retry_headers));
             recordAttempt(provider.id, AttemptOutcome::Failure,
-                          (nowUnix() - attempt_started) * 1000.0, 0, 0, 0);
-            logFailover(ctx, provider.id, static_cast<int>(attempt), status,
-                        std::format("HTTP {} — failing over", status));
+                          (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
+            logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
+                        (nowUnix() - attempt_started) * 1000.0, status,
+                        std::format("HTTP {} — failing over", status), static_cast<int>(budget));
             return status;
         }
 
@@ -1669,9 +1736,11 @@ struct ProxyServer::Impl {
                 router.recordFailure(provider.id, last_error, nowUnix(),
                                      retryAfterSeconds(error_headers));
                 recordAttempt(provider.id, AttemptOutcome::Failure,
-                              (nowUnix() - attempt_started) * 1000.0, 0, 0, 0);
-                logFailover(ctx, provider.id, static_cast<int>(attempt), status,
-                            std::format("{} — failing over", last_error));
+                              (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
+                logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
+                            (nowUnix() - attempt_started) * 1000.0, status,
+                            std::format("{} — failing over", last_error),
+                            static_cast<int>(budget));
                 return status;
             }
 
@@ -1685,7 +1754,8 @@ struct ProxyServer::Impl {
             }
             recordAttempt(provider.id,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
-                          (nowUnix() - attempt_started) * 1000.0, body.size(), 0, 0);
+                          (nowUnix() - attempt_started) * 1000.0, body.size(), 0, 0,
+                          payload.size());
 
             std::string out_body = body;
             std::string out_content_type = contentTypeOf(error_headers);
@@ -1710,9 +1780,16 @@ struct ProxyServer::Impl {
                 }
             }
             res.set_content(out_body, out_content_type);
-            finish(ctx, provider.id, status, out_body.size(),
-                   std::format("stream rejected with HTTP {} — returned verbatim", status),
-                   attempt > 0, static_cast<int>(attempt) + 1, static_cast<int>(budget));
+            finish(ctx, {.provider = provider.id,
+                         .upstream_model = upstream_model,
+                         .status = status,
+                         .bytes = out_body.size(),
+                         .message = std::format(
+                             "stream rejected with HTTP {} — returned verbatim", status),
+                         .response_body = logged_body(ctx, out_body),
+                         .failover = attempt > 0,
+                         .attempt = static_cast<int>(attempt) + 1,
+                         .attempts_total = static_cast<int>(budget)});
             return 0;
         }
 
@@ -1756,7 +1833,6 @@ struct ProxyServer::Impl {
         res.set_header("X-Accel-Buffering", "no");
 
         const std::string provider_id = provider.id;
-        const std::string upstream_model = candidate.model.empty() ? ctx.model : candidate.model;
         const bool failover = attempt > 0;
         const bool absorbed = failover && good;
         const bool stream_ok = relay_ok;
@@ -1781,12 +1857,22 @@ struct ProxyServer::Impl {
         // non-streaming path uses never gets a body here to read it from.
         auto usage_observer = std::make_shared<StreamUsageObserver>();
 
+        // The log's copy of a streamed answer, for the same reason and with the
+        // same bound: a stream is relayed as it arrives, so "the response body"
+        // has to be accumulated on the way past. Shared with the provider below,
+        // which is what actually sees the bytes that reach the client.
+        const bool log_body = ctx.config.server.log_bodies;
+        const std::size_t log_body_limit =
+            static_cast<std::size_t>(ctx.config.server.log_body_limit);
+        auto streamed_body = std::make_shared<std::string>();
+        const std::uint64_t payload_size = payload.size();
+
         res.set_chunked_content_provider(
             stream_type,
             [this, bridge, client, provider_id, upstream_model, request_ctx, failover, absorbed,
              stream_ok, attempt_number, total_attempts, attempt_started,
-             adapter, usage_observer, provider_root = root, provider](std::size_t,
-                                                                     h::DataSink &sink) -> bool {
+             adapter, usage_observer, provider_root = root, provider, log_body, log_body_limit,
+             streamed_body, payload_size](std::size_t, h::DataSink &sink) -> bool {
                 for (;;) {
                     std::string chunk;
                     bool done = false;
@@ -1840,14 +1926,23 @@ struct ProxyServer::Impl {
                         recordAttempt(provider_id,
                                       stream_ok ? AttemptOutcome::Success
                                                 : AttemptOutcome::Failure,
-                                      latency, bytes, tokens.prompt, tokens.completion);
+                                      latency, bytes, tokens.prompt, tokens.completion,
+                                      payload_size);
                         if (absorbed) {
                             noteAbsorbed(provider_id);
                         }
-                        finish(request_ctx, provider_id, bridge->status, bytes,
-                                std::format("stream complete · {} · {}", humanBytes(bytes),
-                                           humanMillis(latency)),
-                               failover, attempt_number, total_attempts);
+                        finish(request_ctx, {.provider = provider_id,
+                                             .upstream_model = upstream_model,
+                                             .status = bridge->status,
+                                             .bytes = bytes,
+                                             .message = std::format("stream complete · {} · {}",
+                                                                    humanBytes(bytes),
+                                                                    humanMillis(latency)),
+                                             .response_body = log_body ? *streamed_body
+                                                                       : std::string{},
+                                             .failover = failover,
+                                             .attempt = attempt_number,
+                                             .attempts_total = total_attempts});
                         return true;
                     }
 
@@ -1872,6 +1967,13 @@ struct ProxyServer::Impl {
                     // notices, and a half-written chunk is worse than a clean
                     // close. Treated exactly like a failed write.
                     const bool writable = !sink.is_writable || sink.is_writable();
+                    if (writable && log_body && streamed_body->size() < log_body_limit) {
+                        // Capped as it goes, so a long answer cannot make the log
+                        // grow beyond what the operator allowed for an entry.
+                        streamed_body->append(
+                            send_chunk, 0, std::min(send_chunk.size(),
+                                                    log_body_limit - streamed_body->size()));
+                    }
                     if (!writable || !sink.write(send_chunk.data(), send_chunk.size())) {
                         // The client hung up. Tell the reader, and unblock it
                         // from a socket nobody is waiting on any more.
@@ -1886,17 +1988,25 @@ struct ProxyServer::Impl {
                         retireUpstreamConnection(provider_root, provider);
                         const double latency = (nowUnix() - attempt_started) * 1000.0;
                         const std::uint64_t bytes = bridge->bytes_out.load();
-                        recordAttempt(provider_id, AttemptOutcome::Aborted, latency, bytes, 0, 0);
-                        finish(request_ctx, provider_id, 0, bytes,
-                               "client disconnected before the stream ended", failover,
-                               attempt_number, total_attempts);
+                        recordAttempt(provider_id, AttemptOutcome::Aborted, latency, bytes, 0, 0,
+                                      payload_size);
+                        finish(request_ctx,
+                               {.provider = provider_id,
+                                .upstream_model = upstream_model,
+                                .status = 0,
+                                .bytes = bytes,
+                                .message = "client disconnected before the stream ended",
+                                .response_body = log_body ? *streamed_body : std::string{},
+                                .failover = failover,
+                                .attempt = attempt_number,
+                                .attempts_total = total_attempts});
                         return false;
                     }
                     bridge->bytes_out += send_chunk.size();
                 }
             },
-            [this, bridge, client, provider_id, request_ctx, failover, attempt_number,
-             total_attempts, provider_root = root, provider](bool) {
+            [this, bridge, client, provider_id, upstream_model, request_ctx, failover,
+             attempt_number, total_attempts, provider_root = root, provider](bool) {
                 // This fires at the end of EVERY chunked response, not only when
                 // something went wrong, which makes it the place that decides
                 // whether the connection goes back to the pool or is retired.
@@ -1930,9 +2040,14 @@ struct ProxyServer::Impl {
                 // between the handler returning and the body being written.
                 // Without this the in-flight counter would never come down and
                 // the console would report a permanently busy server.
-                finish(request_ctx, provider_id, 0, bridge->bytes_out.load(),
-                       "stream ended before any bytes were written", failover, attempt_number,
-                       total_attempts);
+                finish(request_ctx, {.provider = provider_id,
+                                     .upstream_model = upstream_model,
+                                     .status = 0,
+                                     .bytes = bridge->bytes_out.load(),
+                                     .message = "stream ended before any bytes were written",
+                                     .failover = failover,
+                                     .attempt = attempt_number,
+                                     .attempts_total = total_attempts});
             });
 
         // The provider owns the bridge now; the reader ends with the stream.

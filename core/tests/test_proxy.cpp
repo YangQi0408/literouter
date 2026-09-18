@@ -1369,6 +1369,194 @@ ReuseRun measureReuse(CountingRelay &relay, bool stream, int rounds) {
 }
 #endif // !_WIN32
 
+// Every field a console renders must have been written by the traffic that was
+// supposed to write it. This group exists because four fields were not:
+// `latency_ms_p95` (serialized, typed in the console, never computed),
+// `ProviderStat.bytes_in`, `LogEntry.upstream_model` (the GUI draws a row for it)
+// and `LogEntry.response_body` (the docs promise it and the drawer renders it).
+// All four read as "no data yet" in the UI, which is exactly how a broken field
+// hides: nothing errors, something is just permanently empty.
+void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
+    LR_GROUP("21. every field the console shows is written by the traffic that should write it");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.log_bodies = true; // so the body fields have something to hold
+    config.server.log_body_limit = 4096;
+    config.server.persist_telemetry = false;
+    config.server.circuit_failure_threshold = 2;
+
+    literouter::ProviderConfig alpha;
+    alpha.id = "alpha";
+    alpha.base_url = relay_a.baseUrl();
+    alpha.timeout_sec = 10;
+    alpha.connect_timeout_sec = 2;
+    literouter::ProviderConfig beta;
+    beta.id = "beta";
+    beta.base_url = relay_b.baseUrl();
+    beta.timeout_sec = 10;
+    beta.connect_timeout_sec = 2;
+    config.providers = {alpha, beta};
+
+    // The route renames the model, which is the case that makes
+    // `upstream_model` worth showing at all: the client asks for one name and
+    // the relay is asked for another.
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "alpha", .model = "alpha-real-model"},
+                     literouter::RouteTarget{.provider = "beta", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = proxy.boundPort();
+    relay_a.setMode(StubRelay::Mode::Normal);
+    relay_b.setMode(StubRelay::Mode::Normal);
+    proxy.resetStats();
+
+    const Hit ok = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+    LR_CHECK_EQ(ok.status, 200);
+
+    relay_a.setMode(StubRelay::Mode::RateLimit);
+    const Hit failed_over = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+    LR_CHECK_EQ(failed_over.status, 200);
+    relay_a.setMode(StubRelay::Mode::Normal);
+
+    const Hit unrouted = postJson(port, "/v1/chat/completions", chatRequest(kPassModel));
+    LR_CHECK_EQ(unrouted.status, 404);
+
+    relay_a.setMode(StubRelay::Mode::Stream);
+    const Hit streamed = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true));
+    LR_CHECK_EQ(streamed.status, 200);
+    relay_a.setMode(StubRelay::Mode::Normal);
+
+    // ── the counters ────────────────────────────────────────────────────────
+    const literouter::Snapshot after = proxy.snapshot();
+    LR_CHECK(after.total_requests >= 4);
+    LR_CHECK(after.total_success >= 2);
+    LR_CHECK(after.total_failure >= 1);
+    LR_CHECK_MSG(after.bytes_out > 0, "bytes_out never written");
+    LR_CHECK_MSG(after.tokens_prompt > 0, "tokens_prompt never written");
+    LR_CHECK_MSG(after.tokens_completion > 0, "tokens_completion never written");
+    LR_CHECK_MSG(after.latency_ms_avg > 0.0, "latency_ms_avg never written");
+
+    for (const auto &stat : after.providers) {
+        if (stat.requests == 0) {
+            continue; // a relay this traffic never reached
+        }
+        const std::string who = " (relay " + stat.provider + ")";
+        LR_CHECK_MSG(stat.bytes_out > 0, "ProviderStat.bytes_out never written" + who);
+        LR_CHECK_MSG(stat.bytes_in > 0, "ProviderStat.bytes_in never written" + who);
+        LR_CHECK_MSG(stat.latency_ms_last > 0.0, "latency_ms_last never written" + who);
+        LR_CHECK_MSG(stat.latency_ms_avg > 0.0, "latency_ms_avg never written" + who);
+        LR_CHECK_MSG(stat.latency_ms_p95 > 0.0, "latency_ms_p95 never written" + who);
+        LR_CHECK_MSG(stat.last_used_unix > 0.0, "last_used_unix never written" + who);
+        LR_CHECK_MSG(stat.successes + stat.failures + stat.aborted == stat.requests,
+                     "the relay's outcomes do not add up to its attempts" + who);
+    }
+
+    bool saw_failover_stat = false;
+    for (const auto &stat : after.providers) {
+        if (stat.retries_in > 0) {
+            saw_failover_stat = true;
+        }
+    }
+    LR_CHECK_MSG(saw_failover_stat, "retries_in never written, after a failover");
+
+    for (const auto &health : after.health) {
+        if (health.provider == "alpha") {
+            LR_CHECK_MSG(health.total_failures > 0, "ProviderHealth.total_failures never written");
+            LR_CHECK_MSG(!health.last_error.empty(), "ProviderHealth.last_error never written");
+        }
+    }
+
+    // ── the log the drawer renders ──────────────────────────────────────────
+    const auto entries = proxy.logsSince(0, 500);
+    LR_CHECK(!entries.empty());
+    bool saw_upstream_model = false;
+    bool saw_renamed = false;
+    bool saw_text_body = false;
+    bool saw_stream = false;
+    bool saw_failover = false;
+    for (const auto &entry : entries) {
+        if (entry.kind == "system") {
+            // The proxy's own notes (listening, config reloaded, stopped) are not
+            // requests: they carry a message and nothing else, by design.
+            continue;
+        }
+        LR_CHECK_MSG(!entry.request_id.empty(), "LogEntry.request_id never written");
+        LR_CHECK_MSG(!entry.kind.empty(), "LogEntry.kind never written");
+        LR_CHECK_MSG(!entry.model.empty(), "LogEntry.model never written");
+        LR_CHECK_MSG(!entry.message.empty(), "LogEntry.message never written");
+        LR_CHECK_MSG(entry.time_unix > 0.0, "LogEntry.time_unix never written");
+        LR_CHECK_MSG(entry.status > 0, "LogEntry.status never written");
+        // An entry that never reached a relay (an unrouted model, a malformed
+        // body) has no upstream call to have taken time, so its latency and its
+        // upstream model are legitimately nothing.
+        const std::string where = std::format(" [kind={} provider={} status={}]", entry.kind,
+                                              entry.provider, entry.status);
+        if (entry.provider.empty()) {
+            continue;
+        }
+        LR_CHECK_MSG(entry.latency_ms > 0.0, "LogEntry.latency_ms never written" + where);
+        LR_CHECK_MSG(!entry.upstream_model.empty(),
+                     "LogEntry.upstream_model never written; the console draws a row for it" +
+                         where);
+        LR_CHECK_MSG(!entry.request_body.empty(),
+                     "LogEntry.request_body never written, with log_bodies on" + where);
+        if (entry.upstream_model != entry.model) {
+            saw_renamed = true;
+        }
+        if (entry.upstream_model == "alpha-real-model") {
+            saw_upstream_model = true;
+        }
+        if (!entry.response_body.empty()) {
+            saw_text_body = true;
+        }
+        if (entry.stream) {
+            saw_stream = true;
+            LR_CHECK_MSG(!entry.response_body.empty(),
+                         "a streamed answer wrote no response body, with log_bodies on");
+        }
+        if (entry.failover) {
+            saw_failover = true;
+        }
+    }
+    LR_CHECK_MSG(saw_upstream_model, "the renamed upstream model never reached the log");
+    LR_CHECK_MSG(saw_renamed, "the log never distinguishes what the client asked for from what "
+                              "the relay was asked for");
+    LR_CHECK_MSG(saw_text_body, "LogEntry.response_body never written, with log_bodies on");
+    LR_CHECK_MSG(saw_stream, "no log entry recorded a streamed request");
+    LR_CHECK_MSG(saw_failover, "no log entry recorded a failover");
+
+    // Bodies are a choice, not a default: with the switch off the same traffic
+    // must not put prompts in the log.
+    literouter::AppConfig quiet = config;
+    quiet.server.log_bodies = false;
+    proxy.updateConfig(quiet);
+    // Only what is logged AFTER the switch: the ring still holds the entries
+    // written while bodies were on, and they are none of this assertion's
+    // business.
+    const std::uint64_t before_quiet = proxy.snapshot().log_seq;
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+    const auto quiet_entries = proxy.logsSince(before_quiet, 500);
+    LR_CHECK(!quiet_entries.empty());
+    for (const auto &entry : quiet_entries) {
+        if (entry.kind == "system") {
+            continue;
+        }
+        LR_CHECK_MSG(entry.request_body.empty(), "a body was logged with log_bodies off");
+        LR_CHECK_MSG(entry.response_body.empty(), "a body was logged with log_bodies off");
+    }
+
+    proxy.stop();
+}
+
 std::int64_t thisProcessId() {
 #ifdef _WIN32
     return static_cast<std::int64_t>(::GetCurrentProcessId());
@@ -2075,6 +2263,7 @@ int main() {
         group17LatencyPercentile(relay_a, proxy);
         group18RetryAfter(relay_a, relay_b, proxy);
         group19SingleInstance(config);
+        group21NoFieldLies(relay_a, relay_b);
 #ifndef _WIN32
         group20ConnectionReuse();
 #endif

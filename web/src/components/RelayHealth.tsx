@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/lib/i18n'
 import { formatTokens, stateBadgeClass } from '@/lib/present'
-import { humanCount, humanDuration, humanMillis, pct, successRatio } from '@/lib/format'
+import { humanBytes, humanCount, humanDuration, humanMillis, pct, successRatio } from '@/lib/format'
 import { useStore } from '@/store'
 
 export function RelayHealth() {
@@ -39,6 +39,7 @@ export function RelayHealth() {
             <th className="text-right">{t('colLatency')}</th>
             <th className="text-right">p95</th>
             <th className="text-right">{t('colTokens')}</th>
+            <th className="text-right">{t('colBytes')}</th>
             <th>{t('lastError')}</th>
             <th />
           </tr>
@@ -46,7 +47,7 @@ export function RelayHealth() {
         <tbody>
           {snapshot.providers.length === 0 ? (
             <tr>
-              <td colSpan={9} className="py-8 text-center text-muted-foreground">
+              <td colSpan={10} className="py-8 text-center text-muted-foreground">
                 {t('empty')}
               </td>
             </tr>
@@ -88,6 +89,9 @@ export function RelayHealth() {
                     {stat.latency_ms_p95 ? humanMillis(stat.latency_ms_p95) : '—'}
                   </td>
                   <td className="text-right font-mono text-xs tnum">{formatTokens(stat)}</td>
+                  <td className="text-right font-mono text-xs tnum">
+                    {humanBytes(stat.bytes_in)} / {humanBytes(stat.bytes_out)}
+                  </td>
                   <td className="max-w-[22rem] truncate text-xs text-muted-foreground">
                     {state?.last_error ?? ''}
                   </td>
