@@ -3,9 +3,10 @@
 #include "../app_state.h"
 #include "../components/lr_theme.h"
 #include "../components/widgets.h"
+#include "../components/hourly_trend.h"
 
-// Page 1 — Overview: metric tiles, a breaker banner, one card per relay, and a
-// preview of the newest log entries.
+// Page 1 — Overview: metric tiles, a breaker banner, hourly traffic, one card
+// per relay, and a preview of the newest log entries.
 namespace lr_gui {
 
 namespace detail {
@@ -363,6 +364,7 @@ inline void composeOverview(eui::Ui& ui, float x, float y, float width, float he
     if (state.snapshot.breakers_open > 0) {
         cursorY += 54.0f + 20.0f;
     }
+    cursorY += kHourlyTrendHeight + 22.0f;
     cursorY += 50.0f; // relays heading
     cursorY += providerCount > 0 ? static_cast<float>(providerCount) * 164.0f : 234.0f;
     cursorY += 30.0f; // gap + activity heading
@@ -392,6 +394,9 @@ inline void composeOverview(eui::Ui& ui, float x, float y, float width, float he
                         composeBreakerBanner(contentUi, 0.0f, rowY, contentWidth);
                         rowY += 54.0f + 20.0f;
                     }
+
+                    composeHourlyTrend(contentUi, layout::pagePadding, rowY, cardWidth);
+                    rowY += kHourlyTrendHeight + 22.0f;
 
                     sectionTitle(contentUi, "overview.relays.title", layout::pagePadding, rowY,
                                  cardWidth, literouter::i18n::tr("Relays"),

@@ -263,6 +263,7 @@ struct AppState {
     long long drivenFrames = 0;
 
     int pollCountdown = kPollIntervalFrames;
+    double lastTrendHour = -1.0;
     double lastSecondTick = 0.0;
 
     // ════════════════════════════════════════════════════════════════════
@@ -420,6 +421,11 @@ struct AppState {
             dirty = pollTelemetry() || dirty;
         }
         const double now = literouter::nowUnix();
+        const double trendHour = std::floor(now / 3600.0);
+        if (trendHour != lastTrendHour) {
+            lastTrendHour = trendHour;
+            dirty = true; // expire old chart slots even while the proxy is stopped
+        }
         if (snapshot.running && now - lastSecondTick >= 1.0) {
             lastSecondTick = now;
             dirty = true; // keep the uptime / live indicators moving

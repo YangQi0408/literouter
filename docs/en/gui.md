@@ -31,7 +31,7 @@ mcpp run -p gui
 ```
 
 > [!NOTE]
-> In GUI mode, the underlying proxy engine (`literouter.core`) and the UI render loop execute within the same process. Launching the GUI automatically starts listening on the configured port (default `8787`).
+> In GUI mode, the underlying proxy engine (`literouter.core`) and the UI render loop execute within the same process. After opening the console, click **Start proxy** in the top-right corner to listen on the configured port (default `8787`); no separate CLI process is needed.
 
 ---
 
@@ -56,6 +56,7 @@ mcpp run -p gui
 
 ### 1. Overview
 - **Global Metric Tiles**: Real-time totals for requests, success rate, in-flight concurrency, average round-trip latency (RTT), and accumulated tokens;
+- **Hourly Traffic Trend**: Request counts for the last 24 hourly buckets, including the current partial hour, scaled to the busiest hour. Idle hours retain empty slots and hours containing failures are amber. Hover for the local hour, requests, successes/failures, tokens, outgoing bytes and estimated cost. An empty state appears when the window has no traffic; persisted telemetry carries the history across restarts;
 - **Provider Health Matrix**: Status badges for each provider (Healthy green, Degraded yellow, Open red), consecutive failure counters, and request volume;
 - **Alert Banner**: Alerts trigger when a provider trips its circuit breaker, with quick actions to view causes or reset telemetry.
 
