@@ -340,6 +340,16 @@ UpstreamResult upstreamPost(const ProviderConfig &provider, std::string_view pat
     return out;
 }
 
+double estimateCost(double price_in_per_million, double price_out_per_million,
+                    std::uint64_t prompt_tokens, std::uint64_t completion_tokens) {
+    // 0 means "price not written down", and an unpriced relay costs nothing to
+    // this estimate rather than costing a guess. The prices are taken as numbers
+    // rather than as a ProviderConfig because the caller on the hot path already
+    // has them and copying a whole provider per attempt would be absurd.
+    return (static_cast<double>(prompt_tokens) / 1'000'000.0) * price_in_per_million +
+           (static_cast<double>(completion_tokens) / 1'000'000.0) * price_out_per_million;
+}
+
 UpstreamConnection checkoutUpstreamConnection(std::string_view root,
                                               const ProviderConfig &provider) {
     return acquireClientHandle(root, provider, poolKey(root, provider));

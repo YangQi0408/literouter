@@ -195,6 +195,12 @@ mcpp run -p cli -- status --json
 mcpp run -p cli -- providers list
 mcpp run -p cli -- routes list
 mcpp run -p cli -- config validate
+
+# 对比同一模型在各中转站的延迟与花费（会真的发请求、真的花钱）
+mcpp run -p cli -- bench --model gpt-4o --runs 3
+
+# 把保存好的请求体重放给策略首选站或指定站
+mcpp run -p cli -- replay --file request.json --show
 ```
 
 ### 3.4 运行 GUI

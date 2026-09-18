@@ -31,6 +31,12 @@ std::string clientBaseUrlOf(const literouter::AppConfig &config);
 // a caller can keep stdout clean for a JSON payload.
 void printIssues(const literouter::ValidationReport &report, std::ostream &out);
 
+// The relays that would serve `model`, in the order the router would try them.
+// Built from a fresh Router, so it is the *policy* and not a running instance's
+// circuit state — which is what a one-off tool wants.
+std::vector<literouter::Candidate> routingOrder(const literouter::AppConfig &config,
+                                                const std::string &model);
+
 // Renders an env-backed key as `$NAME`, a literal one masked, an empty one as
 // "(none)". Never expands the reference.
 std::string describeApiKey(const std::string &raw);

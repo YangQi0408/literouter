@@ -51,6 +51,8 @@ literouter [OPTIONS] <SUBCOMMAND>
 | [`providers`](#provider-management-providers) | List, add, remove, test, enable, or disable upstream providers |
 | [`routes`](#route-management-routes) | List, add, remove, enable, or disable model routing rules |
 | [`config`](#configuration-utility-config) | Show path, display file contents, initialize seed config, or validate |
+| [`bench`](#benchmark-bench) | The same question to every relay that serves a model, compared |
+| [`replay`](#replay-replay) | Send a saved request body to one relay, or to the policy's first choice |
 
 ---
 
@@ -251,3 +253,56 @@ literouter config init --force
 # Validate configuration and print all errors/warnings
 literouter config validate
 ```
+
+---
+
+## Benchmark (`bench`)
+
+Asks every relay that can serve a model the *same* question, which is how "which
+one is faster, and which one is dearer" gets an answer:
+
+```bash
+literouter bench --model gpt-4o
+literouter bench --model gpt-4o --runs 3 --json
+```
+
+| Option | Meaning |
+|---|---|
+| `--model` | Model to compare (required); candidates follow the routing policy |
+| `--prompt` | What to send (default: a one-line question) |
+| `--runs` | Requests per relay (default 1) |
+| `--timeout` | Per-request timeout in seconds (default 30) |
+| `--max-tokens` | `max_tokens` to ask for (default 16) |
+| `--json` | Machine-readable output (global flag) |
+
+> **These are real requests and they cost real money**: `--runs` of them to every
+> usable relay. The table gives status, average and best latency, tokens and the
+> estimated cost, and ends with the fastest and — when prices are written down —
+> the cheapest. A relay with no price shows `—` for cost.
+
+## Replay (`replay`)
+
+Sends a saved request body again, which answers "what happens to *this* request":
+by default to whichever relay the routing policy would try first, or to one you
+name.
+
+```bash
+# See who the policy would pick, and what happens
+literouter replay --file request.json
+
+# A specific relay, printing the answer
+literouter replay --file request.json --provider openai-official --show
+```
+
+Reading the body from a file is deliberate: a logged body has been truncated and
+had credentials masked, so replaying it would send a *different* request than the
+one that was logged — worse than not replaying it at all.
+
+| Option | Meaning |
+|---|---|
+| `--file` | Request body (OpenAI chat shape, required) |
+| `--provider` | Send it to this relay instead of the policy's first choice |
+| `--model` | Override the model in the body |
+| `--timeout` | Per-request timeout (default: the relay's own) |
+| `--show` | Print the answer body (converted back to chat shape if the relay speaks another protocol) |
+| `--json` | Machine-readable output (global flag) |

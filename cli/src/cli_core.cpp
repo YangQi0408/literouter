@@ -55,6 +55,13 @@ void printIssues(const literouter::ValidationReport &report, std::ostream &out) 
     out << report.summary() << "\n";
 }
 
+std::vector<literouter::Candidate> routingOrder(const literouter::AppConfig &config,
+                                                const std::string &model) {
+    literouter::Router router;
+    router.setConfig(config);
+    return router.candidatesFor(model);
+}
+
 std::string describeApiKey(const std::string &raw) {
     if (literouter::isSecretReference(raw)) {
         const std::string name = literouter::secretReferenceName(raw);

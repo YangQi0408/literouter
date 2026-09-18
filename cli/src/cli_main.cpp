@@ -60,6 +60,8 @@ int main(int argc, char **argv) {
     lrcli::register_config(app, ctx);
     lrcli::register_doctor(app, ctx);
     lrcli::register_logs(app, ctx);
+    lrcli::register_bench(app, ctx);
+    lrcli::register_replay(app, ctx);
 
     if (argc < 2) {
         std::cout << app.help() << "\n";

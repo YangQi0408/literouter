@@ -51,6 +51,8 @@ literouter [OPTIONS] <SUBCOMMAND>
 | [`providers`](#中转站管理-providers) | 列出、添加、测试、启用或禁用上游中转站 |
 | [`routes`](#路由管理-routes) | 列出、添加、删除、启用或禁用模型路由规则 |
 | [`config`](#配置工具-config) | 查看路径、打印内容、生成模板或校验配置文件 |
+| [`bench`](#基准对比-bench) | 同一个问题发给所有可服务该模型的中转站，对比延迟与花费 |
+| [`replay`](#请求重放-replay) | 把保存的请求体发给指定中转站或策略首选站重放 |
 
 ---
 
@@ -257,3 +259,48 @@ literouter config init --force
 # 校验当前配置文件合法性并输出诊断清单
 literouter config validate
 ```
+
+---
+
+## 基准对比 (`bench`)
+
+把**同一个问题**发给所有可服务该模型的中转站，用来回答"哪家更快、哪家更贵"：
+
+```bash
+literouter bench --model gpt-4o
+literouter bench --model gpt-4o --runs 3 --json
+```
+
+| 选项 | 说明 |
+|---|---|
+| `--model` | 要对比的模型（必填）；候选按路由策略顺序展开 |
+| `--prompt` | 发送的内容（默认一句话短问） |
+| `--runs` | 每个中转站发几次（默认 1） |
+| `--timeout` | 单次超时（秒，默认 30） |
+| `--max-tokens` | 请求的 `max_tokens`（默认 16） |
+| `--json` | 以 JSON 输出（全局标志） |
+
+> ⚠️ **这会真的发请求并真的花钱**：每个可用中转站各发 `--runs` 次。表格给出 状态 / 平均延迟 / 最快一次 / token 数 / 估算花费，并在末尾给出"最快"与（已填价目表时）"最便宜"。未填价格的中转站花费列显示 `—`。
+
+## 请求重放 (`replay`)
+
+把一份保存好的请求体重新发出去，用来回答"**这一个**请求会发生什么"——默认走**路由策略的首选站**，也可以指定站：
+
+```bash
+# 看策略会把它发给谁、结果如何
+literouter replay --file request.json
+
+# 指定中转站，并打印回答正文
+literouter replay --file request.json --provider openai-official --show
+```
+
+请求体从文件读取是刻意的：日志里的报文已被截断并脱敏，拿它重放会发出**与原请求不同**的请求，比不重放更糟。
+
+| 选项 | 说明 |
+|---|---|
+| `--file` | 请求体文件（OpenAI Chat 形状，必填） |
+| `--provider` | 指定中转站；省略则用路由策略的首选 |
+| `--model` | 覆盖请求体里的模型名 |
+| `--timeout` | 单次超时（秒，默认用中转站自己的配置） |
+| `--show` | 打印回答正文（若上游是别的协议，会先转回 Chat 形状） |
+| `--json` | 以 JSON 输出（全局标志） |

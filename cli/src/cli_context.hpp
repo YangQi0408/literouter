@@ -34,5 +34,7 @@ void register_routes(CLI::App &root, Context &ctx);
 void register_config(CLI::App &root, Context &ctx);
 void register_doctor(CLI::App &root, Context &ctx);
 void register_logs(CLI::App &root, Context &ctx);
+void register_bench(CLI::App &root, Context &ctx);
+void register_replay(CLI::App &root, Context &ctx);
 
 } // namespace lrcli

@@ -512,6 +512,13 @@ UpstreamResult upstreamPost(const ProviderConfig &provider,
                             std::string_view body,
                             int timeout_sec_override = 0);
 
+// What `prompt_tokens` + `completion_tokens` cost on this relay, in US dollars,
+// from the prices written down for it. The proxy accumulates this per attempt;
+// a one-off caller (the CLI's bench and replay) asks for it directly. The two
+// must agree, which is why the formula lives here and not in either of them.
+double estimateCost(double price_in_per_million, double price_out_per_million,
+                    std::uint64_t prompt_tokens, std::uint64_t completion_tokens);
+
 // ── upstream connections ────────────────────────────────────────────────────
 //
 // A relay connection taken from the pool for the length of one response. What a

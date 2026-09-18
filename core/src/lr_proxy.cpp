@@ -1490,9 +1490,11 @@ struct ProxyServer::Impl {
         if (prompt_tokens > 0 || completion_tokens > 0) {
             // Priced here rather than at display time: the operator may correct a
             // price later, and the cost already incurred is not re-derived from
-            // the new one.
-            const double cost = (static_cast<double>(prompt_tokens) / 1'000'000.0) * price_in_per_million +
-                                (static_cast<double>(completion_tokens) / 1'000'000.0) * price_out_per_million;
+            // the new one. The formula itself is estimateCost(), shared with the
+            // CLI's one-off tools so the two cannot drift.
+            const double cost =
+                estimateCost(price_in_per_million, price_out_per_million, prompt_tokens,
+                             completion_tokens);
             stat.cost_usd += cost;
             cost_usd += cost;
         }
