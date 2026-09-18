@@ -810,11 +810,50 @@ void testValidationReportShape() {
 
 } // namespace
 
+// Every field a provider object may omit has to arrive at the default the
+// contract declares. `connect_timeout_sec` did not: the reader said 15 while the
+// struct said 5, so a relay added by the CLI changed its own timeout the first
+// time the config was re-read. Comparing against a default-constructed struct
+// means the two can never drift apart again without this failing.
+void testProviderReaderDefaults() {
+    LR_GROUP("provider reader defaults match the contract");
+    const auto parsed = literouter::appConfigFromJson(R"({"providers":[{"id":"bare"}]})");
+    LR_CHECK_MSG(parsed.has_value(), parsed ? "" : parsed.error());
+    if (!parsed) {
+        return;
+    }
+    LR_CHECK_EQ(parsed->providers.size(), std::size_t{1});
+    const literouter::ProviderConfig &actual = parsed->providers[0];
+    const literouter::ProviderConfig fallback; // the contract's own defaults
+    LR_CHECK_EQ(actual.base_url, fallback.base_url);
+    LR_CHECK_EQ(actual.api_key, fallback.api_key);
+    LR_CHECK_EQ(actual.enabled, fallback.enabled);
+    LR_CHECK_EQ(actual.priority, fallback.priority);
+    LR_CHECK_EQ(actual.weight, fallback.weight);
+    LR_CHECK_EQ(actual.timeout_sec, fallback.timeout_sec);
+    LR_CHECK_MSG(actual.connect_timeout_sec == fallback.connect_timeout_sec,
+                 std::format("connect_timeout_sec: reader={} contract={}",
+                             actual.connect_timeout_sec, fallback.connect_timeout_sec));
+    LR_CHECK_EQ(actual.supports_stream, fallback.supports_stream);
+    LR_CHECK_EQ(actual.chat_path, fallback.chat_path);
+    LR_CHECK_EQ(actual.embeddings_path, fallback.embeddings_path);
+    LR_CHECK_EQ(actual.protocol, fallback.protocol);
+    LR_CHECK_EQ(actual.price_in_per_million, fallback.price_in_per_million);
+    LR_CHECK_EQ(actual.price_out_per_million, fallback.price_out_per_million);
+    LR_CHECK_EQ(actual.note, fallback.note);
+    LR_CHECK(actual.models.empty());
+    LR_CHECK(actual.headers.empty());
+    // The one field the reader is allowed to fill in: a nameless relay is shown
+    // by its id rather than as a blank row.
+    LR_CHECK_EQ(actual.name, "bare");
+}
+
 int main() {
     testSeedDefault();
     testJsonRoundTrip();
     testSecretStaysReferenced();
     testMinimalDocuments();
+    testProviderReaderDefaults();
     testStructurallyWrongInput();
     testLoadAndSave();
     testDefaultPaths();

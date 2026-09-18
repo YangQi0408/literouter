@@ -51,7 +51,7 @@ struct ProviderConfig {
     // Per-request deadline for the upstream leg, in seconds.
     int timeout_sec = 120;
     // Seconds before a connect attempt is abandoned.
-    int connect_timeout_sec = 5;
+    int connect_timeout_sec = 15;
     bool supports_stream = true;
     // Model ids this relay advertises. Used by /v1/models and by the fallback
     // matcher when a request names a model no route mentions.
