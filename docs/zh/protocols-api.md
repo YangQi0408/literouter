@@ -174,10 +174,10 @@ curl http://127.0.0.1:8787/v1/messages \
 - SSE 流式数据事件双向互转与结束标记对齐；
 - Token 计费统计（`usage`）结构对齐。
 
-> **推理/思考内容**：转换时**保留**模型的推理内容而不是丢弃——上游为 Anthropic 时 `thinking` 块映射为 OpenAI 侧的 `reasoning_content`（`redacted_thinking` 内容加密，不解析）；上游为 Gemini 时带 `thought: true` 的部分归入 `reasoning_content`（此前它被错误地拼进了正文，等于把思考当成回答）；反向则把 `reasoning_content` / `reasoning` 变成 Anthropic 的**前置 `thinking` 块**（响应方向）。流式方向上，Anthropic 的 `thinking_delta` 会转成 `reasoning_content` 增量。
+> **推理/思考内容**：转换时**保留**模型的推理内容而不是丢弃——上游为 Anthropic 时 `thinking` 块映射为 OpenAI 侧的 `reasoning_content`（`redacted_thinking` 内容加密，不解析）；上游为 Gemini 时带 `thought: true` 的部分归入 `reasoning_content`（此前它被错误地拼进了正文，等于把思考当成回答）；上游为 Responses API 时 `reasoning` 条目（读 `summary[].text`，兼容把明文放在 `content[].text` 的中转站）同样归入 `reasoning_content`。反向则分别变成 Anthropic 的**前置 `thinking` 块**、Responses 的**前置 `reasoning` 条目**、Gemini 的 `thought: true` 部分（均为响应方向）。流式方向上，Anthropic 的 `thinking_delta` 与 Responses 的 `response.reasoning_summary_text.delta` 都会转成 `reasoning_content` 增量。
 >
 > **两处刻意的不对称**（都不是遗漏）：
-> 1. **请求方向不合成 `thinking` 块**。Anthropic 只接受带**原始签名**的 thinking 块，伪造签名会把本可成功的请求变成 400，因此客户端的 `reasoning_content` 在这条路上被丢弃；反向（Anthropic → Chat）则把客户端的 thinking 块作为 `reasoning_content` 原样带过去。
+> 1. **请求方向不合成 `thinking` 块**。Anthropic 只接受带**原始签名**的 thinking 块、Gemini 只接受带 `thoughtSignature` 的思考部分，伪造签名会把本可成功的请求变成 400，因此客户端的 `reasoning_content` 在通往这两家的请求里被丢弃；反向（Anthropic/Gemini/Responses → Chat）则把客户端给的推理内容作为 `reasoning_content` 原样带过去。
 > 2. **流式反向（OpenAI → Anthropic）暂不合成 thinking 块**。那需要第二个内容块及其索引与开始/结束帧，块序列错乱对严格客户端比"没有思考内容"更糟。
 
 ---

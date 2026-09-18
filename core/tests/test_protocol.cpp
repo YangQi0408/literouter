@@ -427,6 +427,101 @@ void testReasoningMapping() {
         LR_CHECK_EQ(message.value("content", std::string{}), "the answer");
     }
 
+    // ── Responses upstream → Chat client ────────────────────────────────────
+    {
+        ProviderConfig responses;
+        responses.protocol = "openai_responses";
+        const std::string upstream = R"({
+            "id":"resp_1","object":"response","status":"completed",
+            "output":[
+              {"id":"rs_1","type":"reasoning",
+               "summary":[{"type":"summary_text","text":"weighed it"}]},
+              {"id":"msg_1","type":"message","role":"assistant",
+               "content":[{"type":"text","text":"the answer"}]}
+            ],
+            "usage":{"input_tokens":9,"output_tokens":4}
+        })";
+        const json out = parse(adaptChatResponse(responses, upstream, "gpt-5"));
+        LR_CHECK(!out.is_discarded());
+        const auto &message = out["choices"][0]["message"];
+        LR_CHECK_EQ(message.value("reasoning_content", std::string{}), "weighed it");
+        LR_CHECK_EQ(message.value("content", std::string{}), "the answer");
+    }
+
+    // ── Chat upstream → Responses client ────────────────────────────────────
+    {
+        const json out = parse(adaptChatToResponses(
+            R"({"id":"c","object":"chat.completion","choices":[{"message":
+                 {"role":"assistant","reasoning_content":"planned it","content":"done"}}]})",
+            "gpt-5"));
+        LR_CHECK(!out.is_discarded());
+        const auto &output = out["output"];
+        LR_CHECK(output.is_array() && output.size() == 2);
+        if (output.is_array() && output.size() == 2) {
+            // Reasoning first, which is the order a Responses client renders.
+            LR_CHECK_EQ(output[0].value("type", std::string{}), "reasoning");
+            LR_CHECK_EQ(output[0]["summary"][0].value("text", std::string{}), "planned it");
+            LR_CHECK_EQ(output[1].value("type", std::string{}), "message");
+            LR_CHECK_EQ(output[1]["content"][0].value("text", std::string{}), "done");
+        }
+    }
+
+    // ── Chat upstream → Gemini client ───────────────────────────────────────
+    {
+        const json out = parse(adaptChatToGemini(
+            R"({"id":"c","choices":[{"message":{"role":"assistant",
+                 "reasoning_content":"hmm","content":"ok"},"finish_reason":"stop"}]})",
+            "gemini-2.0-flash"));
+        LR_CHECK(!out.is_discarded());
+        const auto &parts = out["candidates"][0]["content"]["parts"];
+        LR_CHECK(parts.is_array() && parts.size() == 2);
+        if (parts.is_array() && parts.size() == 2) {
+            LR_CHECK_EQ(parts[0].value("text", std::string{}), "hmm");
+            LR_CHECK_EQ(parts[0].value("thought", false), true);
+            LR_CHECK_EQ(parts[1].value("text", std::string{}), "ok");
+            LR_CHECK_EQ(parts[1].value("thought", false), false);
+        }
+    }
+
+    // ── Responses streaming, both ways ──────────────────────────────────────
+    {
+        // An OpenAI relay answering a client that asked /v1/responses with
+        // stream: true. Without a Responses emission branch the adapter built a
+        // stream and threw it away, so the client got an empty body.
+        StreamProtocolAdapter adapter("openai", "openai_responses", "gpt-5", "req_resp");
+        const std::string text = adapter.feed(
+            "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n");
+        LR_CHECK_MSG(text.find("response.output_text.delta") != std::string::npos,
+                     "no Responses delta event was emitted: " + text);
+        LR_CHECK(text.find("\"delta\":\"hi\"") != std::string::npos);
+        const std::string reasoning = adapter.feed(
+            "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"reasoning_content\":\"why\"}}]}\n\n");
+        LR_CHECK(reasoning.find("response.reasoning_summary_text.delta") != std::string::npos);
+        const std::string fin = adapter.finish();
+        LR_CHECK_MSG(fin.find("response.completed") != std::string::npos,
+                     "the Responses stream never completed: " + fin);
+    }
+    {
+        // And the other way: a Responses relay's events, read by the adapter.
+        StreamProtocolAdapter adapter("openai_responses", "openai", "gpt-5", "req_resp2");
+        adapter.feed("event: response.created\ndata: {\"type\":\"response.created\","
+                     "\"response\":{\"id\":\"resp_9\"}}\n\n");
+        const std::string text = adapter.feed(
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\","
+            "\"delta\":\"hi\"}\n\n");
+        LR_CHECK_MSG(text.find("\"content\":\"hi\"") != std::string::npos,
+                     "a Responses text delta did not reach the client: " + text);
+        const std::string reasoning = adapter.feed(
+            "event: response.reasoning_summary_text.delta\ndata: "
+            "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"why\"}\n\n");
+        LR_CHECK_MSG(reasoning.find("\"reasoning_content\":\"why\"") != std::string::npos,
+                     "a Responses reasoning delta did not reach the client: " + reasoning);
+        const std::string done = adapter.feed(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":"
+            "{\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}}\n\n");
+        LR_CHECK(done.find("[DONE]") != std::string::npos);
+    }
+
     // ── Streaming: Anthropic thinking deltas reach an OpenAI client ─────────
     {
         StreamProtocolAdapter adapter("anthropic", "openai", "claude-3-5-sonnet", "req_reason");

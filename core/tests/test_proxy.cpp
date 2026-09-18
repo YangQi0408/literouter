@@ -1806,6 +1806,36 @@ void group12HangingRelay(HangingRelay &hanger, StubRelay &relay_b,
 
 #endif
 
+// The fourth ingress. It had no streamed coverage at all — and its streamed
+// form had no conversion branch either, so a client asking for
+// `stream: true` on /v1/responses received an empty body.
+void group22ResponsesIngress(StubRelay &relay_a, int port) {
+    LR_GROUP("22. the Responses ingress, streamed and not");
+    relay_a.setMode(StubRelay::Mode::Normal);
+    relay_a.resetCounters();
+
+    const std::string request =
+        R"({"model":"route-model","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]})";
+    const Hit plain = postJson(port, "/v1/responses", request);
+    LR_CHECK_EQ(plain.status, 200);
+    LR_CHECK_MSG(plain.body.find("\"object\":\"response\"") != std::string::npos,
+                 "the answer was not converted back into the Responses shape: " +
+                     literouter::truncateUtf8(plain.body, 200));
+
+    relay_a.setMode(StubRelay::Mode::Stream);
+    const std::string streamed =
+        R"({"model":"route-model","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]})";
+    const Hit hit = postJson(port, "/v1/responses", streamed);
+    LR_CHECK_EQ(hit.status, 200);
+    LR_CHECK_MSG(hit.body.find("response.output_text.delta") != std::string::npos,
+                 "a streamed Responses request produced no output events: " +
+                     literouter::truncateUtf8(hit.body, 200));
+    LR_CHECK_MSG(hit.body.find("response.completed") != std::string::npos,
+                 "the streamed Responses answer never completed: " +
+                     literouter::truncateUtf8(hit.body, 200));
+    relay_a.setMode(StubRelay::Mode::Normal);
+}
+
 void group14MultiProtocolIngress(StubRelay &relay_a, int port) {
     LR_GROUP("14. multi-protocol ingress and conditional passthrough");
     relay_a.setMode(StubRelay::Mode::Normal);
@@ -2279,6 +2309,7 @@ int main() {
         group18RetryAfter(relay_a, relay_b, proxy);
         group19SingleInstance(config);
         group21NoFieldLies(relay_a, relay_b);
+        group22ResponsesIngress(relay_a, proxy.boundPort());
 #ifndef _WIN32
         group20ConnectionReuse();
 #endif

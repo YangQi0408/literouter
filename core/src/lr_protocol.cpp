@@ -477,9 +477,29 @@ std::string adaptChatResponse(const ProviderConfig &provider,
         json message = json::object();
         message["role"] = "assistant";
         std::string text_content;
+        std::string reasoning_content;
 
         if (root.contains("output") && root["output"].is_array()) {
             for (const auto &item : root["output"]) {
+                if (item.value("type", "") == "reasoning") {
+                    // A reasoning item carries its readable text as a summary;
+                    // `content` is where an unencrypted relay puts it instead.
+                    // Both are read because both shapes are in the wild, and an
+                    // encrypted one simply contributes nothing.
+                    if (const auto summary = item.find("summary");
+                        summary != item.end() && summary->is_array()) {
+                        for (const auto &s : *summary) {
+                            reasoning_content += s.value("text", std::string{});
+                        }
+                    }
+                    if (const auto content = item.find("content");
+                        content != item.end() && content->is_array()) {
+                        for (const auto &c : *content) {
+                            reasoning_content += c.value("text", std::string{});
+                        }
+                    }
+                    continue;
+                }
                 if (item.value("type", "") == "message" && item.contains("content") && item["content"].is_array()) {
                     for (const auto &c : item["content"]) {
                         if (c.value("type", "") == "text" && c.contains("text")) {
@@ -490,6 +510,9 @@ std::string adaptChatResponse(const ProviderConfig &provider,
             }
         }
         message["content"] = text_content;
+        if (!reasoning_content.empty()) {
+            message["reasoning_content"] = reasoning_content;
+        }
         choice["message"] = message;
         choice["finish_reason"] = "stop";
 
@@ -555,14 +578,31 @@ std::string adaptChatToResponses(std::string_view chat_completion_response_json,
     resp["created_at"] = root.value("created", static_cast<long long>(nowUnix()));
     resp["status"] = "completed";
     resp["model"] = std::string{requested_model};
-    resp["output"] = json::array({
-        {
-            {"id", "msg_" + hexId(12)},
-            {"type", "message"},
-            {"role", "assistant"},
-            {"content", json::array({ {{"type", "text"}, {"text", text}} })}
+    // Reasoning first: the Responses API orders a reasoning item before the
+    // message it produced, and that is also the order a client renders.
+    json output = json::array();
+    std::string reasoning;
+    if (root.contains("choices") && root["choices"].is_array() && !root["choices"].empty()) {
+        const auto &message = root["choices"][0]["message"];
+        reasoning = message.value("reasoning_content", "");
+        if (reasoning.empty()) {
+            reasoning = message.value("reasoning", "");
         }
+    }
+    if (!reasoning.empty()) {
+        output.push_back({
+            {"id", "rs_" + hexId(12)},
+            {"type", "reasoning"},
+            {"summary", json::array({ {{"type", "summary_text"}, {"text", reasoning}} })}
+        });
+    }
+    output.push_back({
+        {"id", "msg_" + hexId(12)},
+        {"type", "message"},
+        {"role", "assistant"},
+        {"content", json::array({ {{"type", "text"}, {"text", text}} })}
     });
+    resp["output"] = std::move(output);
     if (root.contains("usage")) {
         resp["usage"] = root["usage"];
     }
@@ -897,6 +937,18 @@ std::string adaptChatToGemini(std::string_view chat_completion_response_json,
         const auto &choice = root["choices"][0];
         if (choice.contains("message") && choice["message"].is_object()) {
             const auto &msg = choice["message"];
+            // `thought: true` is how Gemini labels the model's reasoning, so a
+            // Gemini-shaped client sees it where it expects to.
+            const std::string reasoning = [&msg] {
+                std::string text = msg.value("reasoning_content", "");
+                if (text.empty()) {
+                    text = msg.value("reasoning", "");
+                }
+                return text;
+            }();
+            if (!reasoning.empty()) {
+                parts.push_back({{"text", reasoning}, {"thought", true}});
+            }
             if (msg.contains("content") && msg["content"].is_string()) {
                 parts.push_back({{"text", msg["content"].get<std::string>()}});
             }
@@ -1004,7 +1056,35 @@ public:
             int in_tokens = 0;
             bool is_done = false;
 
-            if (from_proto_ == "openai") {
+            if (from_proto_ == "openai_responses") {
+                // The Responses API streams named events rather than chat deltas:
+                // the text arrives as `response.output_text.delta`, the reasoning
+                // as `response.reasoning_summary_text.delta`, and the usage with
+                // the final `response.completed`.
+                const json data = json::parse(data_str, nullptr, false);
+                if (!data.is_discarded() && data.is_object()) {
+                    const std::string type = data.value("type", std::string{});
+                    if (type == "response.output_text.delta") {
+                        text_delta = data.value("delta", std::string{});
+                    } else if (type == "response.reasoning_summary_text.delta" ||
+                               type == "response.reasoning_text.delta") {
+                        reasoning_delta = data.value("delta", std::string{});
+                    } else if (type == "response.completed" || type == "response.done" ||
+                               type == "response.incomplete") {
+                        is_done = true;
+                        if (const auto response = data.find("response");
+                            response != data.end() && response->is_object()) {
+                            if (const auto usage = response->find("usage");
+                                usage != response->end() && usage->is_object()) {
+                                in_tokens = usage->value("input_tokens", in_tokens);
+                                out_tokens = usage->value("output_tokens", out_tokens);
+                            }
+                        }
+                    } else if (type == "response.failed" || type == "error") {
+                        is_done = true;
+                    }
+                }
+            } else if (from_proto_ == "openai") {
                 if (trim(data_str) == "[DONE]") {
                     is_done = true;
                 } else {
@@ -1202,6 +1282,55 @@ public:
                     out += "event: message_stop\ndata: " + msg_stop.dump() + "\n\n";
                     finished_ = true;
                 }
+            } else if (to_proto_ == "openai_responses") {
+                // The same three moments a Responses client expects: the response
+                // begins, the deltas arrive (reasoning and text as their own
+                // events), and the response completes. Without this branch the
+                // stream was assembled and then thrown away, and a client asking
+                // for `stream: true` on /v1/responses got an empty body.
+                if (!sent_responses_start_) {
+                    sent_responses_start_ = true;
+                    json created = {
+                        {"type", "response.created"},
+                        {"response", {
+                            {"id", "resp_" + (stream_id_.empty() ? request_id_ : stream_id_)},
+                            {"object", "response"},
+                            {"status", "in_progress"},
+                            {"model", model_},
+                            {"output", json::array()}
+                        }}
+                    };
+                    out += "event: response.created\ndata: " + created.dump() + "\n\n";
+                }
+                if (!reasoning_delta.empty()) {
+                    json event = {
+                        {"type", "response.reasoning_summary_text.delta"},
+                        {"delta", reasoning_delta}
+                    };
+                    out += "event: response.reasoning_summary_text.delta\ndata: " + event.dump() +
+                           "\n\n";
+                }
+                if (!text_delta.empty()) {
+                    json event = {
+                        {"type", "response.output_text.delta"},
+                        {"delta", text_delta}
+                    };
+                    out += "event: response.output_text.delta\ndata: " + event.dump() + "\n\n";
+                }
+                if (is_done || !finish_reason.empty()) {
+                    json completed = {
+                        {"type", "response.completed"},
+                        {"response", {
+                            {"id", "resp_" + (stream_id_.empty() ? request_id_ : stream_id_)},
+                            {"object", "response"},
+                            {"status", "completed"},
+                            {"model", model_},
+                            {"usage", {{"input_tokens", in_tokens}, {"output_tokens", out_tokens}}}
+                        }}
+                    };
+                    out += "event: response.completed\ndata: " + completed.dump() + "\n\n";
+                    finished_ = true;
+                }
             } else if (to_proto_ == "gemini") {
                 if (!text_delta.empty()) {
                     json gem = {
@@ -1234,6 +1363,23 @@ public:
     }
 
     std::string finish() {
+        if (to_proto_ == "openai_responses" && !finished_) {
+            // The client is waiting for the end of a response it was promised:
+            // a stream that never completes is worse than one that says it
+            // stopped.
+            json completed = {
+                {"type", "response.completed"},
+                {"response", {
+                    {"id", "resp_" + (stream_id_.empty() ? request_id_ : stream_id_)},
+                    {"object", "response"},
+                    {"status", "completed"},
+                    {"model", model_},
+                    {"output", json::array()}
+                }}
+            };
+            finished_ = true;
+            return "event: response.completed\ndata: " + completed.dump() + "\n\n";
+        }
         if (from_proto_ == to_proto_) {
             return {};
         }
@@ -1260,6 +1406,7 @@ private:
     bool finished_ = false;
     bool sent_role_ = false;
     bool sent_anthropic_start_ = false;
+    bool sent_responses_start_ = false;
 };
 
 StreamProtocolAdapter::StreamProtocolAdapter(const ProviderConfig &provider,
