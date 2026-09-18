@@ -75,6 +75,8 @@ You can override the default configuration path at any time via:
       "id": "openai-official",                 // Unique ID (used in routing rules and telemetry keys)
       "name": "OpenAI Official",               // Human-friendly label
       "protocol": "openai",                    // Upstream protocol: openai / anthropic / gemini / openai_responses
+      "price_in_per_million": 2.5,             // Input price (USD per million tokens); 0 or absent means unpriced
+      "price_out_per_million": 10.0,           // Output price (USD per million tokens)
       "base_url": "https://api.openai.com/v1", // Upstream base URL (subpaths preserved)
       "api_key": "${OPENAI_API_KEY}",          // Plaintext key or env placeholder
       "enabled": true,                         // Enable or disable this provider
@@ -160,6 +162,16 @@ You can override the default configuration path at any time via:
 | `ui_scale` | `double` | `1.0` | Initial GUI vector scale, accepted roughly between `0.25` and `4.0` (recommended `0.8` ~ `1.5`); `0.0` and `1.0` both mean default. |
 | `web_ui` | `bool` | `true` | Whether to enable the built-in web console. Takes effect immediately; a non-loopback host without an `api_key` emits a security warning. |
 
+### Cost Estimation
+
+`price_in_per_million` / `price_out_per_million` are the per-million-token prices **you** wrote down, in USD. They are multiplied by the tokens **the relay itself reported** to give per-relay and total estimates:
+
+- only when a relay reports usage (a relay that omits `usage`, or a stream that never carries it, contributes nothing — nothing is guessed);
+- only when a price is configured, so the total is a floor on what is known rather than the whole bill;
+- accumulated at the moment of accounting, so correcting a price later does not rewrite history.
+
+That makes it the right tool for "which relay is dearer, and what has today cost me", not a bill to reconcile against.
+
 ### Telemetry Persistence
 
 With `persist_telemetry` on (the default), the server writes the following to `telemetry-<port>.json` in the **state directory** (the port being the one the instance actually bound) (see the [Environment Variables Reference](environment.md)) and reads it back on the next start, so `literouter status`, the `/ui` console and the GUI do not reset to zero across a restart:
@@ -181,6 +193,8 @@ Writes match the config file: a temp file in the same directory followed by an a
 | `id` | `string` | Required | Unique identifier (alphanumeric, underscores, dashes) used in routes and telemetry. |
 | `name` | `string` | `id` | Human-friendly display label. |
 | `protocol` | `string` | `"openai"` | Upstream protocol: `openai` (default), `anthropic`, `gemini`, or `openai_responses`. |
+| `price_in_per_million` | `double` | `0` | What this relay charges for **input** tokens, in USD per million. `0` means not written down, and an unpriced relay contributes **nothing** to the cost estimate rather than being counted at zero. |
+| `price_out_per_million` | `double` | `0` | What this relay charges for **output** tokens, in USD per million. |
 | `base_url` | `string` | Required | Root URL of the upstream service (e.g. `https://api.openai.com/v1`). Must be a valid HTTP/HTTPS URL. |
 | `api_key` | `string` | `""` | Upstream key, supporting static strings or environment variable placeholders. |
 | `enabled` | `bool` | `true` | Enable or disable this provider from request dispatching. |

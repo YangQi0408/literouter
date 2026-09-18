@@ -98,6 +98,12 @@ export function Overview() {
           value={humanMillis(snapshot.latency_ms_avg)}
           sub="ewma"
         />
+        <Metric
+          icon={Coins}
+          label={t('metricCost')}
+          value={snapshot.cost_usd > 0 ? `$${snapshot.cost_usd.toFixed(4)}` : '—'}
+          sub={t('costSub')}
+        />
         <UptimeMetric
           uptime={snapshot.uptime_sec}
           running={snapshot.running}

@@ -89,6 +89,10 @@ struct ProviderEditor {
     int connectTimeoutSec = 15;
     std::string protocol = "openai";
     int protocolChoice = 0;
+    // Prices are free text in dollars: a per-million price is often below a
+    // dollar, and a stepper of whole units could not express the cheap ones.
+    std::string priceInText = "0";
+    std::string priceOutText = "0";
     bool enabled = true;
     bool supportsStream = true;
     std::string statusLine;
@@ -779,10 +783,42 @@ struct AppState {
             editor.connectTimeoutSec = provider.connect_timeout_sec;
             editor.enabled = provider.enabled;
             editor.supportsStream = provider.supports_stream;
+            editor.priceInText = priceText(provider.price_in_per_million);
+            editor.priceOutText = priceText(provider.price_out_per_million);
             editor.note = provider.note;
             editor.modelsText = joinLines(provider.models);
             editor.headersText = headersToText(provider.headers);
         }
+    }
+
+    // "$3.00" in and out of the config's double. Trailing zeroes are trimmed so
+    // the field reads the way an operator typed it, not the way a formatter
+    // would print it.
+    static std::string priceText(double value) {
+        if (value <= 0.0) {
+            return "0";
+        }
+        std::string text = std::format("{:.4f}", value);
+        while (!text.empty() && text.back() == '0') {
+            text.pop_back();
+        }
+        if (!text.empty() && text.back() == '.') {
+            text.pop_back();
+        }
+        return text;
+    }
+
+    static double parsePrice(const std::string& text) {
+        const std::string trimmed = literouter::trim(text);
+        if (trimmed.empty()) {
+            return 0.0;
+        }
+        char* end = nullptr;
+        const double value = std::strtod(trimmed.c_str(), &end);
+        if (end == trimmed.c_str() || value < 0.0) {
+            return 0.0;
+        }
+        return value;
     }
 
     void duplicateProvider(int index) {
@@ -829,6 +865,10 @@ struct AppState {
         provider.connect_timeout_sec = editor.connectTimeoutSec;
         provider.enabled = editor.enabled;
         provider.supports_stream = editor.supportsStream;
+        // Free text in, a number out: anything that does not parse is 0, which
+        // is the same as leaving the price unset rather than refusing to save.
+        provider.price_in_per_million = parsePrice(editor.priceInText);
+        provider.price_out_per_million = parsePrice(editor.priceOutText);
         provider.note = editor.note;
         provider.models = splitList(editor.modelsText);
         provider.headers = parseHeaders(editor.headersText);

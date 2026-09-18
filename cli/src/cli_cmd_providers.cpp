@@ -25,6 +25,10 @@ struct AddOptions {
     int priority = 100;
     int weight = 1;
     int timeout = 120;
+    // Dollars per million tokens; 0 leaves the relay unpriced, and an unpriced
+    // relay contributes nothing to the cost estimate.
+    double priceIn = 0.0;
+    double priceOut = 0.0;
     std::vector<std::string> models;
     std::vector<std::string> headers;
     bool enabled = true;
@@ -164,6 +168,8 @@ void runAdd(Context &ctx, const AddOptions &opts) {
     provider.priority = opts.priority;
     provider.weight = opts.weight;
     provider.timeout_sec = opts.timeout;
+    provider.price_in_per_million = opts.priceIn;
+    provider.price_out_per_million = opts.priceOut;
     provider.models = opts.models;
     provider.chat_path = opts.chatPath;
     provider.embeddings_path = opts.embeddingsPath;
@@ -436,6 +442,10 @@ void registerAdd(CLI::App &parent, Context &ctx) {
     sub->add_option("--priority", opts->priority, "Lower wins (default 100)");
     sub->add_option("--weight", opts->weight, "Tie-break weight within a priority (default 1)");
     sub->add_option("--timeout", opts->timeout, "Per-request timeout in seconds (default 120)");
+    sub->add_option("--price-in", opts->priceIn,
+                    "Input price in dollars per million tokens (0 = unknown)");
+    sub->add_option("--price-out", opts->priceOut,
+                    "Output price in dollars per million tokens (0 = unknown)");
     sub->add_option("--model", opts->models, "A model id this relay advertises (repeatable)");
     sub->add_option("--header", opts->headers, "Extra upstream header, `Name: value` (repeatable)");
     sub->add_flag("--enable,!--no-enable", opts->enabled, "Enable the relay (default)")

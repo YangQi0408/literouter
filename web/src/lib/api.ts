@@ -50,6 +50,7 @@ export interface ProviderStat {
   latency_ms_last: number
   latency_ms_avg: number
   latency_ms_p95: number
+  cost_usd: number
   last_used_unix: number
 }
 
@@ -79,6 +80,7 @@ export interface Snapshot {
   tokens_prompt: number
   tokens_completion: number
   latency_ms_avg: number
+  cost_usd: number
   log_seq: number
   breakers_open: number
   providers: ProviderStat[]
@@ -121,6 +123,9 @@ export interface ProviderConfig {
   chat_path: string
   embeddings_path: string
   protocol: Protocol
+  /** Dollars per million tokens. 0 means "not written down". */
+  price_in_per_million: number
+  price_out_per_million: number
   note: string
 }
 

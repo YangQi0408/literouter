@@ -283,7 +283,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 
 - **Request**: `GET /__literouter/metrics`
 - **Response**: Prometheus text format (`text/plain; version=0.0.4`), carrying the *same* numbers as `/__literouter/status` — the console is for a person, this is for a graph, and both read one snapshot.
-- **Metrics**: `literouter_running`, `literouter_uptime_seconds`, `literouter_requests_total` / `successes_total` / `failures_total`, `literouter_active_requests`, `literouter_breakers_open`, `literouter_bytes_out_total`, `literouter_tokens_*_total`, `literouter_latency_ms_avg`, plus per-relay `literouter_relay_*{relay="<id>"}` (requests, successes, failures, client aborts, absorbed retries, bytes in and out, tokens, `latency_ms_last|avg|p95`, `last_used_unixtime`, `healthy`, `cooldown_seconds`).
+- **Metrics**: `literouter_running`, `literouter_uptime_seconds`, `literouter_requests_total` / `successes_total` / `failures_total`, `literouter_active_requests`, `literouter_breakers_open`, `literouter_bytes_out_total`, `literouter_tokens_*_total`, `literouter_latency_ms_avg`, `literouter_cost_usd_total`, plus per-relay `literouter_relay_*{relay="<id>"}` (requests, successes, failures, client aborts, absorbed retries, bytes in and out, tokens, `latency_ms_last|avg|p95`, `last_used_unixtime`, `healthy`, `cooldown_seconds`).
 - **Auth**: the same `server.api_key` gate as every other management endpoint, which a scraper satisfies with `bearer_token` / `authorization`.
 - **Example** (`prometheus.yml`):
   ```yaml

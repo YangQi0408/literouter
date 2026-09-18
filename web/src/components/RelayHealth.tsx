@@ -40,6 +40,7 @@ export function RelayHealth() {
             <th className="text-right">p95</th>
             <th className="text-right">{t('colTokens')}</th>
             <th className="text-right">{t('colBytes')}</th>
+            <th className="text-right">{t('colCost')}</th>
             <th>{t('lastError')}</th>
             <th />
           </tr>
@@ -47,7 +48,7 @@ export function RelayHealth() {
         <tbody>
           {snapshot.providers.length === 0 ? (
             <tr>
-              <td colSpan={10} className="py-8 text-center text-muted-foreground">
+              <td colSpan={11} className="py-8 text-center text-muted-foreground">
                 {t('empty')}
               </td>
             </tr>
@@ -91,6 +92,9 @@ export function RelayHealth() {
                   <td className="text-right font-mono text-xs tnum">{formatTokens(stat)}</td>
                   <td className="text-right font-mono text-xs tnum">
                     {humanBytes(stat.bytes_in)} / {humanBytes(stat.bytes_out)}
+                  </td>
+                  <td className="text-right font-mono text-xs tnum">
+                    {stat.cost_usd > 0 ? `$${stat.cost_usd.toFixed(4)}` : '—'}
                   </td>
                   <td className="max-w-[22rem] truncate text-xs text-muted-foreground">
                     {state?.last_error ?? ''}

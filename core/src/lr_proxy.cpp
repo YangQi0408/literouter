@@ -221,6 +221,10 @@ std::string metricsText(const Snapshot &snapshot) {
     header("literouter_tokens_total", "counter", "Tokens reported by relays.");
     counter("literouter_tokens_prompt_total", "", snapshot.tokens_prompt);
     counter("literouter_tokens_completion_total", "", snapshot.tokens_completion);
+    header("literouter_cost_usd_total", "counter",
+           "Estimated spend, from the tokens relays reported and the prices configured for "
+           "them. Relays without a price contribute nothing, so this is a floor.");
+    sample("literouter_cost_usd_total", "", snapshot.cost_usd);
     header("literouter_latency_ms_avg", "gauge",
            "Exponentially weighted average request latency, in milliseconds.");
     sample("literouter_latency_ms_avg", "", snapshot.latency_ms_avg);
@@ -246,6 +250,9 @@ std::string metricsText(const Snapshot &snapshot) {
            "1 when a relay is usable, 0 while its breaker is open or it is disabled.");
     header("literouter_relay_cooldown_seconds", "gauge",
            "Seconds left in a relay's breaker window.");
+    header("literouter_relay_cost_usd_total", "counter",
+           "Estimated spend on this relay, from the tokens it reported and its configured "
+           "prices.");
     for (const auto &stat : snapshot.providers) {
         const std::string labels = std::format("{{relay=\"{}\"}}", metricLabel(stat.provider));
         counter("literouter_relay_requests_total", labels, stat.requests);
@@ -261,6 +268,7 @@ std::string metricsText(const Snapshot &snapshot) {
         sample("literouter_relay_latency_ms_avg", labels, stat.latency_ms_avg);
         sample("literouter_relay_latency_ms_p95", labels, stat.latency_ms_p95);
         sample("literouter_relay_last_used_unixtime", labels, stat.last_used_unix);
+        sample("literouter_relay_cost_usd_total", labels, stat.cost_usd);
     }
     for (const auto &health : snapshot.health) {
         const std::string labels = std::format("{{relay=\"{}\"}}", metricLabel(health.provider));
@@ -858,6 +866,7 @@ struct ProxyServer::Impl {
     std::uint64_t bytes_out = 0;
     std::uint64_t tokens_prompt = 0;
     std::uint64_t tokens_completion = 0;
+    double cost_usd = 0.0;
     double latency_ms_avg = 0.0;
 
     // ── persisted telemetry ──────────────────────────────────────────────────
@@ -1278,10 +1287,14 @@ struct ProxyServer::Impl {
 
     // `bytes` is what went downstream; `bytes_in` is what went upstream, which
     // is the number that tells an operator whether a relay is being fed the
-    // context it was told to expect.
+    // context it was told to expect. The two prices are the relay's own, in
+    // dollars per million tokens; 0 means "not written down", and then the
+    // attempt costs nothing to the counter rather than costing a guess.
     void recordAttempt(std::string_view provider, AttemptOutcome outcome, double latency_ms,
                        std::uint64_t bytes, std::uint64_t prompt_tokens,
-                       std::uint64_t completion_tokens, std::uint64_t bytes_in = 0) {
+                       std::uint64_t completion_tokens, std::uint64_t bytes_in = 0,
+                       double price_in_per_million = 0.0,
+                       double price_out_per_million = 0.0) {
         std::scoped_lock lock{telemetry_mutex};
         auto &stat = statFor(provider);
         ++stat.requests;
@@ -1292,6 +1305,15 @@ struct ProxyServer::Impl {
         }
         stat.bytes_out += bytes;
         stat.bytes_in += bytes_in;
+        if (prompt_tokens > 0 || completion_tokens > 0) {
+            // Priced here rather than at display time: the operator may correct a
+            // price later, and the cost already incurred is not re-derived from
+            // the new one.
+            const double cost = (static_cast<double>(prompt_tokens) / 1'000'000.0) * price_in_per_million +
+                                (static_cast<double>(completion_tokens) / 1'000'000.0) * price_out_per_million;
+            stat.cost_usd += cost;
+            cost_usd += cost;
+        }
         stat.tokens_prompt += prompt_tokens;
         stat.tokens_completion += completion_tokens;
         stat.last_used_unix = nowUnix();
@@ -1583,7 +1605,8 @@ struct ProxyServer::Impl {
             recordAttempt(provider->id,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
                           result.latency_ms, result.body.size(), usage.tokens_prompt,
-                          usage.tokens_completion, payload.size());
+                          usage.tokens_completion, payload.size(),
+                          provider->price_in_per_million, provider->price_out_per_million);
             if (good && attempt > 0) {
                 noteAbsorbed(provider->id);
             }
@@ -2168,7 +2191,8 @@ struct ProxyServer::Impl {
                                       stream_ok ? AttemptOutcome::Success
                                                 : AttemptOutcome::Failure,
                                       latency, bytes, tokens.prompt, tokens.completion,
-                                      payload_size);
+                                      payload_size, provider.price_in_per_million,
+                                      provider.price_out_per_million);
                         if (absorbed) {
                             noteAbsorbed(provider_id);
                         }
@@ -3001,6 +3025,7 @@ Snapshot ProxyServer::snapshot() const {
         out.bytes_out = impl_->bytes_out;
         out.tokens_prompt = impl_->tokens_prompt;
         out.tokens_completion = impl_->tokens_completion;
+        out.cost_usd = impl_->cost_usd;
         out.latency_ms_avg = impl_->latency_ms_avg;
         out.log_seq = impl_->log.next_seq > 0 ? impl_->log.next_seq - 1 : 0;
         for (const auto &provider : cfg.providers) {
@@ -3041,6 +3066,7 @@ void ProxyServer::resetStats() {
         impl_->bytes_out = 0;
         impl_->tokens_prompt = 0;
         impl_->tokens_completion = 0;
+        impl_->cost_usd = 0.0;
         impl_->latency_ms_avg = 0.0;
     }
     impl_->router.resetHealth();

@@ -39,6 +39,8 @@ export const blankProvider = (): ProviderConfig => ({
   chat_path: '/chat/completions',
   embeddings_path: '/embeddings',
   protocol: 'openai',
+  price_in_per_million: 0,
+  price_out_per_million: 0,
   note: '',
 })
 
@@ -188,6 +190,22 @@ export function ProviderDialog({
             />
           </Field>
 
+          <Field label="price_in_per_million" hint={t('hintPrice')}>
+            <NumberField
+              value={provider.price_in_per_million}
+              step={0.1}
+              min={0}
+              onChange={(price_in_per_million) => patch({ price_in_per_million })}
+            />
+          </Field>
+          <Field label="price_out_per_million" hint={t('hintPrice')}>
+            <NumberField
+              value={provider.price_out_per_million}
+              step={0.1}
+              min={0}
+              onChange={(price_out_per_million) => patch({ price_out_per_million })}
+            />
+          </Field>
           <Field label="note" wide>
             <TextField value={provider.note} mono={false} onChange={(note) => patch({ note })} />
           </Field>

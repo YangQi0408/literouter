@@ -106,6 +106,9 @@ AppConfig fullyPopulated() {
     primary.base_url = "https://relay.example.com/v1";
     primary.api_key = "sk-primary-literal";
     primary.enabled = true;
+    // Priced on purpose: a field only round-trips visibly when it is not zero.
+    primary.price_in_per_million = 2.5;
+    primary.price_out_per_million = 10.0;
     primary.priority = 7;
     primary.weight = 3;
     primary.timeout_sec = 45;
@@ -195,6 +198,10 @@ void checkProviderEqual(const ProviderConfig &actual, const ProviderConfig &expe
     LR_CHECK_MSG(actual.headers == expected.headers, where("headers"));
     LR_CHECK_MSG(actual.chat_path == expected.chat_path, where("chat_path"));
     LR_CHECK_MSG(actual.embeddings_path == expected.embeddings_path, where("embeddings_path"));
+    LR_CHECK_MSG(actual.price_in_per_million == expected.price_in_per_million,
+                 where("price_in_per_million"));
+    LR_CHECK_MSG(actual.price_out_per_million == expected.price_out_per_million,
+                 where("price_out_per_million"));
     LR_CHECK_MSG(actual.note == expected.note, where("note"));
 }
 
@@ -520,6 +527,18 @@ void testValidateProviders() {
         LR_CHECK(findIssue(report, "providers[1].id", kError) != nullptr);
         LR_CHECK_EQ(static_cast<long long>(report.count(kError)), 1);
         LR_CHECK_EQ(report.summary(), "1 error");
+    }
+    {
+        // Prices are dollars per million tokens: a negative one is a typo, not a
+        // discount.
+        AppConfig config;
+        config.providers = {ProviderConfig{.id = "priced",
+                                           .base_url = "https://relay.example/v1",
+                                           .price_in_per_million = -1.0}};
+        LR_CHECK(findIssue(literouter::validate(config), "providers[0].price_in_per_million",
+                           kError) != nullptr);
+        config.providers[0].price_in_per_million = 0.0;
+        LR_CHECK(literouter::validate(config).ok());
     }
     {
         AppConfig config;

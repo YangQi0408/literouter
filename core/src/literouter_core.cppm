@@ -64,6 +64,13 @@ struct ProviderConfig {
     std::string embeddings_path = "/embeddings";
     // Upstream API protocol: "openai" (default), "anthropic", "gemini", "openai_responses".
     std::string protocol = "openai";
+    // What this relay charges per million tokens, in US dollars. 0 means "not
+    // written down", and such a relay contributes nothing to the reported cost
+    // rather than a made-up number: an estimate built on a guess is worse than
+    // no estimate. Tokens are the relay's own report, so a relay that never
+    // reports usage costs nothing here.
+    double price_in_per_million = 0.0;
+    double price_out_per_million = 0.0;
     // Free-form note shown in the console.
     std::string note;
 };
@@ -330,6 +337,9 @@ struct ProviderStat {
     double latency_ms_avg = 0.0;     // exponential moving average, alpha 0.25
     double latency_ms_p95 = 0.0;     // nearest-rank p95 over the last 64 attempts
     double last_used_unix = 0.0;
+    // Accumulated from the relay's own token reports and the prices written down
+    // for it, in US dollars. 0 when no price is configured — see ProviderConfig.
+    double cost_usd = 0.0;
 };
 
 struct ProviderHealth {
@@ -399,6 +409,9 @@ struct Snapshot {
     std::uint64_t bytes_out = 0;
     std::uint64_t tokens_prompt = 0;
     std::uint64_t tokens_completion = 0;
+    // What the relays have cost in total. Only relays with a price configured
+    // contribute, so this is a floor rather than a total.
+    double cost_usd = 0.0;
     double latency_ms_avg = 0.0;
     std::uint64_t log_seq = 0;    // newest seq the server has issued
     std::vector<ProviderStat> providers;

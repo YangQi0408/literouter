@@ -75,6 +75,8 @@
       "id": "openai-official",                 // 唯一标识符（全局唯一，路由与统计均以此为键）
       "name": "OpenAI 官方直连",                // 控制台显示名
       "protocol": "openai",                    // 上游协议：openai / anthropic / gemini / openai_responses
+      "price_in_per_million": 2.5,             // 输入单价（美元 / 百万 token）；0 或省略表示未填写，不计入花费估算
+      "price_out_per_million": 10.0,           // 输出单价（美元 / 百万 token）
       "base_url": "https://api.openai.com/v1", // 上游根地址（保留路径前缀）
       "api_key": "${OPENAI_API_KEY}",          // 支持直接写明文，或使用环境变量占位符
       "enabled": true,                         // 是否启用该中转站
@@ -160,6 +162,16 @@
 | `ui_scale` | `double` | `1.0` | GUI 初始矢量缩放比例，可用范围约 `0.25` ~ `4.0`（推荐 `0.8` ~ `1.5`）；`0.0` 与 `1.0` 均表示默认。 |
 | `web_ui` | `bool` | `true` | 是否启用内置 Web 控制台。修改后即刻生效；若 `host` 设为非回环地址（如 `0.0.0.0`）且未设置 `api_key`，校验时将产生安全警告。 |
 
+### 成本估算
+
+`price_in_per_million` / `price_out_per_million` 是**你自己填写的**每百万 token 单价（美元），literouter 用它们乘以**中转站自己上报的** token 数，得到逐站与总计的估算花费：
+
+- 只在**有 token 上报**时累计：中转站不回 `usage`（或流里不带）就计 0，不做猜测；
+- 只在**填了价格**时累计：未填价的中转站计 0，因此总计是"已知花费的下限"而非全部支出；
+- 花费在**记账时**就按当时的价格累计，事后改价格不会重算历史。
+
+因此它适合回答"哪家更贵、今天花了多少"这类相对问题，而不是当作账单核对。
+
 ### 遥测持久化
 
 `persist_telemetry` 为 `true`（默认）时，服务会把以下数据写入 **状态目录**（见[环境变量参考手册](environment.md)）下的 `telemetry-<port>.json`（`<port>` 为实例实际绑定的端口），并在下一次启动时读回，因此 `literouter status`、`/ui` 控制台与 GUI 不会在重启后归零：
@@ -181,6 +193,8 @@
 | `id` | `string` | 必填 | 唯一标识符（英文字母、数字、下划线、减号），用于路由与指标统计绑定。 |
 | `name` | `string` | `id` | 控制台与日志中展示的友好名称。 |
 | `protocol` | `string` | `"openai"` | 上游通信协议：`openai`（默认）、`anthropic`、`gemini`、`openai_responses`。 |
+| `price_in_per_million` | `double` | `0` | 该中转站**输入** token 的单价（美元 / 百万 token）。`0` 表示未填写：未填写的中转站**不计入**花费估算，而不是按 0 元计。 |
+| `price_out_per_million` | `double` | `0` | 该中转站**输出** token 的单价（美元 / 百万 token）。 |
 | `base_url` | `string` | 必填 | 上游服务基础地址，例如 `https://api.openai.com/v1`。必须为合法 HTTP/HTTPS URL。 |
 | `api_key` | `string` | `""` | 上游鉴权密钥，支持静态明文或环境变量占位符。 |
 | `enabled` | `bool` | `true` | 是否启用该中转站。禁用后不会参与任何请求调度。 |

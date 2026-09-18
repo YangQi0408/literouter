@@ -1081,7 +1081,20 @@ void group17LatencyPercentile(StubRelay &relay_a, literouter::ProxyServer &proxy
     }
 
     LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
-    const auto *two = statOf(proxy.snapshot(), "alpha");
+    const literouter::Snapshot dbg = proxy.snapshot();
+    const auto *two = statOf(dbg, "alpha");
+    if (two == nullptr || two->requests != 2) {
+        for (const auto &s : dbg.providers) {
+            std::printf("   FAILDBG relay=%s requests=%llu successes=%llu cost=%.9f\n",
+                        s.provider.c_str(), static_cast<unsigned long long>(s.requests),
+                        static_cast<unsigned long long>(s.successes), s.cost_usd);
+        }
+        for (const auto &h : dbg.health) {
+            std::printf("   FAILDBG health=%s state=%s failures=%llu\n", h.provider.c_str(),
+                        h.stateName().c_str(),
+                        static_cast<unsigned long long>(h.consecutive_failures));
+        }
+    }
     LR_CHECK(two != nullptr);
     if (two != nullptr) {
         LR_CHECK_EQ(two->requests, static_cast<std::uint64_t>(2));
@@ -1898,6 +1911,91 @@ void group12HangingRelay(HangingRelay &hanger, StubRelay &relay_b,
 
 #endif
 
+// Cost accounting: the two prices an operator writes down, multiplied by the
+// tokens a relay reports. The interesting assertions are the exact arithmetic
+// and the relay that has no price — a missing price must contribute nothing
+// rather than a plausible-looking zero.
+void group25CostAccounting(StubRelay &relay_a, StubRelay &relay_b) {
+    LR_GROUP("25. cost is the relay's tokens times the price written down for it");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+
+    literouter::ProviderConfig priced;
+    priced.id = "priced";
+    priced.base_url = relay_a.baseUrl();
+    priced.timeout_sec = 10;
+    priced.connect_timeout_sec = 2;
+    priced.price_in_per_million = 3.0;
+    priced.price_out_per_million = 15.0;
+    literouter::ProviderConfig unpriced;
+    unpriced.id = "unpriced";
+    unpriced.base_url = relay_b.baseUrl();
+    unpriced.timeout_sec = 10;
+    unpriced.connect_timeout_sec = 2;
+    config.providers = {priced, unpriced};
+
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "priced", .model = {}},
+                     literouter::RouteTarget{.provider = "unpriced", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = proxy.boundPort();
+    relay_a.setMode(StubRelay::Mode::Normal);
+    relay_b.setMode(StubRelay::Mode::Normal);
+    proxy.resetStats();
+    LR_CHECK_EQ(proxy.snapshot().cost_usd, 0.0);
+
+    // The stub reports 11 prompt and 7 completion tokens, buffered and streamed.
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+    relay_a.setMode(StubRelay::Mode::Stream);
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true)).status, 200);
+    relay_a.setMode(StubRelay::Mode::Normal);
+
+    // 2 × (11/1e6 × 3 + 7/1e6 × 15) = 2 × 0.000138
+    constexpr double kPerAttempt = (11.0 / 1'000'000.0) * 3.0 + (7.0 / 1'000'000.0) * 15.0;
+    const literouter::Snapshot snapshot = proxy.snapshot();
+    LR_CHECK_MSG(std::abs(snapshot.cost_usd - 2 * kPerAttempt) < 1e-12,
+                 std::format("total cost is {:.9f}, expected {:.9f}", snapshot.cost_usd,
+                             2 * kPerAttempt));
+    const auto *alpha = statOf(snapshot, "priced");
+    LR_CHECK(alpha != nullptr);
+    if (alpha != nullptr) {
+        LR_CHECK_MSG(std::abs(alpha->cost_usd - 2 * kPerAttempt) < 1e-12,
+                     std::format("relay cost is {:.9f}, expected {:.9f}", alpha->cost_usd,
+                                 2 * kPerAttempt));
+        LR_CHECK_EQ(alpha->tokens_prompt, static_cast<std::uint64_t>(22));
+        LR_CHECK_EQ(alpha->tokens_completion, static_cast<std::uint64_t>(14));
+    }
+
+    // A relay with no price recorded contributes nothing, and the failover to it
+    // does not invent one.
+    relay_a.setMode(StubRelay::Mode::RateLimit);
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+    relay_a.setMode(StubRelay::Mode::Normal);
+    const literouter::Snapshot after = proxy.snapshot();
+    const auto *beta = statOf(after, "unpriced");
+    LR_CHECK(beta != nullptr);
+    if (beta != nullptr) {
+        LR_CHECK_EQ(beta->requests, static_cast<std::uint64_t>(1));
+        LR_CHECK_MSG(beta->cost_usd == 0.0,
+                     "an unpriced relay reported a cost out of nowhere");
+    }
+    LR_CHECK_MSG(std::abs(after.cost_usd - 2 * kPerAttempt) < 1e-12,
+                 "the unpriced relay moved the total");
+
+    proxy.stop();
+}
+
 // Prometheus exposition: the console is for a person, this is for a graph, and
 // both must read the same numbers or one of them is lying.
 void group24MetricsEndpoint(StubRelay &relay_a) {
@@ -2482,6 +2580,7 @@ int main() {
         group21NoFieldLies(relay_a, relay_b);
         group22ResponsesIngress(relay_a, proxy.boundPort());
         group24MetricsEndpoint(relay_a);
+        group25CostAccounting(relay_a, relay_b);
 #ifndef _WIN32
         group23RequestDeadline(relay_b);
 #endif

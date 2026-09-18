@@ -310,6 +310,10 @@ ValidationReport validate(const AppConfig &config) {
         }
         const std::string label = entry.id.empty() ? where : entry.id;
 
+        if (entry.price_in_per_million < 0.0 || entry.price_out_per_million < 0.0) {
+            addIssue(report, ValidationIssue::Level::Error, where + ".price_in_per_million",
+                     "prices are dollars per million tokens and cannot be negative");
+        }
         if (entry.base_url.empty()) {
             addIssue(report, ValidationIssue::Level::Error, where + ".base_url",
                      std::format("relay `{}` has no base_url", label));

@@ -132,6 +132,8 @@ ProviderConfig providerFromJson(const json &node) {
     out.chat_path = readString(node, "chat_path", "/chat/completions");
     out.embeddings_path = readString(node, "embeddings_path", "/embeddings");
     out.protocol = readString(node, "protocol", "openai");
+    out.price_in_per_million = readDouble(node, "price_in_per_million", 0.0);
+    out.price_out_per_million = readDouble(node, "price_out_per_million", 0.0);
     out.note = readString(node, "note");
     if (out.name.empty()) {
         out.name = out.id;
@@ -161,6 +163,14 @@ json providerToJson(const ProviderConfig &value) {
     node["embeddings_path"] = value.embeddings_path;
     if (!value.protocol.empty() && value.protocol != "openai") {
         node["protocol"] = value.protocol;
+    }
+    // Only when written down: an absent price is "unknown", and saying 0.0 in
+    // every relay's JSON would make that indistinguishable from a free one.
+    if (value.price_in_per_million > 0.0) {
+        node["price_in_per_million"] = value.price_in_per_million;
+    }
+    if (value.price_out_per_million > 0.0) {
+        node["price_out_per_million"] = value.price_out_per_million;
     }
     if (!value.note.empty()) {
         node["note"] = value.note;
@@ -277,6 +287,7 @@ json statToJson(const ProviderStat &value) {
     node["latency_ms_avg"] = value.latency_ms_avg;
     node["latency_ms_p95"] = value.latency_ms_p95;
     node["last_used_unix"] = value.last_used_unix;
+    node["cost_usd"] = value.cost_usd;
     return node;
 }
 
@@ -458,6 +469,7 @@ std::string toJsonString(const Snapshot &snapshot) {
     node["total_failure"] = snapshot.total_failure;
     node["active_requests"] = snapshot.active_requests;
     node["bytes_out"] = snapshot.bytes_out;
+    node["cost_usd"] = snapshot.cost_usd;
     node["tokens_prompt"] = snapshot.tokens_prompt;
     node["tokens_completion"] = snapshot.tokens_completion;
     node["latency_ms_avg"] = snapshot.latency_ms_avg;

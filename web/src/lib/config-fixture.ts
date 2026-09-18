@@ -14,6 +14,7 @@ export function makeServer(overrides: Partial<ServerConfig> = {}): ServerConfig 
     api_key: '',
     pass_through_unknown: true,
     max_attempts: 0,
+    request_deadline_sec: 0,
     circuit_failure_threshold: 3,
     circuit_cooldown_sec: 30,
     skip_open_circuits: true,
@@ -45,6 +46,8 @@ export function makeProvider(overrides: Partial<ProviderConfig> = {}): ProviderC
     chat_path: '/chat/completions',
     embeddings_path: '/embeddings',
     protocol: 'openai',
+    price_in_per_million: 0,
+    price_out_per_million: 0,
     note: '',
     ...overrides,
   }

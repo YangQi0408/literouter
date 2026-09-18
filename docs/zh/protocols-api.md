@@ -285,7 +285,7 @@ curl http://127.0.0.1:8787/v1/messages \
 
 - **请求**：`GET /__literouter/metrics`
 - **响应**：Prometheus 文本格式（`text/plain; version=0.0.4`），内容与 `/__literouter/status` **同源**——控制台给人看，这里给图看，两者读的是同一份快照。
-- **指标**：`literouter_running`、`literouter_uptime_seconds`、`literouter_requests_total`/`successes_total`/`failures_total`、`literouter_active_requests`、`literouter_breakers_open`、`literouter_bytes_out_total`、`literouter_tokens_*_total`、`literouter_latency_ms_avg`，以及逐中转站的 `literouter_relay_*{relay="<id>"}`（请求/成功/失败/客户端中断/吸收重试/进出字节/Token/`latency_ms_last|avg|p95`/`last_used_unixtime`/`healthy`/`cooldown_seconds`）。
+- **指标**：`literouter_running`、`literouter_uptime_seconds`、`literouter_requests_total`/`successes_total`/`failures_total`、`literouter_active_requests`、`literouter_breakers_open`、`literouter_bytes_out_total`、`literouter_tokens_*_total`、`literouter_latency_ms_avg`、`literouter_cost_usd_total`，以及逐中转站的 `literouter_relay_*{relay="<id>"}`（请求/成功/失败/客户端中断/吸收重试/进出字节/Token/`latency_ms_last|avg|p95`/`last_used_unixtime`/`healthy`/`cooldown_seconds`）。
 - **鉴权**：与其它管理端点一致受 `server.api_key` 保护（Prometheus 侧用 `bearer_token` / `authorization` 配置即可）。
 - **示例**（`prometheus.yml`）：
   ```yaml

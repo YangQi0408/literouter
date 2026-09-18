@@ -161,7 +161,7 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
     }
 
     constexpr float panelWidth = 860.0f;
-    constexpr float panelHeight = 700.0f;
+    constexpr float panelHeight = 780.0f;
     const float leftX = 28.0f;
     const float rightX = 448.0f;
     const float columnWidth = 384.0f;
@@ -301,6 +301,20 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                         .build();
                 })
                 .build();
+            detail::labelledInput(ui, "overlays.editor.pricein", leftX, 590.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Price in ($ / 1M tokens)")),
+                                  {std::string(literouter::i18n::tr(
+                                      "What this relay charges for input tokens. 0 leaves it "
+                                      "unknown, and an unknown price contributes nothing to the "
+                                      "cost estimate."))},
+                                  editor.priceInText, "2.50",
+                                  [&editor](const std::string& value) { editor.priceInText = value; });
+            detail::labelledInput(ui, "overlays.editor.priceout", rightX, 590.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Price out ($ / 1M tokens)")),
+                                  {std::string(literouter::i18n::tr(
+                                      "What this relay charges for output tokens."))},
+                                  editor.priceOutText, "10.00",
+                                  [&editor](const std::string& value) { editor.priceOutText = value; });
             ui.stack("overlays.editor.stream.wrap")
                 .position(leftX + 260.0f, 546.0f)
                 .size(280.0f, 30.0f)
@@ -349,7 +363,7 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                 statusError = false;
             }
             ui.text("overlays.editor.status")
-                .position(leftX, 590.0f)
+                .position(leftX, 664.0f)
                 .size(panelWidth - 56.0f, 18.0f)
                 .text(literouter::truncateUtf8(status, 150))
                 .fontSize(11.5f)
@@ -357,11 +371,11 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                 .color(statusError ? p.danger : p.textFaint)
                 .build();
 
-            actionButton(ui, "overlays.editor.test", leftX, 624.0f, 96.0f, 40.0f,
+            actionButton(ui, "overlays.editor.test", leftX, 698.0f, 96.0f, 40.0f,
                          std::string(literouter::i18n::tr("Test")), false,
                          [] { appState().testEditorProvider(); });
             const bool hasModels = probe != nullptr && probe->done && !probe->models.empty();
-            actionButton(ui, "overlays.editor.usemodels", leftX + 106.0f, 624.0f, 188.0f, 40.0f,
+            actionButton(ui, "overlays.editor.usemodels", leftX + 106.0f, 698.0f, 188.0f, 40.0f,
                          std::string(literouter::i18n::tr("Use discovered models")), false, [] {
                              AppState& app = appState();
                              const ProbeView* view = app.editorProbe();
@@ -377,9 +391,9 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                          !hasModels);
 
             actionButton(ui, "overlays.editor.cancel", panelWidth - 28.0f - 96.0f - 12.0f - 116.0f,
-                         624.0f, 116.0f, 40.0f, std::string(literouter::i18n::tr("Cancel")), false,
+                         698.0f, 116.0f, 40.0f, std::string(literouter::i18n::tr("Cancel")), false,
                          [&editor] { editor.open = false; });
-            actionButton(ui, "overlays.editor.save", panelWidth - 28.0f - 116.0f, 624.0f, 116.0f,
+            actionButton(ui, "overlays.editor.save", panelWidth - 28.0f - 116.0f, 698.0f, 116.0f,
                          40.0f, std::string(literouter::i18n::tr("Save relay")), true, [] { appState().applyProviderEditor(); });
         })
         .build();
