@@ -121,7 +121,9 @@ export function LinesField({
   placeholder?: string
   rows?: number
 }) {
-  const [text, setText] = useRawText(value.join('\n'), (raw) => parseLines(raw).join('\n'))
+  // `?? []`: a missing key must not be able to take the page down, whatever the
+  // caller hands over.
+  const [text, setText] = useRawText((value ?? []).join('\n'), (raw) => parseLines(raw).join('\n'))
 
   return (
     <Textarea
@@ -150,7 +152,7 @@ const parseHeaders = (raw: string): Record<string, string> => {
 }
 
 const renderHeaders = (value: Record<string, string>) =>
-  Object.entries(value)
+  Object.entries(value ?? {})
     .map(([name, headerValue]) => `${name}: ${headerValue}`)
     .join('\n')
 
@@ -164,7 +166,7 @@ export function HeadersField({
   // Same reason as LinesField: a header is only parseable once its colon is
   // typed, and echoing the parse back before that dropped the name character
   // by character as it was being written.
-  const [text, setText] = useRawText(renderHeaders(value), (raw) =>
+  const [text, setText] = useRawText(renderHeaders(value ?? {}), (raw) =>
     renderHeaders(parseHeaders(raw)),
   )
 

@@ -3,6 +3,8 @@
  *  The shapes here mirror core/src/lr_json.cpp one-for-one; when a field is
  *  added there, it shows up here as a compile error rather than as a silent
  *  `undefined` in a table cell. */
+import { normalizeConfig } from '@/lib/normalize'
+
 
 export type LogLevel = 'info' | 'warn' | 'error'
 export type LogKind = 'chat' | 'embeddings' | 'models' | 'admin' | 'system'
@@ -273,7 +275,10 @@ export const api = {
     request<{ entries: LogEntry[]; seq: number }>(
       `/__literouter/logs?since=${since}&limit=${limit}`,
     ),
-  config: () => request<ConfigResponse>('/__literouter/config'),
+  config: async (): Promise<ConfigResponse> => {
+    const body = await request<ConfigResponse>('/__literouter/config')
+    return { ...body, config: normalizeConfig(body.config) }
+  },
   saveConfig: (config: AppConfig) =>
     request<SaveResponse>('/__literouter/config', {
       method: 'PUT',

@@ -19,30 +19,15 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import type { ProviderConfig, Protocol } from '@/lib/api'
+import { PROVIDER_DEFAULTS } from '@/lib/normalize'
 import { useI18n } from '@/lib/i18n'
 
 const PROTOCOLS: Protocol[] = ['openai', 'anthropic', 'gemini', 'openai_responses']
 
-export const blankProvider = (): ProviderConfig => ({
-  id: '',
-  name: '',
-  base_url: '',
-  api_key: '',
-  enabled: true,
-  priority: 100,
-  weight: 1,
-  timeout_sec: 120,
-  connect_timeout_sec: 5,
-  supports_stream: true,
-  models: [],
-  headers: {},
-  chat_path: '/chat/completions',
-  embeddings_path: '/embeddings',
-  protocol: 'openai',
-  price_in_per_million: 0,
-  price_out_per_million: 0,
-  note: '',
-})
+/** A relay as the server would default it: `PROVIDER_DEFAULTS` is the one place
+ *  the defaults live, so a new relay cannot start out different from a relay the
+ *  file merely omitted fields for. */
+export const blankProvider = (): ProviderConfig => ({ ...PROVIDER_DEFAULTS })
 
 export function ProviderDialog({
   open,

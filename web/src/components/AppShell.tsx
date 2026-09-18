@@ -17,6 +17,7 @@ import type { ReactNode } from 'react'
 
 import { Issues } from '@/components/Issues'
 import { Button } from '@/components/ui/button'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { useTheme } from '@/lib/theme'
@@ -181,7 +182,18 @@ export function AppShell({
           </div>
         ) : null}
 
-        <main className="mx-auto w-full max-w-[1400px] flex-1 p-5 pb-28">{children}</main>
+        <main className="mx-auto w-full max-w-[1400px] flex-1 p-5 pb-28">
+          <ErrorBoundary
+            resetKey={tab}
+            labels={{
+              title: t('renderFailed'),
+              note: t('renderFailedNote'),
+              retry: t('retry'),
+            }}
+          >
+            {children}
+          </ErrorBoundary>
+        </main>
       </div>
 
       {/* ── unsaved changes ──────────────────────────────────────────────── */}
