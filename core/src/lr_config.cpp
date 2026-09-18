@@ -235,6 +235,16 @@ ValidationReport validate(const AppConfig &config) {
     if (config.server.host.empty()) {
         addIssue(report, ValidationIssue::Level::Error, "server.host", "host must not be empty");
     }
+    if (config.server.request_deadline_sec < 0) {
+        addIssue(report, ValidationIssue::Level::Error, "server.request_deadline_sec",
+                 "a negative deadline is not a deadline; use 0 to disable it");
+    } else if (config.server.request_deadline_sec > 0 &&
+               config.server.request_deadline_sec < 5) {
+        addIssue(report, ValidationIssue::Level::Warning, "server.request_deadline_sec",
+                 std::format("a {}s deadline leaves no room for a second relay; every request "
+                             "will either succeed on the first candidate or time out",
+                             config.server.request_deadline_sec));
+    }
     if (config.server.circuit_failure_threshold < 1) {
         addIssue(report, ValidationIssue::Level::Warning, "server.circuit_failure_threshold",
                  "values below 1 disable circuit breaking entirely");

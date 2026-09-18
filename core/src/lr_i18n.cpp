@@ -267,6 +267,8 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
     {"127.0.0.1 keeps the proxy on this machine", "127.0.0.1 仅限本机访问"},
     {"Port", "端口"},
     {"Max attempts", "最大尝试次数"},
+    {"Request deadline (seconds)", "整请求最长耗时（秒）"},
+    {"0 disables it. Bounds the whole request, not one attempt.", "0 表示不限制；限制的是整个请求，而非单次尝试。"},
     {"Client API key", "客户端 API 密钥"},
     {"Empty disables the check. Set it and clients must send Authorization: Bearer <key>.",
      "留空表示不校验密钥。设置后客户端必须携带 Authorization: Bearer <key>。"},

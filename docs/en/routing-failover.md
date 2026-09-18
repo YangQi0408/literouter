@@ -190,6 +190,14 @@ If all configured providers for a model are in the `Open` state, `literouter` wi
 
 ## Attempt Budget Control (`max_attempts`)
 
+`max_attempts` bounds how many relays are tried and `timeout_sec` bounds one attempt; their product is the worst case a client can wait, and ten candidates at 120 seconds each is twenty minutes. `server.request_deadline_sec` (0 disables it, the default) bounds the **whole request**:
+
+- checked **between attempts**: with less than half a second left the remaining candidates are not tried at all, the request answers **504** (not 503 — the relays may be perfectly fine, they were simply not given the chance), and the log names the relay that was never tried;
+- it also narrows the wait for a **streamed answer's first byte**: nothing has been sent to the client at that point, so giving up is a failover rather than a truncation;
+- **an answer that has started is never cut short**, which is the header gate's rule again: bytes already committed belong to the client, and truncating them is worse than letting the answer finish. The real elapsed time can therefore exceed the deadline by one attempt's own timeout.
+
+Validation warns below 5 seconds, where a second candidate never gets its turn.
+
 Configured via `server.max_attempts`:
 - `0` (default): Try every candidate in the chain until one succeeds or all fail.
 - `N` (e.g. `2` or `3`): Limit attempts to at most `N` providers per request, preventing excessive wait times when multiple upstreams are unavailable.

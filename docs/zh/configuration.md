@@ -57,6 +57,7 @@
     "api_key": "",                // 客户端访问本代理的鉴权 Bearer Token；留空表示不校验
     "pass_through_unknown": true, // 路由表未显式收录的模型，自动按优先级透传给拥有该模型的中转站
     "max_attempts": 0,            // 单次请求最多重试尝试的中转站数量；0 表示遍历所有可用候选站
+    "request_deadline_sec": 0,    // 整个请求的时间上限（秒）；0 表示不限制
     "circuit_failure_threshold": 3, // 连续失败几次触发中转站进入熔断冷却
     "circuit_cooldown_sec": 30,     // 熔断后的冷却保持时长（秒）
     "skip_open_circuits": true,   // 路由调度时是否优先跳过熔断冷却中的中转站
@@ -147,6 +148,7 @@
 | `api_key` | `string` | `""` | 代理本身的客户端访问鉴权密钥。客户端需在请求头携带 `Authorization: Bearer <api_key>`；若为空则不校验。 |
 | `pass_through_unknown` | `bool` | `true` | 若客户端请求的模型未在 `routes` 表中定义，是否自动按优先级透传至声称拥有该模型的中转站。 |
 | `max_attempts` | `size_t` | `0` | 一次请求最多尝试的中转站数量上限。`0` 表示不限（尝试链路中所有健康候选站）。 |
+| `request_deadline_sec` | `int` | `0` | 整个请求的时间上限（秒），`0` 表示不限制。与 `timeout_sec`（单次尝试）和 `max_attempts`（尝试次数）不同，它约束的是客户端真正在意的那个数：一次请求最多等多久。在**两次尝试之间**以及**等待流式首字节时**检查；一旦应答已开始下发就不再中断（此时截断比让回答跑完更糟）。小于 5 秒会让故障转移失去意义，校验时会告警。 |
 | `circuit_failure_threshold`| `uint32` | `3` | 连续遭遇几次网络故障或 5xx/429 可重试错误后触发中转站熔断。 |
 | `circuit_cooldown_sec` | `uint32` | `30` | 熔断冷却期时长（秒）。冷却期间该中转站被自动降级至候选链最末端。 |
 | `skip_open_circuits` | `bool` | `true` | 路由调度构建候选链时，是否跳过处于熔断 Open 状态的中转站（除非无其他候选可用）。 |

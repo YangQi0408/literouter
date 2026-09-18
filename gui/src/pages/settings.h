@@ -243,6 +243,29 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                         })
                         .build();
 
+                    fieldLabel(contentUi, "settings.deadline.label", listenerX + 18.0f,
+                               listenerY + 318.0f, halfWidth,
+                               std::string(literouter::i18n::tr("Request deadline (seconds)")),
+                               std::string(literouter::i18n::tr("0 disables it. Bounds the whole request, not one attempt.")));
+                    contentUi.stack("settings.deadline.wrap")
+                        .position(listenerX + 18.0f, listenerY + 354.0f)
+                        .size(halfWidth, 34.0f)
+                        .content([&] {
+                            components::stepper(contentUi, "settings.deadline")
+                                .theme(uiTokens())
+                                .size(halfWidth, 34.0f)
+                                .value(server.request_deadline_sec)
+                                .step(5)
+                                .min(0)
+                                .max(3600)
+                                .onChange([](long long value) {
+                                    appState().store.config().server.request_deadline_sec =
+                                        static_cast<int>(value);
+                                })
+                                .build();
+                        })
+                        .build();
+
                     fieldLabel(contentUi, "settings.apikey.label", listenerX + 18.0f, listenerY + 240.0f, fieldWidth,
                                std::string(literouter::i18n::tr("Client API key")),
                                std::string(literouter::i18n::tr("Empty disables the check. Set it and clients must send "

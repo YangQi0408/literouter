@@ -57,6 +57,7 @@ You can override the default configuration path at any time via:
     "api_key": "",                // Bearer token required from clients; empty means no authentication
     "pass_through_unknown": true, // Automatically pass through models not listed in `routes` to providers declaring them
     "max_attempts": 0,            // Max candidates to try per request; 0 means try all available candidates
+    "request_deadline_sec": 0,    // Whole-request budget in seconds; 0 disables it
     "circuit_failure_threshold": 3, // Consecutive retriable errors before tripping circuit breaker
     "circuit_cooldown_sec": 30,     // Cooldown duration (seconds) before half-open probe
     "skip_open_circuits": true,   // Deprioritize or skip open circuit providers during route selection
@@ -147,6 +148,7 @@ You can override the default configuration path at any time via:
 | `api_key` | `string` | `""` | Server authentication token. Clients must pass `Authorization: Bearer <api_key>`; empty disables auth. |
 | `pass_through_unknown` | `bool` | `true` | If client requests an unrouted model, pass through to providers advertising that model. |
 | `max_attempts` | `size_t` | `0` | Upper limit of candidate providers to try per request. `0` means try all candidates. |
+| `request_deadline_sec` | `int` | `0` | Whole-request budget in seconds; `0` disables it. Unlike `timeout_sec` (one attempt) and `max_attempts` (how many), this bounds the number a client actually cares about: how long it will wait. Checked between attempts and while waiting for a streamed answer to start; once bytes are committed the answer is not cut short, because truncating it is worse than letting it finish. A value below 5s leaves no room for a second relay, and validation warns about it. |
 | `circuit_failure_threshold`| `uint32` | `3` | Number of consecutive network/retriable failures before tripping a provider circuit. |
 | `circuit_cooldown_sec` | `uint32` | `30` | Cooldown duration in seconds before testing with a probe request. |
 | `skip_open_circuits` | `bool` | `true` | Whether candidate chain building should deprioritize or skip open circuit providers. |

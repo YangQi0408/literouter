@@ -141,6 +141,8 @@ export interface ServerConfig {
   api_key: string
   pass_through_unknown: boolean
   max_attempts: number
+  /** Whole-request budget in seconds; 0 disables it. */
+  request_deadline_sec: number
   circuit_failure_threshold: number
   circuit_cooldown_sec: number
   skip_open_circuits: boolean

@@ -96,6 +96,14 @@ struct ServerConfig {
     bool pass_through_unknown = true;
     // Total candidates tried before giving up. 0 means "every candidate".
     int max_attempts = 0;
+    // How long the whole request may take, across every candidate, in seconds.
+    // 0 disables it. `timeout_sec` bounds one attempt and `max_attempts` bounds
+    // how many there are, which together can mean several minutes on a chain of
+    // slow relays — this is the bound a client actually cares about. It is
+    // checked between attempts and while waiting for a streamed answer to start,
+    // never after the answer has begun: once bytes are committed the response
+    // belongs to the client, and truncating it would be worse than finishing it.
+    int request_deadline_sec = 0;
     // Consecutive upstream failures that trip a relay's breaker.
     int circuit_failure_threshold = 3;
     // How long a tripped breaker stays open, in seconds.

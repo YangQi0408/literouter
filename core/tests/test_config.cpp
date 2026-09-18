@@ -88,6 +88,7 @@ AppConfig fullyPopulated() {
     config.server.api_key = "sk-server-key";
     config.server.pass_through_unknown = false;
     config.server.max_attempts = 4;
+    config.server.request_deadline_sec = 45;
     config.server.circuit_failure_threshold = 5;
     config.server.circuit_cooldown_sec = 60;
     config.server.skip_open_circuits = false;
@@ -161,6 +162,7 @@ void checkServerEqual(const literouter::ServerConfig &actual,
     LR_CHECK_EQ(actual.api_key, expected.api_key);
     LR_CHECK_EQ(actual.pass_through_unknown, expected.pass_through_unknown);
     LR_CHECK_EQ(actual.max_attempts, expected.max_attempts);
+    LR_CHECK_EQ(actual.request_deadline_sec, expected.request_deadline_sec);
     LR_CHECK_EQ(actual.circuit_failure_threshold, expected.circuit_failure_threshold);
     LR_CHECK_EQ(actual.circuit_cooldown_sec, expected.circuit_cooldown_sec);
     LR_CHECK_EQ(actual.skip_open_circuits, expected.skip_open_circuits);
@@ -296,6 +298,9 @@ void testMinimalDocuments() {
             LR_CHECK_EQ(parsed->server.host, "127.0.0.1");
             LR_CHECK_EQ(parsed->server.port, 8787);
             LR_CHECK_EQ(parsed->server.max_attempts, 0);
+            // No deadline by default: bounding a long generation by default
+            // would break the case the proxy exists to serve.
+            LR_CHECK_EQ(parsed->server.request_deadline_sec, 0);
             LR_CHECK_EQ(parsed->server.circuit_failure_threshold, 3);
             LR_CHECK_EQ(parsed->server.circuit_cooldown_sec, 30);
             LR_CHECK_EQ(parsed->server.pass_through_unknown, true);
@@ -589,6 +594,20 @@ void testValidateServer() {
         AppConfig config;
         config.server.host = "";
         LR_CHECK(findIssue(literouter::validate(config), "server.host", kError) != nullptr);
+    }
+    {
+        // A deadline is a choice; a negative one is a mistake.
+        AppConfig config;
+        config.server.request_deadline_sec = -1;
+        LR_CHECK(findIssue(literouter::validate(config), "server.request_deadline_sec", kError) !=
+                 nullptr);
+        config.server.request_deadline_sec = 3;
+        LR_CHECK(findIssueContaining(literouter::validate(config), "no room for a second relay",
+                                     kWarning) != nullptr);
+        config.server.request_deadline_sec = 30;
+        LR_CHECK(literouter::validate(config).ok());
+        LR_CHECK(findIssue(literouter::validate(config), "server.request_deadline_sec", kWarning) ==
+                 nullptr);
     }
     {
         AppConfig config;

@@ -1347,14 +1347,31 @@ struct ProxyServer::Impl {
         }
 
         const std::size_t budget = attemptBudget(ctx.config, candidates.size());
+        // The whole request's budget, as opposed to one attempt's: a chain of
+        // slow relays can otherwise keep a client waiting for minutes, and the
+        // client asked for an answer, not for an explanation of why not.
+        const double deadline_unix =
+            ctx.config.server.request_deadline_sec > 0
+                ? ctx.started + static_cast<double>(ctx.config.server.request_deadline_sec)
+                : 0.0;
         std::string last_error;
         int last_status = 0;
+        bool deadline_hit = false;
 
         for (std::size_t attempt = 0; attempt < budget; ++attempt) {
             const Candidate &candidate = candidates[attempt];
             const ProviderConfig *provider = ctx.config.provider(candidate.provider);
             if (provider == nullptr || !provider->enabled) {
                 continue;
+            }
+            if (deadline_unix > 0.0 && deadline_unix - nowUnix() <= 0.5) {
+                // Half a second is not enough to dial anything, so this is where
+                // the request stops rather than where another relay is tried.
+                deadline_hit = true;
+                last_error = std::format(
+                    "the {}s request deadline passed after {} attempt(s); `{}` was not tried",
+                    ctx.config.server.request_deadline_sec, attempt, candidate.provider);
+                break;
             }
 
             const std::string upstream_model =
@@ -1510,9 +1527,15 @@ struct ProxyServer::Impl {
             return;
         }
 
-        const int status = last_status != 0 && !Router::retryableStatus(last_status)
-                               ? last_status
-                               : 503;
+        // A request that ran out of time is a gateway timeout, not a service
+        // that is unavailable: the relays may be perfectly fine, they were
+        // simply not given the chance. The retryable-status rule below would
+        // otherwise turn it into a 503, which says something less true.
+        const int status = deadline_hit
+                               ? 504
+                               : (last_status != 0 && !Router::retryableStatus(last_status)
+                                      ? last_status
+                                      : 503);
         if (last_error.empty()) {
             last_error = std::format("every relay for `{}` was skipped or disabled", ctx.model);
         }
@@ -1651,8 +1674,18 @@ struct ProxyServer::Impl {
         // legitimately takes a while to first token on a large prompt; it
         // exists so a black-holed connection cannot pin a worker forever.
         const auto wait_for_gate = [&] {
+            // Waiting for a relay to start answering is the one phase a request
+            // deadline can still cut short: nothing has been sent to the client
+            // yet, so giving up here is a failover, not a truncation.
+            double seconds = static_cast<double>(std::max(10, provider.timeout_sec));
+            if (ctx.config.server.request_deadline_sec > 0) {
+                const double left = (ctx.started +
+                                     static_cast<double>(ctx.config.server.request_deadline_sec)) -
+                                    nowUnix();
+                seconds = std::min(seconds, std::max(0.5, left));
+            }
             std::unique_lock lock{bridge->mutex};
-            bridge->cv.wait_for(lock, std::chrono::seconds(std::max(10, provider.timeout_sec)),
+            bridge->cv.wait_for(lock, std::chrono::duration<double>(seconds),
                                 [&] { return bridge->headers_ready || bridge->finished; });
             return bridge->headers_ready;
         };

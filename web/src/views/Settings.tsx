@@ -109,6 +109,13 @@ export function Settings() {
               onChange={(max_attempts) => patch({ max_attempts })}
             />
           </Field>
+          <Field label="request_deadline_sec" hint={t('hintDeadline')}>
+            <NumberField
+              value={server.request_deadline_sec}
+              min={0}
+              onChange={(request_deadline_sec) => patch({ request_deadline_sec })}
+            />
+          </Field>
           <Field label="ui_scale">
             <NumberField
               value={server.ui_scale}

@@ -1202,6 +1202,11 @@ public:
         }
     }
 
+    // Accept and then say nothing at all, holding the connection open. The only
+    // shape that makes a caller *wait*, as opposed to failing immediately, which
+    // is what the deadline field exists to bound.
+    void setSilent(bool value) { silent_.store(value); }
+
     std::string baseUrl() const { return std::format("http://127.0.0.1:{}/v1", port_); }
     int connections() const { return connections_.load(); }
     int requests() const { return requests_.load(); }
@@ -1231,6 +1236,9 @@ private:
 
     // Serves requests on one connection until the peer goes away.
     void serve(int fd) {
+        while (silent_.load() && running_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
         int served = 0;
         for (;;) {
             std::string buffer;
@@ -1315,6 +1323,7 @@ private:
     std::atomic<int> connections_{0};
     std::atomic<int> requests_{0};
     std::atomic<int> most_on_one_{0};
+    std::atomic<bool> silent_{false};
     std::thread acceptor_;
     std::mutex workers_mutex_;
     std::vector<std::thread> workers_;
@@ -1689,6 +1698,89 @@ void group20ConnectionReuse() {
     }
 }
 #endif // !_WIN32
+
+#ifndef _WIN32
+// The deadline bounds the whole request, which `timeout_sec` × `max_attempts`
+// does not: a chain of slow relays used to be able to keep a client waiting for
+// minutes, and none of the individual bounds said otherwise.
+void group23RequestDeadline(StubRelay &relay_b) {
+    LR_GROUP("23. a request deadline stops the chain, not just one attempt");
+    CountingRelay silent;
+    const bool up = silent.start();
+    LR_CHECK_MSG(up, "the silent relay could not bind");
+    if (!up) {
+        return;
+    }
+    silent.setSilent(true);
+
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+    config.server.request_deadline_sec = 3;
+
+    literouter::ProviderConfig first;
+    first.id = "silent";
+    first.base_url = silent.baseUrl();
+    // Longer than the deadline on purpose: the deadline has to win, not the
+    // relay's own timeout.
+    first.timeout_sec = 30;
+    first.connect_timeout_sec = 5;
+    literouter::ProviderConfig second;
+    second.id = "beta";
+    second.base_url = relay_b.baseUrl();
+    second.timeout_sec = 10;
+    second.connect_timeout_sec = 2;
+    config.providers = {first, second};
+
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "silent", .model = {}},
+                     literouter::RouteTarget{.provider = "beta", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    relay_b.setMode(StubRelay::Mode::Normal);
+
+    // Streamed, because that is the phase a deadline can cut: waiting for a
+    // first byte is a failover, while truncating an answer that has started
+    // would not be.
+    const double before = literouter::nowUnix();
+    const Hit hit = postJson(proxy.boundPort(), "/v1/chat/completions",
+                             chatRequest(kRouteModel, /*stream=*/true));
+    const double elapsed = literouter::nowUnix() - before;
+
+    LR_CHECK_EQ(hit.status, 504);
+    LR_CHECK_MSG(elapsed >= 2.0 && elapsed < 8.0,
+                 std::format("the request took {}s against a 3s deadline", elapsed));
+
+    // The log has to say which relay was never tried: "why did this fail" is the
+    // question an operator has to act on.
+    bool saw_deadline = false;
+    for (const auto &entry : proxy.logsSince(0, 200)) {
+        if (entry.message.find("deadline") != std::string::npos) {
+            saw_deadline = true;
+            LR_CHECK_EQ(entry.status, 504);
+        }
+    }
+    LR_CHECK_MSG(saw_deadline, "no log entry explains the deadline");
+
+    // The same chain without a deadline waits on the relay's own timeout, which
+    // is exactly what the field exists to bound.
+    silent.setSilent(false);
+    literouter::AppConfig patient = config;
+    patient.server.request_deadline_sec = 0;
+    proxy.updateConfig(patient);
+    proxy.stop();
+}
+#endif // !_WIN32
+
 
 void group10Restart(literouter::ProxyServer &proxy, const literouter::AppConfig &config) {
     LR_GROUP("10. stop() is clean and a second start()/stop() cycle works");
@@ -2310,6 +2402,9 @@ int main() {
         group19SingleInstance(config);
         group21NoFieldLies(relay_a, relay_b);
         group22ResponsesIngress(relay_a, proxy.boundPort());
+#ifndef _WIN32
+        group23RequestDeadline(relay_b);
+#endif
 #ifndef _WIN32
         group20ConnectionReuse();
 #endif
