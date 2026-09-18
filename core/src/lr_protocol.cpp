@@ -1398,6 +1398,15 @@ void StreamUsageObserver::feed(std::string_view chunk) {
     if (chunk.empty()) {
         return;
     }
+    // The fast path, and the reason this class is cheap enough to sit on the hot
+    // path of every streamed answer: a chunk that ends on an event boundary and
+    // mentions no usage leaves nothing to carry, so nothing is copied and no line
+    // is looked at. A chunk that does NOT end on one — an event split across two
+    // reads, or the word "usage" itself split — takes the slow path below, where
+    // the tail is kept until the event completes.
+    if (carry_.empty() && chunk.back() == '\n' && chunk.find("usage") == std::string_view::npos) {
+        return;
+    }
     carry_.append(chunk);
     // Whole lines only: an event split across two chunks is completed by the
     // next feed, which is the whole reason the tail is kept.

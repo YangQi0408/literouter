@@ -529,6 +529,17 @@ void testStreamUsageObserver() {
         LR_CHECK(isCounts(observer, 8, 13));
     }
     {
+        // The fast path: a chunk that ends on an event boundary and mentions no
+        // usage is left alone entirely — nothing carried, nothing parsed — and
+        // the counts still arrive from a later chunk.
+        StreamUsageObserver observer;
+        observer.feed("data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n");
+        observer.feed("data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n");
+        LR_CHECK(isCounts(observer, 0, 0));
+        observer.feed("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":6,\"completion_tokens\":2}}\n\n");
+        LR_CHECK(isCounts(observer, 6, 2));
+    }
+    {
         // A relay that never names usage is not guessed at, and neither the
         // literal "usage" in a delta nor a broken event is mistaken for one.
         StreamUsageObserver observer;
