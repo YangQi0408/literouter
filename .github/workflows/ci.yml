@@ -113,7 +113,30 @@ jobs:
           LITEROUTER_CONFIG="$tmp/seed.json" "$bin" config init --force
           printf '{"providers":[{}],"routes":[{"targets":[{"provider":"p"}]}]}' > "$tmp/minimal.json"
           LITEROUTER_CONFIG="$tmp/minimal.json" "$bin" serve --print-config --force > "$tmp/defaults.json"
-          python3 scripts/check_config_docs.py --seed "$tmp/seed.json" --defaults "$tmp/defaults.json"
+          # A real status reply, from a short-lived instance on a port nothing
+          # else on a runner is likely to hold, so the documented sample is
+          # compared against what the binary actually sends.
+          LITEROUTER_CONFIG="$tmp/live.json" "$bin" config init --force
+          python3 - "$tmp/live.json" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          doc = json.load(open(path))
+          doc["server"]["port"] = 18787
+          json.dump(doc, open(path, "w"))
+          PY
+          LITEROUTER_CONFIG="$tmp/live.json" LITEROUTER_STATE_DIR="$tmp/state" \
+            "$bin" serve --quiet > "$tmp/serve.log" 2>&1 &
+          live_pid=$!
+          for _ in $(seq 1 100); do
+            curl -sf -m 1 http://127.0.0.1:18787/health > /dev/null && break
+            sleep 0.1
+          done
+          curl -sf -m 5 http://127.0.0.1:18787/__literouter/status > "$tmp/status.json" || \
+            { echo "the instance never answered /__literouter/status"; cat "$tmp/serve.log"; exit 1; }
+          kill "$live_pid" 2>/dev/null || true
+          wait "$live_pid" 2>/dev/null || true
+          python3 scripts/check_config_docs.py --seed "$tmp/seed.json" --defaults "$tmp/defaults.json" \
+            --status "$tmp/status.json"
 
       - name: Build gui
         # On macOS, zlib shared linkage currently lacks C++ runtime symbols; keep going if it fails

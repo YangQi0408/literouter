@@ -219,6 +219,9 @@ def main() -> int:
     parser.add_argument("--defaults", required=True, type=pathlib.Path,
                         help="`literouter serve --print-config --force` for a minimal config")
     parser.add_argument("--docs", default=pathlib.Path("docs"), type=pathlib.Path)
+    parser.add_argument("--status", type=pathlib.Path,
+                        help="a real GET /__literouter/status body; validates the sample in "
+                             "protocols-api.md against it")
     args = parser.parse_args()
 
     seed = json.loads(args.seed.read_text(encoding="utf-8"))
@@ -235,6 +238,25 @@ def main() -> int:
         check_sample(sample_json(text), seed, lang, problems)
         check_coverage_and_defaults(text, defaults, lang, problems, prose)
 
+    if args.status is not None:
+        real = json.loads(args.status.read_text(encoding="utf-8"))
+        for lang in ("zh", "en"):
+            text = (args.docs / lang / "protocols-api.md").read_text(encoding="utf-8")
+            sample = json.loads(text.split("GET /__literouter/status", 1)[1]
+                                    .split("```json", 1)[1].split("```", 1)[0])
+            if set(sample) != set(real):
+                problems.append(
+                    f"{lang}: the status sample and a real reply disagree on their keys: "
+                    f"only documented {sorted(set(sample) - set(real))}, "
+                    f"only real {sorted(set(real) - set(sample))}")
+            # A bucket is only in the reply once there has been traffic, so the
+            # sample's shape is checked against the serializer's own keys instead.
+            if sample.get("hourly"):
+                bucket_keys = {"hour_unix", "requests", "successes", "failures", "bytes_out",
+                               "tokens_prompt", "tokens_completion", "cost_usd"}
+                if set(sample["hourly"][0]) != bucket_keys:
+                    problems.append(f"{lang}: the hourly sample's keys are not {sorted(bucket_keys)}")
+
     if problems:
         print(f"configuration.md disagrees with the build in {len(problems)} place(s):\n")
         for problem in problems:
@@ -243,7 +265,8 @@ def main() -> int:
               "`serve --print-config` are what it emits.")
         return 1
 
-    print("configuration.md matches the build")
+    print("configuration.md matches the build" + (" and protocols-api.md matches a real reply"
+                                                  if args.status is not None else ""))
     print(f"  checked: {len(seed['server'])} server, {len(defaults['providers'][0])} provider, "
           f"{len(defaults['routes'][0])} route and "
           f"{len(defaults['routes'][0]['targets'][0])} target fields, zh and en")
