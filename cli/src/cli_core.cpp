@@ -31,11 +31,11 @@ std::optional<literouter::ConfigStore> loadStore(const Context &ctx) {
 }
 
 std::string baseUrlOf(const literouter::AppConfig &config) {
-    return std::format("http://{}:{}", config.server.host, config.server.port);
+    return literouter::serverBaseUrl(config.server);
 }
 
 std::string clientBaseUrlOf(const literouter::AppConfig &config) {
-    return std::format("http://{}:{}/v1", config.server.host, config.server.port);
+    return literouter::serverBaseUrl(config.server, "/v1");
 }
 
 void printIssues(const literouter::ValidationReport &report, std::ostream &out) {

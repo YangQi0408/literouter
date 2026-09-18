@@ -16,6 +16,8 @@ const merge = <T extends object>(base: T, patch: Partial<T> | null | undefined):
 export const SERVER_DEFAULTS: ServerConfig = {
   host: '127.0.0.1',
   port: 8787,
+  tls_cert_file: '',
+  tls_key_file: '',
   api_key: '',
   pass_through_unknown: true,
   max_attempts: 0,
@@ -91,7 +93,14 @@ export const normalizeRoute = (raw: Partial<RouteConfig> | null | undefined): Ro
   }
 }
 
-export const normalizeConfig = (raw: Partial<AppConfig> | null | undefined): AppConfig => ({
+type PartialConfig = {
+  schema?: number
+  server?: Partial<ServerConfig> | null
+  providers?: (Partial<ProviderConfig> | null)[] | null
+  routes?: (Partial<RouteConfig> | null)[] | null
+}
+
+export const normalizeConfig = (raw: PartialConfig | null | undefined): AppConfig => ({
   schema: raw?.schema,
   server: merge(SERVER_DEFAULTS, raw?.server),
   providers: Array.isArray(raw?.providers) ? raw.providers.map(normalizeProvider) : [],

@@ -72,7 +72,7 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
             constexpr float kCardBottomPadding = 18.0f;
 
             // Derived card heights
-            constexpr float kListenerHeight = 486.0f;
+            constexpr float kListenerHeight = 784.0f;
             constexpr float kBreakerHeight = 96.0f + 34.0f + kCardBottomPadding;
             constexpr float kLoggingHeight = 184.0f + 32.0f + kCardBottomPadding;
             constexpr float kDisplayHeight = 236.0f + 18.0f + kCardBottomPadding;
@@ -246,11 +246,11 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                     fieldLabel(contentUi, "settings.deadline.label", listenerX + 18.0f,
                                listenerY + 318.0f, halfWidth,
                                std::string(literouter::i18n::tr("Request deadline (seconds)")),
-                               std::string(literouter::i18n::tr("0 disables it. Bounds the whole request, not one attempt.")));
+                               std::string(literouter::i18n::tr("0 disables the deadline.")));
                     fieldLabel(contentUi, "settings.affinity.label", listenerX + 18.0f + halfWidth + 14.0f,
                                listenerY + 318.0f, halfWidth,
                                std::string(literouter::i18n::tr("Session affinity (seconds)")),
-                               std::string(literouter::i18n::tr("0 disables it. Keeps a conversation on the relay that answered it, so the provider can reuse its cached prompt.")));
+                               std::string(literouter::i18n::tr("0 disables session affinity.")));
                     contentUi.stack("settings.affinity.wrap")
                         .position(listenerX + 18.0f + halfWidth + 14.0f, listenerY + 354.0f)
                         .size(halfWidth, 34.0f)
@@ -309,7 +309,7 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                         .build();
 
                     contentUi.stack("settings.passthrough.wrap")
-                        .position(listenerX + 18.0f, listenerY + 324.0f)
+                        .position(listenerX + 18.0f, listenerY + 396.0f)
                         .size(fieldWidth, 32.0f)
                         .content([&] {
                             components::toggleSwitch(contentUi, "settings.passthrough")
@@ -325,7 +325,7 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                         })
                         .build();
                     contentUi.stack("settings.skipbreakers.wrap")
-                        .position(listenerX + 18.0f, listenerY + 358.0f)
+                        .position(listenerX + 18.0f, listenerY + 430.0f)
                         .size(fieldWidth, 32.0f)
                         .content([&] {
                             components::toggleSwitch(contentUi, "settings.skipbreakers")
@@ -340,6 +340,41 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                                 .build();
                         })
                         .build();
+
+                    fieldLabel(contentUi, "settings.tls_cert_file.label", listenerX + 18.0f,
+                               listenerY + 592.0f, fieldWidth,
+                               std::string(literouter::i18n::tr("TLS certificate chain")));
+                    contentUi.stack("settings.tls_cert_file.wrap")
+                        .position(listenerX + 18.0f, listenerY + 614.0f)
+                        .size(fieldWidth, 36.0f)
+                        .content([&] {
+                            components::input(contentUi, "settings.tls_cert_file")
+                                .theme(uiTokens()).size(fieldWidth, 36.0f)
+                                .value(server.tls_cert_file)
+                                .placeholder(std::string(literouter::i18n::tr("absolute path; empty for HTTP")))
+                                .onChange([](const std::string& value) {
+                                    appState().store.config().server.tls_cert_file = value;
+                                }).build();
+                        }).build();
+                    fieldLabel(contentUi, "settings.tls_key_file.label", listenerX + 18.0f,
+                               listenerY + 672.0f, fieldWidth,
+                               std::string(literouter::i18n::tr("TLS private key")));
+                    contentUi.stack("settings.tls_key_file.wrap")
+                        .position(listenerX + 18.0f, listenerY + 694.0f)
+                        .size(fieldWidth, 36.0f)
+                        .content([&] {
+                            components::input(contentUi, "settings.tls_key_file")
+                                .theme(uiTokens()).size(fieldWidth, 36.0f)
+                                .value(server.tls_key_file)
+                                .placeholder(std::string(literouter::i18n::tr("absolute path; empty for HTTP")))
+                                .onChange([](const std::string& value) {
+                                    appState().store.config().server.tls_key_file = value;
+                                }).build();
+                        }).build();
+                    contentUi.text("settings.tls.hint")
+                        .position(listenerX + 18.0f, listenerY + 744.0f)
+                        .size(fieldWidth, 22.0f).fontSize(11.0f).color(p.textFaint)
+                        .text(std::string(literouter::i18n::tr("Set both TLS files for HTTPS; restart to apply."))).build();
 
                     // Display card
                     detail::settingsCard(contentUi, "settings.display.card", displayX, displayY, columnWidth, kDisplayHeight,
@@ -478,12 +513,12 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                         .build();
 
                     contentUi.stack("settings.reload.wrap")
-                        .position(listenerX + 18.0f + halfWidth + 14.0f, listenerY + 354.0f)
-                        .size(halfWidth, 34.0f)
+                        .position(listenerX + 18.0f, listenerY + 464.0f)
+                        .size(fieldWidth, 34.0f)
                         .content([&] {
                             components::toggleSwitch(contentUi, "settings.reload")
                                 .theme(uiTokens())
-                                .size(halfWidth, 34.0f)
+                                .size(fieldWidth, 34.0f)
                                 .text(std::string(literouter::i18n::tr("Reload when the file changes")))
                                 .fontSize(13.0f)
                                 .checked(server.reload_on_change)
@@ -497,11 +532,11 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                     // Routing policy: three named choices, so a segmented control
                     // rather than a stepper that would make the operator count.
                     fieldLabel(contentUi, "settings.policy.label", listenerX + 18.0f,
-                               listenerY + 398.0f, fieldWidth,
+                               listenerY + 510.0f, fieldWidth,
                                std::string(literouter::i18n::tr("Routing policy")),
                                std::string(literouter::i18n::tr("How the candidate chain is ordered before the first attempt.")));
                     contentUi.stack("settings.policy.wrap")
-                        .position(listenerX + 18.0f, listenerY + 434.0f)
+                        .position(listenerX + 18.0f, listenerY + 546.0f)
                         .size(fieldWidth, 30.0f)
                         .content([&] {
                             components::segmented(contentUi, "settings.policy")
@@ -603,7 +638,7 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
 
                     const std::string baseUrl = state.snapshot.running
                                                     ? state.snapshot.base_url
-                                                    : "http://" + server.host + ":" + std::to_string(server.port);
+                                                    : literouter::serverBaseUrl(server);
                     contentUi.text("settings.how.base.label")
                         .position(howX + 18.0f, howY + 76.0f)
                         .size(110.0f, 18.0f)
@@ -628,8 +663,8 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                         ? (isZh ? "<无需密钥>" : "<no client key>")
                         : (isZh ? "<客户端密钥>" : "<key>");
                     const std::string curl =
-                        "curl " + (baseUrl.empty() ? "http://127.0.0.1:" + std::to_string(server.port) : baseUrl) +
-                        "/chat/completions \\\n  -H \"Authorization: Bearer " + keyText + "\" \\\n  -d '{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'";
+                        "curl " + (baseUrl.empty() ? literouter::serverBaseUrl(server) : baseUrl) +
+                        "/v1/chat/completions \\\n  -H \"Authorization: Bearer " + keyText + "\" \\\n  -d '{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'";
                     contentUi.rect("settings.how.curl.bg")
                         .position(howX + 18.0f, howY + 104.0f)
                         .size(howWidth - 36.0f, 62.0f)

@@ -119,7 +119,12 @@ inline const std::vector<std::string>& providerIssues(const AppState& state) {
         return cachedOut;
     }
     const std::string prefix = "providers[" + std::to_string(state.editor.index) + "]";
-    const literouter::ValidationReport report = literouter::validate(state.store.config());
+    // This overlay only needs provider issues; TLS file validation belongs to
+    // startup, not to the UI compose path.
+    auto provider_config = state.store.config();
+    provider_config.server.tls_cert_file.clear();
+    provider_config.server.tls_key_file.clear();
+    const literouter::ValidationReport report = literouter::validate(provider_config);
     for (const auto& issue : report.issues) {
         if (issue.path.rfind(prefix, 0) == 0) {
             cachedOut.push_back(issue.levelName() + " · " + issue.path + " · " + issue.message);

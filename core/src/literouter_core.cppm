@@ -93,6 +93,10 @@ struct RouteConfig {
 struct ServerConfig {
     std::string host = "127.0.0.1";
     int port = 8787;
+    // PEM chain and unencrypted private key. Both empty keep HTTP; both set
+    // enable HTTPS. Absolute paths are required. Listener changes need restart.
+    std::string tls_cert_file;
+    std::string tls_key_file;
     // When set, /v1/* requires `Authorization: Bearer <this>` (or matching
     // `x-api-key`). Empty disables the check — the default, because binding to
     // loopback is already the boundary on a single-user machine.
@@ -164,6 +168,9 @@ struct ServerConfig {
     // UI display scale (e.g. 1.0 = 100%, 0.8 = 80%, 1.25 = 125%). 0.0 or 1.0 means default.
     double ui_scale = 1.0;
 };
+
+// Scheme-aware listener URL, with IPv6 brackets; path may be empty.
+std::string serverBaseUrl(const ServerConfig &server, std::string_view path = {});
 
 struct AppConfig {
     int schema = 1;
@@ -728,6 +735,7 @@ public:
     void stop();
     bool running() const;
 
+    // Listener host, port and TLS files take effect on the next start.
     // Hot-swaps the routing model. In-flight requests keep the config they
     // began with; the next request sees the new one.
     void updateConfig(const AppConfig &config);
@@ -756,6 +764,7 @@ public:
     // Path prefix for the management API the CLI attaches through.
     static constexpr std::string_view kAdminPrefix = "/__literouter";
     static std::string adminUrl(const std::string &host, int port, std::string_view path);
+    static std::string adminUrl(const ServerConfig &server, std::string_view path);
 
     // Parses an OpenAI-style usage block out of a response body, for the token
     // counters. Best-effort: a body without `usage` contributes nothing.

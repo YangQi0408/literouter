@@ -85,6 +85,8 @@ AppConfig fullyPopulated() {
     config.schema = 3;
     config.server.host = "0.0.0.0";
     config.server.port = 12345;
+    config.server.tls_cert_file = "/example/server-chain.pem";
+    config.server.tls_key_file = "/example/server-key.pem";
     config.server.api_key = "sk-server-key";
     config.server.pass_through_unknown = false;
     config.server.max_attempts = 4;
@@ -165,6 +167,8 @@ void checkServerEqual(const literouter::ServerConfig &actual,
                       const literouter::ServerConfig &expected) {
     LR_CHECK_EQ(actual.host, expected.host);
     LR_CHECK_EQ(actual.port, expected.port);
+    LR_CHECK_EQ(actual.tls_cert_file, expected.tls_cert_file);
+    LR_CHECK_EQ(actual.tls_key_file, expected.tls_key_file);
     LR_CHECK_EQ(actual.api_key, expected.api_key);
     LR_CHECK_EQ(actual.pass_through_unknown, expected.pass_through_unknown);
     LR_CHECK_EQ(actual.max_attempts, expected.max_attempts);
@@ -310,6 +314,8 @@ void testMinimalDocuments() {
             LR_CHECK_EQ(parsed->schema, 1);
             LR_CHECK_EQ(parsed->server.host, "127.0.0.1");
             LR_CHECK_EQ(parsed->server.port, 8787);
+            LR_CHECK_EQ(parsed->server.tls_cert_file, "");
+            LR_CHECK_EQ(parsed->server.tls_key_file, "");
             LR_CHECK_EQ(parsed->server.max_attempts, 0);
             LR_CHECK_EQ(parsed->server.routing_policy, "priority");
             // No deadline by default: bounding a long generation by default

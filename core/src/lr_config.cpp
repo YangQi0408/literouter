@@ -1,5 +1,9 @@
 // ConfigStore: where the model lives, how it is validated, and how it is
 // written back without a half-written file ever being observable.
+module;
+
+#include <openssl/ssl.h>
+
 module literouter.core;
 
 import std;
@@ -234,6 +238,46 @@ ValidationReport validate(const AppConfig &config) {
     }
     if (config.server.host.empty()) {
         addIssue(report, ValidationIssue::Level::Error, "server.host", "host must not be empty");
+    }
+    const auto &tls = config.server;
+    if (tls.tls_cert_file.empty() != tls.tls_key_file.empty()) {
+        addIssue(report, ValidationIssue::Level::Error, "server.tls_cert_file",
+                 "tls_cert_file and tls_key_file must both be set, or both empty for HTTP");
+    } else if (!tls.tls_cert_file.empty()) {
+        bool files_ok = true;
+        for (const auto &entry : {std::pair{"server.tls_cert_file", tls.tls_cert_file},
+                                  std::pair{"server.tls_key_file", tls.tls_key_file}}) {
+            std::error_code ec;
+            if (!std::filesystem::path{entry.second}.is_absolute() ||
+                !std::filesystem::is_regular_file(entry.second, ec)) {
+                addIssue(report, ValidationIssue::Level::Error, entry.first,
+                         "TLS file must be an existing regular file with an absolute path");
+                files_ok = false;
+            }
+        }
+        if (files_ok) {
+            const std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> ctx{
+                SSL_CTX_new(TLS_server_method()), SSL_CTX_free};
+            // Unattended startup must never wait for a private-key password.
+            if (ctx) SSL_CTX_set_default_passwd_cb(ctx.get(),
+                [](char *, int, int, void *) -> int { return 0; });
+            if (!ctx || SSL_CTX_use_certificate_chain_file(ctx.get(), tls.tls_cert_file.c_str()) != 1) {
+                addIssue(report, ValidationIssue::Level::Error, "server.tls_cert_file",
+                         "cannot load the PEM certificate chain");
+            } else {
+                const X509 *cert = SSL_CTX_get0_certificate(ctx.get());
+                if (X509_cmp_current_time(X509_get0_notBefore(cert)) >= 0 ||
+                    X509_cmp_current_time(X509_get0_notAfter(cert)) <= 0) {
+                    addIssue(report, ValidationIssue::Level::Error, "server.tls_cert_file",
+                             "TLS certificate is expired, not yet valid, or has invalid dates");
+                }
+                if (SSL_CTX_use_PrivateKey_file(ctx.get(), tls.tls_key_file.c_str(), SSL_FILETYPE_PEM) != 1 ||
+                    SSL_CTX_check_private_key(ctx.get()) != 1) {
+                    addIssue(report, ValidationIssue::Level::Error, "server.tls_key_file",
+                             "cannot load an unencrypted PEM private key matching the certificate");
+                }
+            }
+        }
     }
     if (config.server.session_affinity_sec < 0) {
         addIssue(report, ValidationIssue::Level::Error, "server.session_affinity_sec",

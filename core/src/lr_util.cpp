@@ -6,6 +6,15 @@ import std;
 
 namespace literouter {
 
+std::string serverBaseUrl(const ServerConfig &server, std::string_view path) {
+    const std::string host = server.host.find(':') != std::string::npos &&
+                                     !startsWith(server.host, "[")
+                                 ? "[" + server.host + "]" : server.host;
+    return std::format("{}://{}:{}{}", server.tls_cert_file.empty() ? "http" : "https",
+                       host, server.port, path);
+}
+
+
 namespace {
 
 // Where a variable reference's name ends: at '}' for the braced form, or at

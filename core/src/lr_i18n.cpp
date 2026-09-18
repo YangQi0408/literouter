@@ -7,6 +7,20 @@ namespace literouter::i18n {
 namespace {
 
 const std::unordered_map<std::string_view, const char*> kZhTranslations = {
+    {"0 disables the deadline.", "0 表示不限制请求时长。"},
+    {"0 disables session affinity.", "0 表示关闭会话粘性。"},
+    {"TLS certificate chain", "TLS 证书链"},
+    {"TLS private key", "TLS 私钥"},
+    {"absolute path; empty for HTTP", "绝对路径；留空使用 HTTP"},
+    {"Set both TLS files for HTTPS; restart to apply.", "填好两项 TLS 路径启用 HTTPS；重启生效。"},
+    {"PEM certificate chain absolute path for HTTPS", "HTTPS 的 PEM 证书链绝对路径"},
+    {"Unencrypted PEM private key absolute path for HTTPS", "HTTPS 的未加密 PEM 私钥绝对路径"},
+    {"tls_cert_file and tls_key_file must both be set, or both empty for HTTP", "tls_cert_file 与 tls_key_file 必须同时填写，或同时留空使用 HTTP"},
+    {"TLS file must be an existing regular file with an absolute path", "TLS 路径必须是已存在的普通文件绝对路径"},
+    {"cannot load the PEM certificate chain", "无法加载 PEM 证书链"},
+    {"TLS certificate is expired, not yet valid, or has invalid dates", "TLS 证书已过期、尚未生效或有效期无效"},
+    {"cannot load an unencrypted PEM private key matching the certificate", "无法加载与证书匹配的未加密 PEM 私钥"},
+    {"cannot initialize HTTPS listener from TLS files", "无法使用 TLS 文件初始化 HTTPS 监听"},
     // ── Navigation & Shell ──────────────────────────────────────────────────
     {"CONSOLE", "控制台"},
     {"Overview", "概览"},

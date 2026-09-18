@@ -159,6 +159,9 @@ export interface RouteConfig {
 export interface ServerConfig {
   host: string
   port: number
+  /** Both empty keep HTTP; TLS files and address changes require restart. */
+  tls_cert_file: string
+  tls_key_file: string
   api_key: string
   pass_through_unknown: boolean
   max_attempts: number

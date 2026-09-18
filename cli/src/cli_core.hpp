@@ -21,10 +21,10 @@ std::filesystem::path configPathFor(const Context &ctx);
 std::optional<literouter::ConfigStore> loadStore(const Context &ctx);
 std::optional<literouter::ConfigStore> loadStoreAt(const std::filesystem::path &path);
 
-// "http://host:port" for the config's server section.
+// HTTP or HTTPS URL for the config's server section.
 std::string baseUrlOf(const literouter::AppConfig &config);
 
-// "http://host:port/v1" — the base an OpenAI-compatible client points at.
+// Listener URL plus /v1 — the base an OpenAI-compatible client points at.
 std::string clientBaseUrlOf(const literouter::AppConfig &config);
 
 // Every issue, one table row each, then the summary line. Written to `out` so

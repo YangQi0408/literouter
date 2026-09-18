@@ -18,6 +18,8 @@ extern "C" void handleSignal(int) { g_stop_requested.store(true); }
 struct ServeOptions {
     std::string host;
     int port = -1;
+    std::string tlsCertFile;
+    std::string tlsKeyFile;
     // Neither flag given keeps server.web_ui from the file, so a one-off run
     // never silently overrides what the operator wrote down.
     bool webUiOn = false;
@@ -63,6 +65,8 @@ void runServe(Context &ctx, const ServeOptions &opts) {
     if (!opts.host.empty()) {
         config.server.host = opts.host;
     }
+    if (!opts.tlsCertFile.empty()) config.server.tls_cert_file = opts.tlsCertFile;
+    if (!opts.tlsKeyFile.empty()) config.server.tls_key_file = opts.tlsKeyFile;
     if (opts.port >= 0) {
         config.server.port = opts.port;
     }
@@ -112,8 +116,7 @@ void runServe(Context &ctx, const ServeOptions &opts) {
 
     // The port may have been kernel-assigned when the config said 0, so report
     // the address actually bound rather than the requested one.
-    const std::string address =
-        std::format("http://{}:{}", server.boundAddress(), server.boundPort());
+    const std::string address = server.snapshot().base_url;
 
     KeyValues info;
     info.add("listen", address);
@@ -153,6 +156,10 @@ void register_serve(CLI::App &root, Context &ctx) {
         "serve", std::string(literouter::i18n::tr("Run the proxy in the foreground")));
     sub->add_option("--host", opts->host, "Override server.host for this run only");
     sub->add_option("--port", opts->port, "Override server.port for this run only");
+    sub->add_option("--tls-cert", opts->tlsCertFile,
+        std::string(literouter::i18n::tr("PEM certificate chain absolute path for HTTPS")));
+    sub->add_option("--tls-key", opts->tlsKeyFile,
+        std::string(literouter::i18n::tr("Unencrypted PEM private key absolute path for HTTPS")));
     CLI::Option *no_web_ui =
         sub->add_flag("--no-web-ui", opts->webUiOff,
                       "Do not serve the built-in console at /ui for this run only");

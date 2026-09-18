@@ -67,6 +67,7 @@ literouter serve [OPTIONS]
 ### Options
 - `--host <ip>`: Temporarily override `server.host` for this run (e.g. `0.0.0.0`);
 - `--port <port>`: Temporarily override `server.port` for this run (e.g. `9000`);
+- `--tls-cert <path>` / `--tls-key <path>`: Override the absolute HTTPS certificate chain and unencrypted private key paths; both must be valid.
 - `--web-ui` / `--no-web-ui`: Whether this run serves the built-in console at `/ui` (untouched from the file when neither is given);
 - `--persist` / `--no-persist`: Whether this run persists counters and the request log to the state directory (untouched from the file when neither is given);
 - `--force`: Start even if `validate()` reports configuration errors;

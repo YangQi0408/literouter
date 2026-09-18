@@ -665,18 +665,24 @@ std::int64_t currentProcessId() {
 
 // A literouter already answering on this address, if there is one.
 //
-// A bind cannot report this: httplib sets SO_REUSEPORT, so a second instance
-// binds the same port happily and the kernel then spreads connections across
-// both — two proxies, two configs, one address, and a console whose counters
-// jump between them. The probe therefore identifies the other end rather than
-// assuming anything about it: only a health answer shaped like ours counts, and
-// whatever else holds the port is left to fail the bind with its own, accurate
-// error. An empty return means the port is ours to take.
-std::string existingInstance(const std::string &host, int port,
+// Identify the other end before binding so the error can name its pid and
+// explain how to stop it. Older listeners used httplib's SO_REUSEPORT default;
+// current listeners disable port sharing so an unverifiable HTTPS health probe
+// cannot accidentally let two processes split traffic. A failed probe defers
+// to the OS bind check rather than implying that the port is free.
+std::string existingInstance(const ServerConfig &server,
                              const std::filesystem::path &pid_path) {
+    const std::string &host = server.host;
+    const int port = server.port;
     // 0.0.0.0 and :: are bind addresses, not destinations.
     const bool wildcard = host.empty() || host == "0.0.0.0" || host == "::" || host == "[::]";
-    h::Client client{wildcard ? std::string{"127.0.0.1"} : host, port};
+    ServerConfig target = server;
+    if (wildcard) target.host = (host == "::" || host == "[::]") ? "::1" : "127.0.0.1";
+    h::Client client{serverBaseUrl(target)};
+    if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
+        client.set_ca_cert_path(bundle.string());
+    }
+    client.enable_server_certificate_verification(true);
     client.set_connection_timeout(0, 400000);
     client.set_read_timeout(0, 400000);
     const auto res = client.Get("/health");
@@ -887,6 +893,8 @@ struct ProxyServer::Impl {
 
     mutable std::mutex config_mutex;
     AppConfig config;
+    // Actual transport is separate from the next-start settings in config.
+    ServerConfig bound_server;
     std::string config_path;
 
     std::thread runner;
@@ -2695,7 +2703,8 @@ bool ProxyServer::running() const {
 }
 
 std::string ProxyServer::boundAddress() const {
-    return impl_->snapshotConfig().server.host;
+    std::scoped_lock lock{impl_->config_mutex};
+    return impl_->bound_server.host;
 }
 
 int ProxyServer::boundPort() const {
@@ -2712,9 +2721,17 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         return std::unexpected(std::string{"server is already running"});
     }
 
+    // TLS is a startup invariant, including --force: invalid credentials must
+    // never silently turn a requested HTTPS listener into plaintext HTTP.
+    for (const auto &issue : validate(config).issues) {
+        if (issue.level == ValidationIssue::Level::Error && startsWith(issue.path, "server.tls_")) {
+            return std::unexpected(issue.path + ": " + issue.message);
+        }
+    }
     {
         std::scoped_lock lock{impl_->config_mutex};
         impl_->config = config;
+        impl_->bound_server = config.server;
     }
     impl_->router.setConfig(config);
     {
@@ -2722,18 +2739,42 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         impl_->log.setCapacity(static_cast<std::size_t>(std::max(16, config.server.log_capacity)));
     }
     impl_->setPersistence(config.server.persist_telemetry);
-    // Before binding, because the bind cannot report it: httplib shares the port
-    // between instances, and only one of them can be the one the operator means.
+    // A verified health probe produces a friendlier diagnostic than bind's
+    // address-in-use error; exclusive socket options below remain authoritative.
     if (config.server.port != 0) {
         const std::filesystem::path pid_path = defaultPidPath(config.server.port);
-        if (const std::string clash = existingInstance(config.server.host, config.server.port, pid_path);
+        if (const std::string clash = existingInstance(config.server, pid_path);
             !clash.empty()) {
             return std::unexpected(clash);
         }
     }
     impl_->stopping.store(false);
 
-    auto &server = *(impl_->server = std::make_unique<h::Server>());
+    if (config.server.tls_cert_file.empty()) {
+        impl_->server = std::make_unique<h::Server>();
+    } else {
+        impl_->server = std::make_unique<h::SSLServer>([&config](h::tls::ctx_t context) {
+            auto *ctx = static_cast<SSL_CTX *>(context);
+            SSL_CTX_set_default_passwd_cb(ctx, [](char *, int, int, void *) -> int { return 0; });
+            return SSL_CTX_use_certificate_chain_file(ctx, config.server.tls_cert_file.c_str()) == 1 &&
+                   SSL_CTX_use_PrivateKey_file(ctx, config.server.tls_key_file.c_str(), SSL_FILETYPE_PEM) == 1 &&
+                   SSL_CTX_check_private_key(ctx) == 1;
+        });
+        if (!impl_->server->is_valid()) {
+            return std::unexpected(std::string{"cannot initialize HTTPS listener from TLS files"});
+        }
+    }
+    auto &server = *impl_->server;
+    // Do not share the listening port, even when a TLS probe cannot verify an
+    // existing instance's private CA. SO_REUSEADDR still permits quick restarts.
+    server.set_socket_options([](auto sock) {
+        int yes = 1;
+#ifdef _WIN32
+        setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&yes), sizeof(yes));
+#else
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&yes), sizeof(yes));
+#endif
+    });
     server.set_payload_max_length(kMaxRequestBody);
     server.set_keep_alive_max_count(64);
     // 0 means "no write deadline". A streamed answer can legitimately idle for
@@ -3248,6 +3289,10 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         bound = config.server.port;
     }
     impl_->bound_port.store(bound);
+    {
+        std::scoped_lock lock{impl_->config_mutex};
+        impl_->bound_server.port = bound;
+    }
     // The telemetry file belongs to the instance, and the port is what names it.
     // Computed here rather than before the bind for two reasons: a config asking
     // for port 0 has no name until the kernel picks one, and the accept loop has
@@ -3285,7 +3330,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         return std::unexpected(std::string{"the accept loop stopped during startup"});
     }
 
-    impl_->recordSystem(std::format("listening on http://{}:{}", host, bound));
+    impl_->recordSystem("listening on " + snapshot().base_url);
     // Remember what the config file looks like now, so that a change is a change.
     impl_->rememberConfigStamp();
     // Started last: everything above can still fail and return, and a flusher
@@ -3348,9 +3393,14 @@ Snapshot ProxyServer::snapshot() const {
     const AppConfig cfg = impl_->snapshotConfig();
 
     out.running = impl_->running.load();
-    out.host = cfg.server.host;
-    out.port = impl_->bound_port.load();
-    out.base_url = std::format("http://{}:{}", out.host, out.port);
+    {
+        std::scoped_lock lock{impl_->config_mutex};
+        out.host = impl_->bound_server.host;
+        out.port = impl_->bound_port.load();
+        auto bound = impl_->bound_server;
+        bound.port = out.port;
+        out.base_url = serverBaseUrl(bound);
+    }
     out.started_unix = impl_->started_unix;
     out.uptime_sec = out.running ? nowUnix() - impl_->started_unix : 0.0;
     out.version = std::string{kVersion};
@@ -3417,7 +3467,14 @@ void ProxyServer::resetStats() {
 }
 
 std::string ProxyServer::adminUrl(const std::string &host, int port, std::string_view path) {
-    return std::format("http://{}:{}{}", host, port, path);
+    ServerConfig config;
+    config.host = host;
+    config.port = port;
+    return serverBaseUrl(config, path);
+}
+
+std::string ProxyServer::adminUrl(const ServerConfig &server, std::string_view path) {
+    return serverBaseUrl(server, path);
 }
 
 void ProxyServer::accumulateUsage(std::string_view body, ProviderStat &stat) {
@@ -3482,6 +3539,10 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
     }
 
     h::Client client{root};
+    if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
+        client.set_ca_cert_path(bundle.string());
+    }
+    client.enable_server_certificate_verification(true);
     client.set_connection_timeout(2, 0);
     client.set_read_timeout(5, 0);
 
@@ -3596,6 +3657,10 @@ std::optional<h::Client> makeAdminClient(std::string_view base_url, std::string_
         return std::nullopt;
     }
     h::Client client{root};
+    if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
+        client.set_ca_cert_path(bundle.string());
+    }
+    client.enable_server_certificate_verification(true);
     client.set_connection_timeout(2, 0);
     client.set_read_timeout(5, 0);
     if (!api_key.empty()) {

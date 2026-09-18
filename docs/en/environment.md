@@ -12,7 +12,7 @@ This document lists all environment variables supported by `literouter`, their d
 | `LITEROUTER_STATE_DIR` | Absolute path override for runtime state (persisted telemetry, etc.) | `~/.local/state/literouter` | Core / CLI / GUI |
 | `LITEROUTER_LANG` | UI and terminal language override (`auto`, `zh`, `en`) | `auto` (system locale) | CLI / GUI |
 | `LITEROUTER_UI_SCALE` | Initial GUI vector scaling factor | `1.0` (supports `0.8` ~ `1.5`) | GUI |
-| `LITEROUTER_CA_BUNDLE` | Custom CA certificate bundle path for HTTPS verification | Auto-detected system CA trust store | Core |
+| `LITEROUTER_CA_BUNDLE` | Custom CA bundle for upstream and management-client HTTPS verification | Auto-detected system CA trust store | Core |
 | `LITEROUTER_GUI_FONT` | Custom font file path override for GUI rendering | Auto-detected crisp CJK font | GUI |
 | `LITEROUTER_GUI_SMOKE` | Set to `1` to run automated headless smoke tests and exit | `0` (disabled) | GUI |
 | `NO_COLOR` | Adheres to no-color.org; disables ANSI terminal colors when set | Unset (colors enabled) | CLI |

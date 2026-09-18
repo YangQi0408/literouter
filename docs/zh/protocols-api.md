@@ -1,5 +1,7 @@
 # 接口与协议规范
 
+所有接口也可由同一监听端口提供 HTTPS：配置 `server.tls_cert_file` 与 `server.tls_key_file`，重启后将下文 URL 的 `http://` 改为 `https://`。管理客户端仍校验证书链和主机名，私有 CA 使用 `LITEROUTER_CA_BUNDLE`；详见[配置文档](configuration.md#https-监听)。
+
 本文档全面介绍 `literouter` 对外提供的客户端兼容端点、支持的上游协议类型、跨协议自动转换与零开销直通机制，以及内部管理 API。
 
 ---

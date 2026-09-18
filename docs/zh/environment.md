@@ -12,7 +12,7 @@
 | `LITEROUTER_STATE_DIR` | 覆盖运行时状态目录（持久化遥测等） | `~/.local/state/literouter` | 核心 / CLI / GUI |
 | `LITEROUTER_LANG` | 强制指定控制台与图形界面语言（`auto`, `zh`, `en`） | `auto` (跟随系统) | CLI / GUI |
 | `LITEROUTER_UI_SCALE` | 指定桌面控制台启动时的默认缩放比例 | `1.0`（支持 `0.8` ~ `1.5`） | GUI |
-| `LITEROUTER_CA_BUNDLE` | 指定用于上游 HTTPS 校验的自定义 CA 根证书包绝对路径 | 自动探测系统 CA 信任库 | 核心 |
+| `LITEROUTER_CA_BUNDLE` | 指定用于上游与管理客户端 HTTPS 校验的自定义 CA 根证书包绝对路径 | 自动探测系统 CA 信任库 | 核心 |
 | `LITEROUTER_GUI_FONT` | 覆盖桌面控制台渲染所使用的字体文件绝对路径 | 自动探测系统清晰中文字体 | GUI |
 | `LITEROUTER_GUI_SMOKE` | 设为 `1` 时进入全自动冒烟测试模式，各页面渲染指定帧数后退出 | `0` (关闭) | GUI |
 | `NO_COLOR` | 遵循 no-color.org 规范，设为非空值时禁用终端彩色输出 | 未设置 (开启彩色) | CLI |

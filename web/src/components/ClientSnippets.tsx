@@ -21,7 +21,8 @@ export function ClientSnippets() {
     return null
   }
   const server = loaded.config.server
-  const base = snapshot?.base_url || `http://${server.host}:${server.port}`
+  const host = server.host.includes(':') && !server.host.startsWith('[') ? `[${server.host}]` : server.host
+  const base = snapshot?.base_url || `${server.tls_cert_file ? 'https' : 'http'}://${host}:${server.port}`
   const key = server.api_key ? 'sk-local' : 'unused'
 
   const continueJson = JSON.stringify(

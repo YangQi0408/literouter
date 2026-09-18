@@ -221,6 +221,8 @@ ServerConfig serverFromJson(const json &node) {
     ServerConfig out;
     out.host = readString(node, "host", out.host);
     out.port = readInt(node, "port", out.port);
+    out.tls_cert_file = readString(node, "tls_cert_file");
+    out.tls_key_file = readString(node, "tls_key_file");
     out.api_key = readString(node, "api_key");
     out.pass_through_unknown = readBool(node, "pass_through_unknown", out.pass_through_unknown);
     out.max_attempts = readInt(node, "max_attempts", out.max_attempts);
@@ -246,6 +248,8 @@ json serverToJson(const ServerConfig &value) {
     json node = json::object();
     node["host"] = value.host;
     node["port"] = value.port;
+    node["tls_cert_file"] = value.tls_cert_file;
+    node["tls_key_file"] = value.tls_key_file;
     node["api_key"] = value.api_key;
     node["pass_through_unknown"] = value.pass_through_unknown;
     node["max_attempts"] = value.max_attempts;

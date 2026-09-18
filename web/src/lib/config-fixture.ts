@@ -11,6 +11,8 @@ export function makeServer(overrides: Partial<ServerConfig> = {}): ServerConfig 
   return {
     host: '127.0.0.1',
     port: 8787,
+    tls_cert_file: '',
+    tls_key_file: '',
     api_key: '',
     pass_through_unknown: true,
     max_attempts: 0,

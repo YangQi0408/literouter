@@ -1,5 +1,7 @@
 # Protocols and API Reference
 
+Every endpoint also supports HTTPS on the same listener: configure `server.tls_cert_file` and `server.tls_key_file`, restart, and use `https://` in the URLs below. Management clients verify the chain and hostname; private CAs use `LITEROUTER_CA_BUNDLE`. See [configuration](configuration.md#https-listener).
+
 This document covers `literouter`'s inbound client endpoints, supported upstream provider protocols, automatic cross-protocol translation, zero-overhead passthrough mechanism, and administrative management APIs.
 
 ---

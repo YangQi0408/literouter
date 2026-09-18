@@ -54,6 +54,8 @@ You can override the default configuration path at any time via:
   "server": {
     "host": "127.0.0.1",          // Listen address (binding to non-loopback without api_key triggers a security warning)
     "port": 8787,                 // Port to listen on; 0 lets OS assign an ephemeral free port
+    "tls_cert_file": "",         // Absolute PEM certificate chain path; both TLS paths empty keep HTTP
+    "tls_key_file": "",          // Absolute unencrypted PEM private key path; restart to apply
     "api_key": "",                // Bearer token required from clients; empty means no authentication
     "pass_through_unknown": true, // Automatically pass through models not listed in `routes` to providers declaring them
     "max_attempts": 0,            // Max candidates to try per request; 0 means try all available candidates
@@ -150,6 +152,8 @@ You can override the default configuration path at any time via:
 |---|---|---|---|
 | `host` | `string` | `"127.0.0.1"` | IP address to bind to. Set to `"0.0.0.0"` for LAN access, but ensure `api_key` is configured. |
 | `port` | `uint16` | `8787` | Port to bind to. Set to `0` to let OS pick an available ephemeral port. |
+| `tls_cert_file` | `string` | `""` | Absolute PEM certificate chain path. Set together with `tls_key_file` for HTTPS; keep both empty for HTTP. Startup validates files, certificate dates, and key matching. Listener changes require restart. |
+| `tls_key_file` | `string` | `""` | Absolute path to the matching unencrypted PEM private key. Its contents are never written into the config or returned to the web console. |
 | `api_key` | `string` | `""` | Server authentication token. Clients must pass `Authorization: Bearer <api_key>`; empty disables auth. |
 | `pass_through_unknown` | `bool` | `true` | If client requests an unrouted model, pass through to providers advertising that model. |
 | `max_attempts` | `size_t` | `0` | Upper limit of candidate providers to try per request. `0` means try all candidates. |
@@ -167,6 +171,14 @@ You can override the default configuration path at any time via:
 | `language` | `string` | `"auto"` | UI language: `auto` (follow the system locale) / `en` / `zh`. Shared by the CLI and the GUI. |
 | `ui_scale` | `double` | `1.0` | Initial GUI vector scale, accepted roughly between `0.25` and `4.0` (recommended `0.8` ~ `1.5`); `0.0` and `1.0` both mean default. |
 | `web_ui` | `bool` | `true` | Whether to enable the built-in web console. Takes effect immediately; a non-loopback host without an `api_key` emits a security warning. |
+
+### HTTPS listener
+
+Personal use keeps `http://127.0.0.1:8787` by default. For distribution, set `server.tls_cert_file` to the absolute path of a PEM chain (leaf certificate first, followed by intermediates), and `server.tls_key_file` to its matching unencrypted PEM private key. The certificate SAN must cover the hostname or IP clients connect to. Missing, expired, not-yet-valid, or mismatched credentials prevent startup, even with `serve --force`.
+
+All model, health, and `/ui/` management endpoints on the listener then use HTTPS. Host, port, TLS paths, and replacement certificates at the same paths take effect after restarting the listener; saving or hot reload keeps active requests intact. Status always advertises the actual running scheme and address.
+
+Public CA certificates use the system trust store. For a private CA, set `LITEROUTER_CA_BUNDLE=/absolute/path/ca-bundle.pem` in the CLI environment; `status`, `logs`, and management commands verify the chain and hostname. This bundle also applies to upstream requests, so include system roots when needed. Browsers and other clients must trust that CA independently. When binding `0.0.0.0` or `::`, remote clients connect using the actual service hostname covered by the certificate; CLI management can use a local config with `server.host` set to that hostname. Certificate issuance and renewal are managed externally.
 
 ### Cost Estimation
 

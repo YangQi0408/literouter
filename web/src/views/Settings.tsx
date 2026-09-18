@@ -58,6 +58,13 @@ export function Settings() {
             <NumberField value={server.port} min={0} max={65535} onChange={(port) => patch({ port })} />
           </Field>
 
+          <Field label="tls_cert_file" hint={t('hintTls')} wide>
+            <TextField value={server.tls_cert_file} onChange={(tls_cert_file) => patch({ tls_cert_file })} />
+          </Field>
+          <Field label="tls_key_file" hint={t('hintTlsKey')} wide>
+            <TextField value={server.tls_key_file} onChange={(tls_key_file) => patch({ tls_key_file })} />
+          </Field>
+
           <Field label="api_key" hint={t('keyHint')} wide>
             <Input
               value={server.api_key}

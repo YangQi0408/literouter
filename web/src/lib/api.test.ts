@@ -16,7 +16,7 @@ const MINIMAL_PAYLOAD = {
   providers: [
     {
       api_key: '',
-      api_key_source: 'literal',
+      api_key_source: 'literal' as const,
       base_url: 'http://127.0.0.1:9',
       chat_path: '/chat/completions',
       connect_timeout_sec: 15,
@@ -70,6 +70,8 @@ describe('normalizeConfig', () => {
   it('restores the server defaults for keys the payload left out', () => {
     const config = normalizeConfig(MINIMAL_PAYLOAD)
     expect(config.server.host).toBe('127.0.0.1')
+    expect(config.server.tls_cert_file).toBe('')
+    expect(config.server.tls_key_file).toBe('')
     expect(config.server.web_ui).toBe(true)
     expect(config.server.log_body_limit).toBe(2048)
     expect(config.server.routing_policy).toBe('priority')
