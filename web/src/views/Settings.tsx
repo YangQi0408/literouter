@@ -1,6 +1,7 @@
 import { Check, Copy } from 'lucide-react'
 import { useState } from 'react'
 
+import { ClientSnippets } from '@/components/ClientSnippets'
 import { Field, NumberField, SwitchField, TextField } from '@/components/fields'
 import { Issues } from '@/components/Issues'
 import { Button } from '@/components/ui/button'
@@ -199,6 +200,8 @@ export function Settings() {
           </Field>
         </CardContent>
       </Card>
+
+      <ClientSnippets />
 
       <Card>
         <CardHeader>
