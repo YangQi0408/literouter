@@ -207,11 +207,24 @@ curl http://127.0.0.1:8787/v1/messages \
     "total_success": 1410,
     "total_failure": 10,
     "bytes_out": 12345678,
+    "cost_usd": 0.075,
     "tokens_prompt": 120000,
     "tokens_completion": 45000,
     "latency_ms_avg": 345.2,
     "log_seq": 1420,
     "breakers_open": 0,
+    "hourly": [
+      {
+        "hour_unix": 1758000000.0,
+        "requests": 12,
+        "successes": 11,
+        "failures": 1,
+        "bytes_out": 184320,
+        "tokens_prompt": 9000,
+        "tokens_completion": 3200,
+        "cost_usd": 0.075
+      }
+    ],
     "providers": [
       {
         "provider": "openai-official",
@@ -242,6 +255,8 @@ curl http://127.0.0.1:8787/v1/messages \
     ]
   }
   ```
+
+  `hourly` 是最近 24 个**小时桶**（`hour_unix` 为该小时起点，UTC 整点），旧到新排列：控制台的趋势图就是它，重启后会从遥测文件恢复，因此"今天的样子"不会因为重启而消失。没有流量时该数组为空。
 
   `providers` 是累计统计（自上次 `POST /__literouter/reset-stats` 或遥测文件恢复起），其中 `latency_ms_p95` 是最近 64 次尝试的最近秩（nearest-rank）p95——取窗口内实际出现过的样本值，没有样本时为 0；`health` 是熔断器当前状态（`state` 取 `unknown` / `healthy` / `degraded` / `open`）。`uptime_sec` 每次请求实时计算，因此 Web 控制台与 GUI 的运行时长会逐秒跳动；显示格式为 `1h 2m 5s`，且**始终保留秒**（`humanUptime`），而一般的时长显示（如熔断冷却剩余时间）仍使用会向上归整到分钟的 `humanDuration`。
 

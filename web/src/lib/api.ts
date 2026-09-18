@@ -63,6 +63,18 @@ export interface ProviderHealth {
   cooldown_remaining: number
 }
 
+/** One hour of traffic, for the trend chart. */
+export interface TrafficBucket {
+  hour_unix: number
+  requests: number
+  successes: number
+  failures: number
+  bytes_out: number
+  tokens_prompt: number
+  tokens_completion: number
+  cost_usd: number
+}
+
 export interface Snapshot {
   running: boolean
   host: string
@@ -83,6 +95,8 @@ export interface Snapshot {
   cost_usd: number
   log_seq: number
   breakers_open: number
+  /** The most recent hours, oldest first; empty until there has been traffic. */
+  hourly: TrafficBucket[]
   providers: ProviderStat[]
   health: ProviderHealth[]
 }

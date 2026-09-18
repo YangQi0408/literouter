@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 
 import { Metric } from '@/components/Metric'
+import { HourlyTrend } from '@/components/HourlyTrend'
 import { RelayHealth } from '@/components/RelayHealth'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -125,6 +126,8 @@ export function Overview() {
           sub={snapshot.config_path}
         />
       </div>
+
+      <HourlyTrend buckets={snapshot.hourly ?? []} />
 
       <Card>
         <CardHeader>

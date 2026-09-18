@@ -492,6 +492,24 @@ std::string toJsonString(const Snapshot &snapshot) {
     }
     node["health"] = std::move(health);
 
+    // The hourly trend, oldest first. Written unconditionally (empty array when
+    // there has been no traffic) so a reader never has to guess whether the key
+    // means "no data" or "older build".
+    json hourly = json::array();
+    for (const auto &bucket : snapshot.hourly) {
+        json entry = json::object();
+        entry["hour_unix"] = bucket.hour_unix;
+        entry["requests"] = bucket.requests;
+        entry["successes"] = bucket.successes;
+        entry["failures"] = bucket.failures;
+        entry["bytes_out"] = bucket.bytes_out;
+        entry["tokens_prompt"] = bucket.tokens_prompt;
+        entry["tokens_completion"] = bucket.tokens_completion;
+        entry["cost_usd"] = bucket.cost_usd;
+        hourly.push_back(std::move(entry));
+    }
+    node["hourly"] = std::move(hourly);
+
     return node.dump(2);
 }
 

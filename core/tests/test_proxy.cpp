@@ -1481,6 +1481,20 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
     LR_CHECK_MSG(after.tokens_prompt > 0, "tokens_prompt never written");
     LR_CHECK_MSG(after.tokens_completion > 0, "tokens_completion never written");
     LR_CHECK_MSG(after.latency_ms_avg > 0.0, "latency_ms_avg never written");
+    // The hourly trend: one bucket for the hour this group ran in, carrying the
+    // same traffic the totals do. A trend field nothing writes is exactly the
+    // kind of field this group exists to catch.
+    LR_CHECK_MSG(!after.hourly.empty(), "Snapshot.hourly was never written");
+    if (!after.hourly.empty()) {
+        const literouter::TrafficBucket &hour = after.hourly.back();
+        LR_CHECK_MSG(hour.requests >= 4,
+                     std::format("the current hour holds {} request(s), the totals say {}",
+                                 hour.requests, after.total_requests));
+        LR_CHECK_MSG(hour.successes + hour.failures == hour.requests,
+                     "the hour's outcomes do not add up to its requests");
+        LR_CHECK_MSG(hour.bytes_out > 0, "the hour recorded no bytes");
+        LR_CHECK_MSG(hour.tokens_prompt > 0, "the hour recorded no tokens");
+    }
 
     for (const auto &stat : after.providers) {
         if (stat.requests == 0) {
@@ -2678,6 +2692,15 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
         LR_CHECK_EQ(restored.total_success, static_cast<std::uint64_t>(1));
         LR_CHECK_MSG(restored.log_seq >= saved_seq,
                      std::format("log_seq went backwards: {} < {}", restored.log_seq, saved_seq));
+
+        // The trend survives too: a restart that erased the shape of the day
+        // would make the chart useless exactly when someone is investigating.
+        LR_CHECK_MSG(!restored.hourly.empty(),
+                     "the hourly trend did not come back from the state file");
+        if (!restored.hourly.empty()) {
+            LR_CHECK_MSG(restored.hourly.back().requests >= 1,
+                         "the restored hour holds no requests");
+        }
 
         const auto entries = second.logsSince(0, 500);
         LR_CHECK_MSG(!entries.empty(), "the restored log came back empty");

@@ -206,11 +206,24 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
     "total_success": 1410,
     "total_failure": 10,
     "bytes_out": 12345678,
+    "cost_usd": 0.075,
     "tokens_prompt": 120000,
     "tokens_completion": 45000,
     "latency_ms_avg": 345.2,
     "log_seq": 1420,
     "breakers_open": 0,
+    "hourly": [
+      {
+        "hour_unix": 1758000000.0,
+        "requests": 12,
+        "successes": 11,
+        "failures": 1,
+        "bytes_out": 184320,
+        "tokens_prompt": 9000,
+        "tokens_completion": 3200,
+        "cost_usd": 0.075
+      }
+    ],
     "providers": [
       {
         "provider": "openai-official",
@@ -241,6 +254,8 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
     ]
   }
   ```
+
+  `hourly` holds the last 24 **hour buckets** (`hour_unix` is the start of the hour, on the UTC hour), oldest first: it is what the console's trend chart draws, and it is restored from the telemetry file on restart so the shape of the day does not vanish with the process. The array is empty until there has been traffic.
 
   `providers` holds cumulative stats (since the last `POST /__literouter/reset-stats` or the restored telemetry file) — `latency_ms_p95` being the nearest-rank p95 over the last 64 attempts, always a sample the relay really served, and 0 when the window is empty — and `health` the breaker state, whose `state` is one of `unknown` / `healthy` / `degraded` / `open`. `uptime_sec` is computed per request, which is what lets the web console and the GUI tick the uptime once a second; it is formatted as `1h 2m 5s` and always keeps the seconds (`humanUptime`), while plain durations — a breaker's remaining cooldown, for instance — still use the minute-rounding `humanDuration`.
 

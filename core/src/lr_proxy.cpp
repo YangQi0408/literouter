@@ -954,6 +954,11 @@ struct ProxyServer::Impl {
         affinity[std::string{key}] = Affinity{provider, now_unix + ttl_sec};
     }
 
+    // The last kHourlyBuckets hours of traffic, oldest first. Bounded by
+    // construction: the oldest falls off when a new hour starts.
+    static constexpr std::size_t kHourlyBuckets = 24;
+    std::deque<TrafficBucket> hourly;
+
     mutable std::mutex telemetry_mutex;
     std::map<std::string, ProviderStat, std::less<>> stats;
     std::map<std::string, LatencyWindow, std::less<>> latency_windows;
@@ -1059,6 +1064,13 @@ struct ProxyServer::Impl {
         std::string upstream_model;
         int status = 0;
         std::uint64_t bytes = 0;
+        // The relay's own token report for this request, and what it cost at the
+        // prices written down for it. Kept here as well as in recordAttempt()
+        // because the hourly bucket needs them and it is accumulated per
+        // *request*, while recordAttempt() sees every attempt.
+        std::uint64_t prompt_tokens = 0;
+        std::uint64_t completion_tokens = 0;
+        double cost_usd = 0.0;
         std::string message;
         // Where the time went — see LogEntry for what each of the three means.
         double wait_ms = 0.0;
@@ -1109,6 +1121,7 @@ struct ProxyServer::Impl {
             ++total_failure;
         }
         bytes_out += facts.bytes;
+        noteHour(facts, facts.cost_usd, nowUnix());
         if (entry.latency_ms > 0.0) {
             latency_ms_avg = latency_ms_avg == 0.0
                                  ? entry.latency_ms
@@ -1118,6 +1131,32 @@ struct ProxyServer::Impl {
         markStateDirty();
         releaseInFlight();
     }
+
+    // Called under the telemetry lock from finish(), which is the one place a
+    // request — as opposed to an attempt — is accounted for, so a failover adds
+    // one request here and two to the relay stats, exactly as the totals do.
+    void noteHour(const AttemptFacts &facts, double cost_usd, double time_unix) {
+        const double hour = std::floor(time_unix / 3600.0) * 3600.0;
+        if (hourly.empty() || hourly.back().hour_unix < hour) {
+            hourly.push_back(TrafficBucket{});
+            hourly.back().hour_unix = hour;
+            while (hourly.size() > kHourlyBuckets) {
+                hourly.pop_front();
+            }
+        }
+        TrafficBucket &bucket = hourly.back();
+        ++bucket.requests;
+        if (facts.status >= 200 && facts.status < 300) {
+            ++bucket.successes;
+        } else if (facts.status > 0) {
+            ++bucket.failures;
+        }
+        bucket.bytes_out += facts.bytes;
+        bucket.tokens_prompt += facts.prompt_tokens;
+        bucket.tokens_completion += facts.completion_tokens;
+        bucket.cost_usd += cost_usd;
+    }
+
 
     void recordSystem(std::string message, std::string level = "info") {
         LogEntry entry;
@@ -1181,6 +1220,23 @@ struct ProxyServer::Impl {
         ring["next_seq"] = log.next_seq;
         ring["entries"] = std::move(entries);
         root["log"] = std::move(ring);
+
+        // The hourly trend goes to disk with the rest, so a restart does not
+        // erase the shape of the day.
+        json hours = json::array();
+        for (const auto &bucket : hourly) {
+            json node = json::object();
+            node["hour_unix"] = bucket.hour_unix;
+            node["requests"] = bucket.requests;
+            node["successes"] = bucket.successes;
+            node["failures"] = bucket.failures;
+            node["bytes_out"] = bucket.bytes_out;
+            node["tokens_prompt"] = bucket.tokens_prompt;
+            node["tokens_completion"] = bucket.tokens_completion;
+            node["cost_usd"] = bucket.cost_usd;
+            hours.push_back(std::move(node));
+        }
+        root["hourly"] = std::move(hours);
 
         return root.dump(2);
     }
@@ -1323,6 +1379,25 @@ struct ProxyServer::Impl {
             return;
         }
 
+        std::deque<TrafficBucket> restored_hours;
+        if (const auto it = root.find("hourly"); it != root.end() && it->is_array()) {
+            for (const auto &item : *it) {
+                if (!item.is_object()) {
+                    continue;
+                }
+                TrafficBucket bucket;
+                bucket.hour_unix = item.value("hour_unix", 0.0);
+                bucket.requests = item.value("requests", std::uint64_t{0});
+                bucket.successes = item.value("successes", std::uint64_t{0});
+                bucket.failures = item.value("failures", std::uint64_t{0});
+                bucket.bytes_out = item.value("bytes_out", std::uint64_t{0});
+                bucket.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
+                bucket.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
+                bucket.cost_usd = item.value("cost_usd", 0.0);
+                restored_hours.push_back(bucket);
+            }
+        }
+
         const std::size_t restored = entries.size();
         {
             std::scoped_lock lock{telemetry_mutex};
@@ -1337,6 +1412,10 @@ struct ProxyServer::Impl {
                 stats[it->first] = std::move(it->second);
             }
             log.restore(std::move(entries), next_seq);
+            while (restored_hours.size() > kHourlyBuckets) {
+                restored_hours.pop_front();
+            }
+            hourly = std::move(restored_hours);
         }
         recordSystem(std::format("restored {} log entries from {}", restored,
                                  state_path.string()));
@@ -1475,8 +1554,7 @@ struct ProxyServer::Impl {
     void recordAttempt(std::string_view provider, AttemptOutcome outcome, double latency_ms,
                        std::uint64_t bytes, std::uint64_t prompt_tokens,
                        std::uint64_t completion_tokens, std::uint64_t bytes_in = 0,
-                       double price_in_per_million = 0.0,
-                       double price_out_per_million = 0.0) {
+                       double cost_usd = 0.0) {
         std::scoped_lock lock{telemetry_mutex};
         auto &stat = statFor(provider);
         ++stat.requests;
@@ -1487,17 +1565,12 @@ struct ProxyServer::Impl {
         }
         stat.bytes_out += bytes;
         stat.bytes_in += bytes_in;
-        if (prompt_tokens > 0 || completion_tokens > 0) {
-            // Priced here rather than at display time: the operator may correct a
-            // price later, and the cost already incurred is not re-derived from
-            // the new one. The formula itself is estimateCost(), shared with the
-            // CLI's one-off tools so the two cannot drift.
-            const double cost =
-                estimateCost(price_in_per_million, price_out_per_million, prompt_tokens,
-                             completion_tokens);
-            stat.cost_usd += cost;
-            cost_usd += cost;
-        }
+        // Priced at the call site rather than at display time: the operator may
+        // correct a price later, and the cost already incurred is not re-derived
+        // from the new one. The formula is estimateCost(), shared with the CLI's
+        // one-off tools so the two cannot drift.
+        stat.cost_usd += cost_usd;
+        this->cost_usd += cost_usd;
         stat.tokens_prompt += prompt_tokens;
         stat.tokens_completion += completion_tokens;
         stat.last_used_unix = nowUnix();
@@ -1814,11 +1887,13 @@ struct ProxyServer::Impl {
 
             ProviderStat usage;
             ProxyServer::accumulateUsage(result.body, usage);
+            const double attempt_cost =
+                estimateCost(provider->price_in_per_million, provider->price_out_per_million,
+                             usage.tokens_prompt, usage.tokens_completion);
             recordAttempt(provider->id,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
                           result.latency_ms, result.body.size(), usage.tokens_prompt,
-                          usage.tokens_completion, payload.size(),
-                          provider->price_in_per_million, provider->price_out_per_million);
+                          usage.tokens_completion, payload.size(), attempt_cost);
             // Only a relay that answered usefully becomes the conversation's
             // home: pinning a conversation to whatever answered "400 context
             // length exceeded" would bake in the failure.
@@ -1866,6 +1941,9 @@ struct ProxyServer::Impl {
                          .upstream_model = upstream_model,
                          .status = result.status,
                          .bytes = out_body.size(),
+                         .prompt_tokens = usage.tokens_prompt,
+                         .completion_tokens = usage.tokens_completion,
+                         .cost_usd = attempt_cost,
                          .message = std::format("{} → {}", ctx.model, upstream_model),
                          // A buffered answer arrives in one piece: httplib reports one
                          // number for connect-plus-answer, so that number is the relay's
@@ -2404,12 +2482,15 @@ struct ProxyServer::Impl {
                         const std::pair<double, double> measured = phases(latency);
                         const double ttfb = measured.first;
                         const double streamed_for = measured.second;
+                        const double attempt_cost =
+                            estimateCost(provider.price_in_per_million,
+                                         provider.price_out_per_million, tokens.prompt,
+                                         tokens.completion);
                         recordAttempt(provider_id,
                                       stream_ok ? AttemptOutcome::Success
                                                 : AttemptOutcome::Failure,
                                       latency, bytes, tokens.prompt, tokens.completion,
-                                      payload_size, provider.price_in_per_million,
-                                      provider.price_out_per_million);
+                                      payload_size, attempt_cost);
                         noteAffinity(request_ctx, provider_id,
                                      stream_ok ? AttemptOutcome::Success
                                                : AttemptOutcome::Failure);
@@ -2420,6 +2501,9 @@ struct ProxyServer::Impl {
                                              .upstream_model = upstream_model,
                                              .status = bridge->status,
                                              .bytes = bytes,
+                                             .prompt_tokens = tokens.prompt,
+                                             .completion_tokens = tokens.completion,
+                                             .cost_usd = attempt_cost,
                                              .message = std::format("stream complete · {} · {}",
                                                                     humanBytes(bytes),
                                                                     humanMillis(latency)),
@@ -3238,6 +3322,7 @@ Snapshot ProxyServer::snapshot() const {
         out.tokens_prompt = impl_->tokens_prompt;
         out.tokens_completion = impl_->tokens_completion;
         out.cost_usd = impl_->cost_usd;
+        out.hourly.assign(impl_->hourly.begin(), impl_->hourly.end());
         out.latency_ms_avg = impl_->latency_ms_avg;
         out.log_seq = impl_->log.next_seq > 0 ? impl_->log.next_seq - 1 : 0;
         for (const auto &provider : cfg.providers) {
@@ -3279,6 +3364,7 @@ void ProxyServer::resetStats() {
         impl_->tokens_prompt = 0;
         impl_->tokens_completion = 0;
         impl_->cost_usd = 0.0;
+        impl_->hourly.clear();
         impl_->latency_ms_avg = 0.0;
     }
     impl_->router.resetHealth();
@@ -3404,6 +3490,24 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
             if (item.is_object()) {
                 s.providers.push_back(providerStatFromJson(item));
             }
+        }
+    }
+
+    if (const auto it = parsed.find("hourly"); it != parsed.end() && it->is_array()) {
+        for (const auto &item : *it) {
+            if (!item.is_object()) {
+                continue;
+            }
+            TrafficBucket bucket;
+            bucket.hour_unix = item.value("hour_unix", 0.0);
+            bucket.requests = item.value("requests", std::uint64_t{0});
+            bucket.successes = item.value("successes", std::uint64_t{0});
+            bucket.failures = item.value("failures", std::uint64_t{0});
+            bucket.bytes_out = item.value("bytes_out", std::uint64_t{0});
+            bucket.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
+            bucket.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
+            bucket.cost_usd = item.value("cost_usd", 0.0);
+            s.hourly.push_back(std::move(bucket));
         }
     }
 

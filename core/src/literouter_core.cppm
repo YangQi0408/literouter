@@ -403,6 +403,23 @@ struct LogEntry {
     std::string shortDateTimeText() const; // "MM-DD HH:MM:SS"
 };
 
+// One hour of traffic, for a trend rather than a snapshot: the console can show
+// "what the last day looked like", which a single set of totals cannot.
+//
+// Buckets are floored to the hour in UTC — the chart labels them relative to
+// now, so which hour boundary is used does not matter to a reader, and UTC keeps
+// it free of a timezone the proxy would otherwise have to resolve.
+struct TrafficBucket {
+    double hour_unix = 0.0;
+    std::uint64_t requests = 0;
+    std::uint64_t successes = 0;
+    std::uint64_t failures = 0;
+    std::uint64_t bytes_out = 0;
+    std::uint64_t tokens_prompt = 0;
+    std::uint64_t tokens_completion = 0;
+    double cost_usd = 0.0;
+};
+
 struct Snapshot {
     bool running = false;
     std::string host;
@@ -427,6 +444,8 @@ struct Snapshot {
     std::vector<ProviderStat> providers;
     std::vector<ProviderHealth> health;
     int breakers_open = 0;
+    // The most recent hours, oldest first. Empty until there has been traffic.
+    std::vector<TrafficBucket> hourly;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

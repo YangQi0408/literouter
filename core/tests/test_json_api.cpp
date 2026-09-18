@@ -19,6 +19,16 @@ void testSnapshotJson() {
     snapshot.base_url = "http://127.0.0.1:43210";
     snapshot.started_unix = 1700000000.5;
     snapshot.uptime_sec = 12.25;
+    literouter::TrafficBucket hour;
+    hour.hour_unix = 1'700'000'000.0;
+    hour.requests = 7;
+    hour.successes = 6;
+    hour.failures = 1;
+    hour.bytes_out = 4096;
+    hour.tokens_prompt = 100;
+    hour.tokens_completion = 40;
+    hour.cost_usd = 0.5;
+    snapshot.hourly = {hour};
     snapshot.config_path = "/tmp/literouter/config.json";
     snapshot.version = "0.1.0";
     snapshot.total_requests = 17;
@@ -74,6 +84,32 @@ void testSnapshotJson() {
     LR_CHECK_EQ(parsed.at("config_path").get<std::string>(), "/tmp/literouter/config.json");
     LR_CHECK(lr_test::closeTo(parsed.at("started_unix").get<double>(), 1700000000.5));
     LR_CHECK(lr_test::closeTo(parsed.at("uptime_sec").get<double>(), 12.25));
+    // Guarded before every access: `operator[]` on a const json asserts on a
+    // missing key, so a serialiser that forgot the array would crash the suite
+    // instead of failing it.
+    if (parsed.contains("hourly") && parsed.at("hourly").is_array()) {
+        const json &hours = parsed.at("hourly");
+        LR_CHECK_EQ(static_cast<long long>(hours.size()), 1);
+        if (!hours.empty()) {
+            const json &bucket = hours.at(0);
+            LR_CHECK_EQ(bucket.at("requests").get<std::uint64_t>(), static_cast<std::uint64_t>(7));
+            LR_CHECK_EQ(bucket.at("successes").get<std::uint64_t>(),
+                        static_cast<std::uint64_t>(6));
+            LR_CHECK_EQ(bucket.at("failures").get<std::uint64_t>(),
+                        static_cast<std::uint64_t>(1));
+            LR_CHECK_EQ(bucket.at("bytes_out").get<std::uint64_t>(),
+                        static_cast<std::uint64_t>(4096));
+            LR_CHECK_EQ(bucket.at("tokens_prompt").get<std::uint64_t>(),
+                        static_cast<std::uint64_t>(100));
+            LR_CHECK_EQ(bucket.at("tokens_completion").get<std::uint64_t>(),
+                        static_cast<std::uint64_t>(40));
+            LR_CHECK(lr_test::closeTo(bucket.at("cost_usd").get<double>(), 0.5));
+            LR_CHECK(lr_test::closeTo(bucket.at("hour_unix").get<double>(), 1'700'000'000.0));
+        }
+    } else {
+        LR_CHECK_MSG(false, "the snapshot JSON has no hourly array");
+    }
+
     LR_CHECK_EQ(parsed.at("total_requests").get<std::uint64_t>(),
                 static_cast<std::uint64_t>(17));
     LR_CHECK_EQ(parsed.at("total_success").get<std::uint64_t>(),
