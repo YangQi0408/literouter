@@ -36,9 +36,9 @@ This document covers `literouter`'s inbound client endpoints, supported upstream
 
 ## Client Inbound Endpoints
 
-All endpoints support client Bearer token authentication if `server.api_key` is set:
+Model endpoints accept the administrator `server.api_key` or an enabled client key. Client keys follow their account's permissions and quotas. Authentication is disabled only when both `clients` and the administrator key are empty:
 ```http
-Authorization: Bearer <your-server-api-key>
+Authorization: Bearer <your-api-key>
 ```
 
 ### OpenAI Chat Completions
@@ -249,6 +249,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
     "latency_ms_avg": 345.2,
     "log_seq": 1420,
     "breakers_open": 0,
+    "clients": [],
     "hourly": [
       {
         "hour_unix": 1758000000.0,
@@ -365,7 +366,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
     "validation": { "ok": false, "summary": "0 errors, 1 warning", "issues": [ "..." ] }
   }
   ```
-- **Redaction**: an `api_key` that is a `${VAR}` reference is returned as written — it names a variable, not a key. A literal key is replaced by an empty string and marked `"api_key_source": "literal"`. **A real secret never crosses the network.**
+- **Redaction**: an `api_key` that is a `${VAR}` reference is returned as written — it names a variable, not a key. References containing fallback credentials, such as `${VAR:-fallback}`, are hidden too. A literal key is replaced by an empty string and marked `"api_key_source": "literal"`. Config GET never returns stored plaintext keys.
 
 ### 9. Update & Persist Running Config
 
@@ -373,8 +374,8 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 - **Request Body**: `{ "config": <AppConfig> }` or bare `<AppConfig>` object
 - **Validation & Atomicity**: Deserializes JSON, then runs semantic validation (`validate()`). If any errors occur, returns **422 Unprocessable Entity** and touches neither memory nor disk config.
 - **Secret Preservation Rules**:
-  - Provider `api_key` is empty string: preserves the provider's existing secret in memory (safe round-trip from the redacted GET response);
-  - `api_key_clear: true`: explicitly clears that provider's secret;
+  - An empty administrator, provider or client `api_key` preserves its stored value (safe round-trip from the redacted GET response). Providers match by ID; client keys match by account ID and key ID;
+  - `api_key_clear: true`: explicitly clears that secret, subject to validation;
   - Non-empty string: updates to the new value (supports `${VAR}` placeholders).
 - **Persistence**: When started with a config path, saves atomically using temporary-file-and-rename and calls `updateConfig()`; when running without a config path, updates memory only and returns `"saved": false`.
 - **Response**: `{"ok": true, "saved": true, "path": "...", "summary": "...", "issues": [...]}`
@@ -393,7 +394,11 @@ While `literouter serve` runs, the same port carries a modern web console built 
 | `GET /favicon.ico` | 302 to `/ui/favicon.svg` |
 
 - **Toggle Control**: Controlled by `server.web_ui` (boolean, defaults to `true`). Can also be overridden at launch via CLI flags `serve --web-ui` or `serve --no-web-ui`. When disabled, navigating to `/ui/` returns 404 (error code `console_disabled`). Changes via reload or PUT take effect immediately without restarting the process.
-- **Auth**: The shell holds no data, so it loads without a key; every `/__literouter/*` call the page then makes is protected by `server.api_key`, exactly like `/v1/*`. The first visit opens a key prompt and the key stays in that browser's localStorage.
+- **Auth**: The shell holds no data, so it loads without a key. Console data requires the administrator `server.api_key`; client credentials cannot open management data. The first authenticated visit opens a key prompt and the key stays in that browser's localStorage.
 - **Packaging**: Frontend build artifacts (under `web/dist/`) are compiled into the binary with C++23 `#embed`, so a server needs nothing but `literouter`. Where `#embed` is unavailable (an ISO-strict GCC, for instance), set `LITEROUTER_WEB_DIR` to a directory holding the same four files (e.g. `web/dist`).
 - **Capabilities**: Live metric tiles (requests, success rate, token rates), relay health matrix with one-click probing, route candidate ordering and editing, full visual configuration editing and safe round-trip persistence, copy-ready Continue / Cursor snippets, incremental request log streaming (filter by level, kind, or keyword, pause/clear), dark/light theme toggle, and English/Chinese i18n.
 - **Security**: Same-origin only, admin endpoints never advertise CORS headers; secrets are used solely for browser-to-localhost requests and literal keys never leave the server.
+
+## Client distribution permissions and usage
+
+With `clients` configured, only administrator credentials can access management endpoints. Model lists respect account model and provider-group permissions. Status `clients` reports account usage and UTC daily quotas; logs add `client_id` and `client_key_id`. Config GET redacts administrator, provider and client literal keys; blank PUT values retain stored keys and `api_key_clear` explicitly clears them. See [API distribution](distribution.md).

@@ -106,7 +106,7 @@ void runServe(Context &ctx, const ServeOptions &opts) {
     server.setConfigPath(path.string());
     if (auto started = server.start(config); !started) {
         printError(std::format("cannot start the proxy on {}: {}", baseUrlOf(config),
-                               started.error()));
+                               literouter::i18n::tr(started.error())));
         printHint(std::format("check for another process on that port, or change `server.port` "
                               "in {}",
                               path.string()));

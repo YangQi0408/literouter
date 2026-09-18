@@ -282,7 +282,7 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                                   [&editor](const std::string& value) { editor.modelsText = value; },
                                   true, 58.0f);
 
-            detail::labelledInput(ui, "overlays.editor.headers", leftX, 480.0f, panelWidth - 56.0f,
+            detail::labelledInput(ui, "overlays.editor.headers", leftX, 480.0f, columnWidth,
                                   std::string(literouter::i18n::tr("Extra headers")),
                                   {std::string(literouter::i18n::tr("One per line, \"Name: value\"."))},
                                   editor.headersText, "X-Title: literouter", [&editor](
@@ -291,6 +291,11 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                                       editor.headersText = value;
                                   },
                                   true, 52.0f);
+
+            detail::labelledInput(ui, "overlays.editor.groups", rightX, 480.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Provider groups")), {},
+                                  editor.groupsText, std::string(literouter::i18n::tr("Comma separated group names")),
+                                  [&editor](const std::string& value) { editor.groupsText = value; }, true, 52.0f);
 
             ui.stack("overlays.editor.enabled.wrap")
                 .position(leftX, 546.0f)
@@ -758,6 +763,11 @@ inline void composeLogDetail(eui::Ui& ui, const eui::Screen& screen) {
             detail::keyValue(ui, "overlays.logdetail.timing", 28.0f, rowY0 + rowGap * 3.0f,
                              colWidth * 2.0f + 12.0f,
                              std::string(literouter::i18n::tr("TIMING")), timing, p.textMuted);
+
+            detail::keyValue(ui, "overlays.logdetail.client", 28.0f + (colWidth + 12.0f) * 2.0f,
+                             rowY0 + rowGap * 3.0f, colWidth,
+                             std::string(literouter::i18n::tr("Client / key")),
+                             entry.client_id.empty() ? "—" : entry.client_id + " / " + entry.client_key_id, p.textMuted);
 
             const float messageY = rowY0 + rowGap * 3.0f + 40.0f;
             fieldLabel(ui, "overlays.logdetail.message.label", 28.0f, messageY, panelWidth - 56.0f,

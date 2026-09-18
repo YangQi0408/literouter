@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useI18n } from '@/lib/i18n'
 import { useStore } from '@/store'
+import { hasSecret } from '@/lib/clients'
 
 /** The two editor integrations worth pasting, next to the endpoint they need.
  *
@@ -23,7 +24,8 @@ export function ClientSnippets() {
   const server = loaded.config.server
   const host = server.host.includes(':') && !server.host.startsWith('[') ? `[${server.host}]` : server.host
   const base = snapshot?.base_url || `${server.tls_cert_file ? 'https' : 'http'}://${host}:${server.port}`
-  const key = server.api_key ? 'sk-local' : 'unused'
+  const requiresKey = hasSecret(server) || loaded.config.clients.length > 0
+  const key = requiresKey ? '<CLIENT_API_KEY>' : 'unused'
 
   const continueJson = JSON.stringify(
     {
@@ -79,7 +81,7 @@ export function ClientSnippets() {
           t('snippetCursor'),
           [
             `Base URL   ${base}/v1`,
-            `API key    ${server.api_key ? t('snippetCursorKey') : t('snippetCursorNoKey')}`,
+            `API key    ${requiresKey ? t('snippetCursorKey') : t('snippetCursorNoKey')}`,
             '',
             t('snippetCursorSteps'),
           ].join('\n'),

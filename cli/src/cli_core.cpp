@@ -49,7 +49,7 @@ void printIssues(const literouter::ValidationReport &report, std::ostream &out) 
     table.column("MESSAGE");
     for (const auto &issue : report.issues) {
         const std::string level = issue.levelName();
-        table.row({colorLevel(level, level), issue.path, issue.message});
+        table.row({colorLevel(level, level), issue.path, std::string(literouter::i18n::tr(issue.message))});
     }
     table.print(out);
     out << report.summary() << "\n";

@@ -56,7 +56,7 @@ You can override the default configuration path at any time via:
     "port": 8787,                 // Port to listen on; 0 lets OS assign an ephemeral free port
     "tls_cert_file": "",         // Absolute PEM certificate chain path; both TLS paths empty keep HTTP
     "tls_key_file": "",          // Absolute unencrypted PEM private key path; restart to apply
-    "api_key": "",                // Bearer token required from clients; empty means no authentication
+    "api_key": "",                // Administrator key; empty disables auth only without clients
     "pass_through_unknown": true, // Automatically pass through models not listed in `routes` to providers declaring them
     "max_attempts": 0,            // Max candidates to try per request; 0 means try all available candidates
     "routing_policy": "priority", // Chain order: priority (default) / fastest (measured) / cheapest (price)
@@ -75,6 +75,8 @@ You can override the default configuration path at any time via:
     "reload_on_change": false     // Apply the config file when it changes on disk (off by default)
   },
 
+  "clients": [],
+
   "providers": [
     {
       "id": "openai-official",                 // Unique ID (used in routing rules and telemetry keys)
@@ -90,6 +92,7 @@ You can override the default configuration path at any time via:
       "timeout_sec": 120,                      // Request timeout in seconds
       "connect_timeout_sec": 15,               // TCP / TLS handshake timeout in seconds
       "supports_stream": true,                 // Supports Server-Sent Events (SSE) streaming
+      "groups": [],
       "models": ["gpt-4o", "text-embedding-3-small"], // Models advertised by this provider
       "headers": {                             // Extra HTTP headers attached to every upstream request
         "HTTP-Referer": "https://example.com"
@@ -154,7 +157,7 @@ You can override the default configuration path at any time via:
 | `port` | `uint16` | `8787` | Port to bind to. Set to `0` to let OS pick an available ephemeral port. |
 | `tls_cert_file` | `string` | `""` | Absolute PEM certificate chain path. Set together with `tls_key_file` for HTTPS; keep both empty for HTTP. Startup validates files, certificate dates, and key matching. Listener changes require restart. |
 | `tls_key_file` | `string` | `""` | Absolute path to the matching unencrypted PEM private key. Its contents are never written into the config or returned to the web console. |
-| `api_key` | `string` | `""` | Server authentication token. Clients must pass `Authorization: Bearer <api_key>`; empty disables auth. |
+| `api_key` | `string` | `""` | Administrator credential, supporting environment references. Required when clients exist; also permits model calls. Authentication is disabled only with no clients and an empty administrator key. |
 | `pass_through_unknown` | `bool` | `true` | If client requests an unrouted model, pass through to providers advertising that model. |
 | `max_attempts` | `size_t` | `0` | Upper limit of candidate providers to try per request. `0` means try all candidates. |
 | `routing_policy` | `string` | `"priority"` | How the **candidate chain is ordered before the first attempt**: `priority` (the default — the declared `priority`/`weight` order), `fastest` (relays with a measurement first, by p95, because a relay that is usually fast and occasionally terrible should not be tried first), `cheapest` (priced relays first, by input + output price per million; an unpriced relay sorts last because its cost is unknown rather than zero). Ties keep the priority order, and **session affinity still wins over both**: which relay has already seen this conversation is the more specific fact. |
@@ -200,7 +203,7 @@ With `persist_telemetry` on (the default), the server writes the following to `t
 
 Writes match the config file: a temp file in the same directory followed by an atomic rename, mode `0600`. Flushing happens on a background timer (at most once every 3 seconds, and only when something changed) and once more on `stop()`. A corrupt or unrecognised file is ignored and logged, never a reason to refuse startup; a disk write that fails logs one error and leaves request handling alone.
 
-> ⚠️ **Privacy**: with `log_bodies` on as well, bodies (that is, prompts) are written to disk too. Validation warns about that combination. Set `persist_telemetry` to `false` for a run that leaves nothing behind.
+> ⚠️ **Privacy**: with `log_bodies` on as well, bodies (that is, prompts) are written to disk too. Validation warns about that combination. Set `persist_telemetry` to `false` to disable telemetry persistence; client quota state is still persisted independently.
 
 ### Provider Configuration (`providers`)
 
@@ -222,6 +225,7 @@ Writes match the config file: a temp file in the same directory followed by an a
 | `connect_timeout_sec` | `uint32` | `15` | TCP / TLS connection establishment timeout in seconds. |
 | `supports_stream` | `bool` | `true` | Whether this provider supports Server-Sent Events (SSE) streaming. |
 | `models` | `string[]`| `[]` | List of model names advertised by this provider (used in pass-through mode). |
+| `groups` | `string[]` | `[]` | Distribution groups assigned to this provider; clients select allowed groups through `provider_groups`. |
 | `headers` | `object` | `{}` | Key-value pairs of extra HTTP headers attached to every request. |
 | `chat_path` | `string` | By proto | Custom chat endpoint path; automatically inferred from `protocol` if empty. |
 | `embeddings_path`| `string` | `"/embeddings"`| Custom embeddings endpoint path. |
@@ -303,3 +307,31 @@ curl -X POST http://127.0.0.1:8787/__literouter/reload
 
 # Option 3: Click "Reload from disk" in GUI Settings tab
 ```
+
+### Client Configuration (`clients`)
+
+Defaults to an empty array for personal use. Configuring accounts requires a separate administrator `server.api_key`. See [Personal use and API distribution](distribution.md) for examples, permissions and quota settlement.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `id` | `string` | Required | Stable unique account ID; usage survives removal and recreation. |
+| `name` | `string` | `""` | Display name. |
+| `enabled` | `bool` | `true` | Whether the account can accept new requests. |
+| `keys` | `object[]` | `[]` | Keys sharing account permissions and quotas. |
+| `models` | `string[]` | `[]` | Allowed logical models; empty permits all. |
+| `provider_groups` | `string[]` | `[]` | Allowed provider groups; empty permits all. |
+| `requests_per_minute` | `int` | `0` | Rolling 60-second request limit; 0 is unlimited. |
+| `max_concurrent` | `int` | `0` | In-flight limit, including complete streams; 0 is unlimited. |
+| `requests_per_day` | `integer` | `0` | UTC daily request quota; 0 is unlimited. |
+| `tokens_per_day` | `integer` | `0` | UTC daily token budget; 0 is unlimited. |
+| `token_reservation` | `integer` | `4096` | Minimum reservation per budgeted request; retained when usage is unknown. |
+
+### Client Keys (`client_keys`)
+
+These fields belong to each `clients[].keys[]` object.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `id` | `string` | Required | Key ID unique within the account. |
+| `api_key` | `string` | `""` | Literal or environment reference; cannot be empty when enabled. |
+| `enabled` | `bool` | `true` | Whether this key can authenticate. |

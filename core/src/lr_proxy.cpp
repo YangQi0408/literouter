@@ -316,6 +316,22 @@ std::string metricsText(const Snapshot &snapshot) {
                health.state == ProviderHealth::State::Healthy ? 1 : 0);
         sample("literouter_relay_cooldown_seconds", labels, health.cooldown_remaining);
     }
+    header("literouter_client_requests_total", "counter", "Accepted requests by client account.");
+    header("literouter_client_tokens_total", "counter", "Reported tokens by client account.");
+    header("literouter_client_cost_usd_total", "counter", "Estimated upstream cost by client account.");
+    header("literouter_client_active_requests", "gauge", "Active requests by client account.");
+    header("literouter_client_requests_today", "gauge", "Accepted requests in the UTC quota day.");
+    header("literouter_client_tokens_today", "gauge", "Charged tokens plus reservations in the UTC quota day.");
+    for (const auto &client : snapshot.clients) {
+        const auto labels = std::format("client=\"{}\"", metricLabel(client.client));
+        counter("literouter_client_requests_total", labels, client.requests);
+        counter("literouter_client_tokens_total", labels + ",direction=\"input\"", client.tokens_prompt);
+        counter("literouter_client_tokens_total", labels + ",direction=\"output\"", client.tokens_completion);
+        sample("literouter_client_cost_usd_total", labels, client.cost_usd);
+        counter("literouter_client_active_requests", labels, client.active_requests);
+        counter("literouter_client_requests_today", labels, client.requests_today);
+        counter("literouter_client_tokens_today", labels, client.tokens_today);
+    }
     return out;
 }
 
@@ -761,6 +777,8 @@ ProviderStat providerStatFromJson(const json &item) {
 
 LogEntry logEntryFromJson(const json &item) {
     LogEntry entry;
+    entry.client_id = item.value("client_id", std::string{});
+    entry.client_key_id = item.value("client_key_id", std::string{});
     entry.seq = item.value("seq", std::uint64_t{0});
     entry.time_unix = item.value("time_unix", 0.0);
     entry.level = item.value("level", std::string{"info"});
@@ -861,6 +879,9 @@ struct LogRing {
 // stack of the handler, so a request never reads another request's fields —
 // which a member on the server would have allowed.
 struct RequestContext {
+    ClientIdentity identity;
+    std::shared_ptr<ClientRequest> client_request;
+    bool attempted_upstream = false;
     std::string id;
     std::string kind;
     std::string model;
@@ -892,6 +913,7 @@ struct ProxyServer::Impl {
     // and constructing a fresh one per start is the whole fix.
     std::unique_ptr<h::Server> server;
     Router router;
+    ClientLedger client_ledger;
 
     mutable std::mutex config_mutex;
     AppConfig config;
@@ -1081,6 +1103,7 @@ struct ProxyServer::Impl {
         std::uint64_t prompt_tokens = 0;
         std::uint64_t completion_tokens = 0;
         double cost_usd = 0.0;
+        bool usage_reported = false;
         std::string message;
         // Where the time went — see LogEntry for what each of the three means.
         double wait_ms = 0.0;
@@ -1098,10 +1121,17 @@ struct ProxyServer::Impl {
         if (ctx.reported->exchange(true)) {
             return;
         }
+        if (ctx.client_request) {
+            ctx.client_request->finish(facts.status >= 200 && facts.status < 300,
+                facts.prompt_tokens, facts.completion_tokens, facts.cost_usd,
+                facts.usage_reported || !ctx.attempted_upstream);
+        }
 
         LogEntry entry;
         entry.level = facts.status >= 200 && facts.status < 300 ? "info" : "error";
         entry.request_id = ctx.id;
+        entry.client_id = ctx.identity.client_id;
+        entry.client_key_id = ctx.identity.key_id;
         entry.kind = ctx.kind;
         entry.model = ctx.model;
         entry.provider = std::move(facts.provider);
@@ -1639,6 +1669,8 @@ struct ProxyServer::Impl {
         LogEntry entry;
         entry.level = "warn";
         entry.request_id = ctx.id;
+        entry.client_id = ctx.identity.client_id;
+        entry.client_key_id = ctx.identity.key_id;
         entry.kind = ctx.kind;
         entry.model = ctx.model;
         entry.upstream_model = std::move(upstream_model);
@@ -1663,15 +1695,65 @@ struct ProxyServer::Impl {
 
     // ── auth ─────────────────────────────────────────────────────────────────
 
-    static bool authorized(const h::Request &req, const AppConfig &cfg) {
-        if (cfg.server.api_key.empty()) {
-            return true;
-        }
+    static std::string requestKey(const h::Request &req) {
         std::map<std::string, std::string, std::less<>> headers;
         for (const auto &[name, value] : req.headers) {
             headers.emplace(toLower(name), value);
         }
-        return secureEquals(extractApiKey(headers), cfg.server.api_key);
+        return extractApiKey(headers);
+    }
+
+    static const ClientConfig *policy(const AppConfig &cfg, const ClientIdentity &identity) {
+        for (const auto &client : cfg.clients)
+            if (client.id == identity.client_id) return &client;
+        return nullptr;
+    }
+
+    bool admitClient(const h::Request &req, h::Response &res, RequestContext &ctx, const json &body) {
+        const auto identity = authenticateClient(ctx.config, requestKey(req));
+        if (!identity) { sendError(res, 401, "invalid client key"); return false; }
+        ctx.identity = *identity;
+        if (identity->administrator) return true;
+        const auto *client = policy(ctx.config, *identity);
+        if (!client || !clientAllowsModel(*client, ctx.model)) {
+            sendError(res, 403, "this client cannot use the requested model", "permission_error", "model_forbidden");
+            return false;
+        }
+        // A conservative estimate complements the configured reservation. This
+        // is an admission budget, not an invented tokenizer or usage report.
+        std::uint64_t estimate = 0;
+        if (client->tokens_per_day > 0) {
+            for (const char *field : {"messages", "input", "prompt", "system"})
+                if (body.contains(field)) estimate += body.at(field).dump().size();
+            std::uint64_t output = 0;
+            for (const char *field : {"max_tokens", "max_completion_tokens", "max_output_tokens"})
+                if (body.contains(field) && body.at(field).is_number_unsigned())
+                    output = std::max(output, std::min<std::uint64_t>(body.at(field).get<std::uint64_t>(), 1000000000));
+            std::uint64_t n = 1;
+            if (body.contains("n") && body.at("n").is_number_unsigned())
+                n = std::clamp<std::uint64_t>(body.at("n").get<std::uint64_t>(), 1, 1000000);
+            estimate += output * n;
+        }
+        auto admitted = client_ledger.admit(*client, estimate);
+        if (!admitted) {
+            sendError(res, admitted.error().status, admitted.error().message,
+                      "rate_limit_error", "client_quota_exceeded");
+            res.set_header("Retry-After", std::to_string(admitted.error().retry_after_sec));
+            return false;
+        }
+        ctx.client_request = std::move(*admitted);
+        return true;
+    }
+
+    bool modelVisible(const AppConfig &cfg, const ClientIdentity &identity, const std::string &model) {
+        if (identity.administrator) return true;
+        const auto *client = policy(cfg, identity);
+        if (!client || !clientAllowsModel(*client, model)) return false;
+        const auto candidates = router.candidatesFor(model);
+        return std::ranges::any_of(candidates, [&](const auto &candidate) {
+            const auto *provider = cfg.provider(candidate.provider);
+            return provider && provider->enabled && clientAllowsProvider(*client, *provider);
+        });
     }
 
     static void applyCors(h::Response &res) {
@@ -1772,19 +1854,30 @@ struct ProxyServer::Impl {
                          body.contains("stream") && body["stream"].is_boolean() && body["stream"].get<bool>();
         }
 
+        if (!admitClient(req, res, ctx, body)) {
+            finish(ctx, {.status = res.status, .message = "client admission rejected"});
+            return;
+        }
         if (!media && ctx.config.server.session_affinity_sec > 0) {
-            ctx.affinity_key = sessionKey(body);
+            const auto key = sessionKey(body);
+            if (!key.empty()) ctx.affinity_key = ctx.identity.client_id + ":" + key;
         }
 
         auto candidates = order(router.candidatesFor(ctx.model));
+        if (const auto *client = policy(ctx.config, ctx.identity)) {
+            std::erase_if(candidates, [&](const auto &candidate) {
+                const auto *provider = ctx.config.provider(candidate.provider);
+                return !provider || !clientAllowsProvider(*client, *provider);
+            });
+        }
         if (media && !candidates.empty()) {
-            // Media endpoints have no chat representation. Do not feed uploads
-            // or image parameters through a text protocol adapter; compatible
-            // candidates still share the same policy, breaker and retry budget.
+            // Filter protocols only within the client's authorized channels.
             std::erase_if(candidates, [&](const Candidate &candidate) {
                 const auto *provider = ctx.config.provider(candidate.provider);
                 return provider == nullptr ||
-                       (!provider->protocol.empty() && !ciEqual(provider->protocol, "openai"));
+                       (!provider->protocol.empty() && !ciEqual(provider->protocol, "openai") &&
+                        !ciEqual(provider->protocol, "openai_compatible") &&
+                        !ciEqual(provider->protocol, "openai_chat"));
             });
             if (candidates.empty()) {
                 sendError(res, 400, "audio and image endpoints require an openai provider",
@@ -1792,6 +1885,7 @@ struct ProxyServer::Impl {
                 finish(ctx, {.status = res.status, .message = "unsupported media protocol"});
                 return;
             }
+
         }
         // The policy reorders the chain the operator's priority produced; it does
         // not replace it. Ties keep the priority order, and a relay with no
@@ -1881,7 +1975,7 @@ struct ProxyServer::Impl {
             const bool effective_stream = ctx.stream && provider->supports_stream;
 
             const std::string egress_protocol = provider->protocol.empty() ? "openai" : provider->protocol;
-            const bool same_protocol = ciEqual(ingress_protocol, egress_protocol);
+            const bool same_protocol = media || ciEqual(ingress_protocol, egress_protocol);
 
             const std::string path =
                 media ? req.path.substr(3)
@@ -1911,6 +2005,7 @@ struct ProxyServer::Impl {
                 }
             }
 
+            ctx.attempted_upstream = true;
             if (ctx.stream) {
                 last_status = relayStream(ctx, res, *provider, candidate, path, payload, attempt,
                                           budget, last_error, ingress_protocol, request_type, media);
@@ -2033,6 +2128,7 @@ struct ProxyServer::Impl {
                          .prompt_tokens = usage.tokens_prompt,
                          .completion_tokens = usage.tokens_completion,
                          .cost_usd = attempt_cost,
+                         .usage_reported = tokenUsageReported(result.body),
                          .message = std::format("{} → {}", ctx.model, upstream_model),
                          // A buffered answer arrives in one piece: httplib reports one
                          // number for connect-plus-answer, so that number is the relay's
@@ -2386,10 +2482,15 @@ struct ProxyServer::Impl {
                 router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix(),
                                      retryAfterSeconds(error_headers));
             }
+            ProviderStat error_usage;
+            ProxyServer::accumulateUsage(body, error_usage);
+            const double error_cost = estimateCost(provider.price_in_per_million,
+                provider.price_out_per_million, error_usage.tokens_prompt, error_usage.tokens_completion);
             recordAttempt(provider.id,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
-                          (nowUnix() - attempt_started) * 1000.0, body.size(), 0, 0,
-                          payload.size());
+                          (nowUnix() - attempt_started) * 1000.0, body.size(),
+                          error_usage.tokens_prompt, error_usage.tokens_completion,
+                          payload.size(), error_cost);
 
             std::string out_body = body;
             std::string out_content_type = contentTypeOf(error_headers);
@@ -2418,6 +2519,10 @@ struct ProxyServer::Impl {
                          .upstream_model = upstream_model,
                          .status = status,
                          .bytes = out_body.size(),
+                         .prompt_tokens = error_usage.tokens_prompt,
+                         .completion_tokens = error_usage.tokens_completion,
+                         .cost_usd = error_cost,
+                         .usage_reported = tokenUsageReported(body),
                          .message = std::format(
                              "stream rejected with HTTP {} — returned verbatim", status),
                          .response_body = logged_body(ctx, out_body),
@@ -2644,6 +2749,7 @@ struct ProxyServer::Impl {
                                              .prompt_tokens = tokens.prompt,
                                              .completion_tokens = tokens.completion,
                                              .cost_usd = attempt_cost,
+                                             .usage_reported = tokens.reported,
                                              .message = std::format("stream complete · {} · {}",
                                                                     humanBytes(bytes),
                                                                     humanMillis(latency)),
@@ -2807,6 +2913,10 @@ void ProxyServer::setConfigPath(std::string path) {
 
 std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     ensureLocalTimezone();
+    if (!config.clients.empty()) {
+        const auto report = validate(config);
+        if (!report.ok()) return std::unexpected(report.summary());
+    }
     if (impl_->running.load()) {
         return std::unexpected(std::string{"server is already running"});
     }
@@ -2897,7 +3007,8 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         if (console_path && req.method == "GET" && impl_->snapshotConfig().server.web_ui) {
             return h::Server::HandlerResponse::Unhandled;
         }
-        if (Impl::authorized(req, impl_->snapshotConfig())) {
+        if (authenticateClient(impl_->snapshotConfig(), Impl::requestKey(req),
+                               startsWith(req.path, kAdminPrefix))) {
             return h::Server::HandlerResponse::Unhandled;
         }
         sendError(res, 401, "missing or invalid API key; send `Authorization: Bearer <key>`",
@@ -3028,10 +3139,13 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         pipeline(req, res, "gemini_stream");
     });
 
-    server.Get("/v1beta/models", [this](const h::Request &, h::Response &res) {
+    server.Get("/v1beta/models", [this](const h::Request &req, h::Response &res) {
         const AppConfig cfg = impl_->snapshotConfig();
+        const auto identity = authenticateClient(cfg, Impl::requestKey(req));
+        if (!identity) { sendError(res, 401, "invalid client key"); return; }
         json models = json::array();
         for (const auto &name : cfg.logicalModels()) {
+            if (!impl_->modelVisible(cfg, *identity, name)) continue;
             json item = json::object();
             item["name"] = "models/" + name;
             item["version"] = "001";
@@ -3044,15 +3158,18 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         res.set_content(json{{"models", std::move(models)}}.dump(), "application/json");
     });
 
-    const auto modelsListHandler = [this](const h::Request &, h::Response &res) {
+    const auto modelsListHandler = [this](const h::Request &req, h::Response &res) {
         const AppConfig cfg = impl_->snapshotConfig();
+        const auto identity = authenticateClient(cfg, Impl::requestKey(req));
+        if (!identity) { sendError(res, 401, "invalid client key"); return; }
         json data = json::array();
         for (const auto &name : cfg.logicalModels()) {
+            if (!impl_->modelVisible(cfg, *identity, name)) continue;
             json item = json::object();
             item["id"] = name;
             item["object"] = "model";
             item["owned_by"] = "literouter";
-            if (const RouteConfig *route = cfg.route(name); route != nullptr) {
+            if (const RouteConfig *route = cfg.route(name); route != nullptr && identity->administrator) {
                 json hops = json::array();
                 for (const auto &target : route->targets) {
                     hops.push_back(target.model.empty()
@@ -3157,26 +3274,26 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         if (doc.is_discarded() || !doc.is_object()) {
             doc = json::object();
         }
+        const auto hideKey = [](json &entry) {
+            const auto raw = entry.value("api_key", std::string{});
+            if (raw.empty()) return;
+            // A fallback is an actual credential embedded in the reference.
+            // Mask it like a stored literal; empty PUT values preserve the
+            // original reference without exposing its fallback in the browser.
+            if (isSecretReference(raw) && raw.find(":-") == std::string::npos)
+                entry["api_key_source"] = "env";
+            else { entry["api_key"] = ""; entry["api_key_source"] = "literal"; }
+        };
+        if (doc.contains("server")) hideKey(doc["server"]);
+        for (auto &client : doc["clients"])
+            for (auto &key : client["keys"]) hideKey(key);
         if (auto providers = doc.find("providers");
             providers != doc.end() && providers->is_array()) {
             for (auto &entry : *providers) {
                 if (!entry.is_object()) {
                     continue;
                 }
-                auto key = entry.find("api_key");
-                if (key == entry.end() || !key->is_string()) {
-                    continue;
-                }
-                const std::string raw = key->get<std::string>();
-                if (raw.empty()) {
-                    continue;
-                }
-                if (isSecretReference(raw)) {
-                    entry["api_key_source"] = "env";
-                    continue;
-                }
-                entry["api_key"] = "";
-                entry["api_key_source"] = "literal";
+                hideKey(entry);
             }
         }
         const std::string path = impl_->configPath();
@@ -3238,6 +3355,31 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
                 }
             }
         }
+
+        // Match nested credentials by both account and key id, never by list
+        // position. The browser cannot accidentally copy another client's key.
+        if (!doc.contains("clients")) parsed->clients = current.clients;
+        for (auto &client : parsed->clients) {
+            for (auto &key : client.keys) {
+                bool clear = false;
+                if (doc.contains("clients")) for (const auto &c : doc.at("clients")) {
+                    if (c.value("id", std::string{}) != client.id || !c.contains("keys")) continue;
+                    for (const auto &k : c.at("keys"))
+                        if (k.value("id", std::string{}) == key.id)
+                            clear = k.value("api_key_clear", false);
+                }
+                if (clear) { key.api_key.clear(); continue; }
+                if (!key.api_key.empty()) continue;
+                for (const auto &stored : current.clients) {
+                    if (stored.id != client.id) continue;
+                    for (const auto &existing : stored.keys)
+                        if (existing.id == key.id) key.api_key = existing.api_key;
+                }
+            }
+        }
+        const bool clear_admin = doc.contains("server") && doc.at("server").value("api_key_clear", false);
+        if (clear_admin) parsed->server.api_key.clear();
+        else if (parsed->server.api_key.empty()) parsed->server.api_key = current.server.api_key;
 
         const ValidationReport report = validate(*parsed);
         if (!report.ok()) {
@@ -3426,6 +3568,12 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         std::scoped_lock lock{impl_->config_mutex};
         impl_->bound_server.port = bound;
     }
+    if (auto opened = impl_->client_ledger.open(defaultClientQuotaPath(impl_->configPath(), bound),
+                                               !config.clients.empty());
+        !opened) {
+        server.stop();
+        return std::unexpected(opened.error());
+    }
     // The telemetry file belongs to the instance, and the port is what names it.
     // Computed here rather than before the bind for two reasons: a config asking
     // for port 0 has no name until the kernel picks one, and the accept loop has
@@ -3460,6 +3608,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         if (impl_->runner.joinable()) {
             impl_->runner.join();
         }
+        impl_->client_ledger.close();
         return std::unexpected(std::string{"the accept loop stopped during startup"});
     }
 
@@ -3499,6 +3648,7 @@ void ProxyServer::stop() {
     // joined, and no handler can run again, so holding the object would only
     // pin a decommissioned listener and its address for the process lifetime.
     impl_->server.reset();
+    impl_->client_ledger.close();
     impl_->running.store(false);
     // The listener is gone, so the record of it should be too — a stale file
     // would otherwise be indistinguishable from one whose process is hung.
@@ -3563,6 +3713,15 @@ Snapshot ProxyServer::snapshot() const {
             }
         }
     }
+    out.clients = impl_->client_ledger.snapshot();
+    for (const auto &client : cfg.clients) {
+        if (std::ranges::none_of(out.clients, [&](const auto &u) { return u.client == client.id; })) {
+            ClientUsage empty;
+            empty.client = client.id;
+            empty.day_unix = std::floor(nowUnix() / 86400.0) * 86400.0;
+            out.clients.push_back(std::move(empty));
+        }
+    }
     out.health = impl_->router.health(nowUnix());
     return out;
 }
@@ -3615,6 +3774,10 @@ void ProxyServer::accumulateUsage(std::string_view body, ProviderStat &stat) {
     if (root.is_discarded()) {
         return;
     }
+    const auto add = [](std::uint64_t a, std::uint64_t b) {
+        return b > std::numeric_limits<std::uint64_t>::max() - a
+            ? std::numeric_limits<std::uint64_t>::max() : a + b;
+    };
     const auto pull = [&](const json &node) {
         if (!node.is_object()) {
             return;
@@ -3623,27 +3786,29 @@ void ProxyServer::accumulateUsage(std::string_view body, ProviderStat &stat) {
         if (it != node.end() && it->is_object()) {
             const auto number = [&](const char *key) -> std::uint64_t {
                 const auto value = it->find(key);
-                if (value == it->end() || !value->is_number()) {
-                    return 0;
+                if (value == it->end()) return 0;
+                if (value->is_number_unsigned()) return value->get<std::uint64_t>();
+                if (value->is_number_float()) {
+                    const double n = value->get<double>();
+                    if (n >= 0 && n < 18446744073709551616.0 && std::floor(n) == n)
+                        return static_cast<std::uint64_t>(n);
                 }
-                return value->get<std::uint64_t>();
+                return 0;
             };
             // OpenAI spells these prompt/completion; the Messages-shaped relays
             // that also expose /v1/chat/completions spell them input/output.
-            stat.tokens_prompt += number("prompt_tokens") + number("input_tokens");
-            stat.tokens_completion += number("completion_tokens") + number("output_tokens");
+            stat.tokens_prompt = add(stat.tokens_prompt, add(number("prompt_tokens"), number("input_tokens")));
+            stat.tokens_completion = add(stat.tokens_completion, add(number("completion_tokens"), number("output_tokens")));
         }
         const auto it_gemini = node.find("usageMetadata");
         if (it_gemini != node.end() && it_gemini->is_object()) {
             const auto number = [&](const char *key) -> std::uint64_t {
                 const auto value = it_gemini->find(key);
-                if (value == it_gemini->end() || !value->is_number()) {
-                    return 0;
-                }
+                if (value == it_gemini->end() || !value->is_number_unsigned()) return 0;
                 return value->get<std::uint64_t>();
             };
-            stat.tokens_prompt += number("promptTokenCount");
-            stat.tokens_completion += number("candidatesTokenCount");
+            stat.tokens_prompt = add(stat.tokens_prompt, number("promptTokenCount"));
+            stat.tokens_completion = add(stat.tokens_completion, number("candidatesTokenCount"));
         }
     };
 
@@ -3682,7 +3847,7 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
     h::Headers headers;
     headers.emplace("Accept", "application/json");
     if (!api_key.empty()) {
-        headers.emplace("Authorization", std::format("Bearer {}", api_key));
+        headers.emplace("Authorization", std::format("Bearer {}", resolveSecret(api_key)));
     }
 
     auto result =
@@ -3722,6 +3887,25 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
     s.tokens_completion = parsed.value("tokens_completion", std::uint64_t{0});
     s.latency_ms_avg = parsed.value("latency_ms_avg", 0.0);
     s.log_seq = parsed.value("log_seq", std::uint64_t{0});
+    if (const auto it = parsed.find("clients"); it != parsed.end() && it->is_array()) {
+        for (const auto &item : *it) {
+            if (!item.is_object()) continue;
+            ClientUsage u;
+            u.client = item.value("client", std::string{});
+            u.requests = item.value("requests", std::uint64_t{0});
+            u.successes = item.value("successes", std::uint64_t{0});
+            u.failures = item.value("failures", std::uint64_t{0});
+            u.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
+            u.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
+            u.cost_usd = item.value("cost_usd", 0.0);
+            u.active_requests = item.value("active_requests", std::uint64_t{0});
+            u.day_unix = item.value("day_unix", 0.0);
+            u.requests_today = item.value("requests_today", std::uint64_t{0});
+            u.tokens_today = item.value("tokens_today", std::uint64_t{0});
+            u.reserved_tokens = item.value("reserved_tokens", std::uint64_t{0});
+            s.clients.push_back(std::move(u));
+        }
+    }
     s.breakers_open = parsed.value("breakers_open", 0);
 
     if (const auto it = parsed.find("providers"); it != parsed.end() && it->is_array()) {
@@ -3798,7 +3982,7 @@ std::optional<h::Client> makeAdminClient(std::string_view base_url, std::string_
     client.set_read_timeout(5, 0);
     if (!api_key.empty()) {
         h::Headers headers;
-        headers.emplace("Authorization", std::format("Bearer {}", api_key));
+        headers.emplace("Authorization", std::format("Bearer {}", resolveSecret(api_key)));
         client.set_default_headers(std::move(headers));
     }
     return client;

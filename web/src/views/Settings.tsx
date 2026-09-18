@@ -1,12 +1,13 @@
 import { Check, Copy } from 'lucide-react'
 import { useState } from 'react'
 
+import { SecretInput } from '@/components/SecretInput'
+import { stringifyConfig } from '@/lib/client-integers'
 import { ClientSnippets } from '@/components/ClientSnippets'
 import { Field, NumberField, SwitchField, TextField } from '@/components/fields'
 import { Issues } from '@/components/Issues'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -29,7 +30,7 @@ export function Settings() {
       draft.server = { ...draft.server, ...changes }
     })
   const issues = saveIssues.length ? saveIssues : (serverReport?.issues ?? [])
-  const json = JSON.stringify(working, null, 2)
+  const json = stringifyConfig(working)
 
   async function copy() {
     try {
@@ -65,14 +66,8 @@ export function Settings() {
             <TextField value={server.tls_key_file} onChange={(tls_key_file) => patch({ tls_key_file })} />
           </Field>
 
-          <Field label="api_key" hint={t('keyHint')} wide>
-            <Input
-              value={server.api_key}
-              placeholder="${LITEROUTER_KEY}"
-              spellCheck={false}
-              className="h-9 font-mono text-xs"
-              onChange={(event) => patch({ api_key: event.target.value })}
-            />
+          <Field label="api_key" hint={t('adminKeyHint')} wide>
+            <SecretInput label={t('administratorKey')} value={server} onChange={patch} generate clear />
           </Field>
 
           <Field label="web_ui" hint={t('hintWebUi')}>

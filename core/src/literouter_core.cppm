@@ -56,6 +56,8 @@ struct ProviderConfig {
     // Model ids this relay advertises. Used by /v1/models and by the fallback
     // matcher when a request names a model no route mentions.
     std::vector<std::string> models;
+    // Optional channel groups used by client access policies.
+    std::vector<std::string> groups;
     // Extra headers sent upstream (organisation ids, referer, ...).
     std::map<std::string, std::string> headers;
     // Path appended to base_url. Overridable because a handful of relays put
@@ -172,11 +174,39 @@ struct ServerConfig {
 // Scheme-aware listener URL, with IPv6 brackets; path may be empty.
 std::string serverBaseUrl(const ServerConfig &server, std::string_view path = {});
 
+struct ClientKeyConfig {
+    std::string id;
+    std::string api_key;
+    bool enabled = true;
+};
+
+// Cryptographic key generation for explicit "create key" actions. Never use
+// hexId(), whose PRNG is only intended for request identifiers, for secrets.
+std::expected<std::string, std::string> generateClientKey();
+
+// An account owns its keys and quota. Empty allowlists permit every model/group.
+struct ClientConfig {
+    std::string id;
+    std::string name;
+    bool enabled = true;
+    std::vector<ClientKeyConfig> keys;
+    std::vector<std::string> models;
+    std::vector<std::string> provider_groups;
+    int requests_per_minute = 0;
+    int max_concurrent = 0;
+    std::uint64_t requests_per_day = 0;
+    std::uint64_t tokens_per_day = 0;
+    // Reserved before dispatch, reconciled against upstream usage afterwards.
+    // Missing usage retains the reservation so an unmetered stream is not free.
+    std::uint64_t token_reservation = 4096;
+};
+
 struct AppConfig {
     int schema = 1;
     ServerConfig server;
     std::vector<ProviderConfig> providers;
     std::vector<RouteConfig> routes;
+    std::vector<ClientConfig> clients;
 
     // Convenience: nullptr when no provider carries this id.
     const ProviderConfig *provider(std::string_view id) const;
@@ -188,6 +218,77 @@ struct AppConfig {
     // All known models: configured routes plus provider-advertised models.
     std::vector<std::string> allModels() const;
 };
+
+struct ClientIdentity {
+    std::string client_id;
+    std::string key_id;
+    bool administrator = false;
+};
+
+// Empty admin keys allow legacy local access only while clients is empty.
+std::optional<ClientIdentity> authenticateClient(const AppConfig &config,
+                                                 std::string_view presented,
+                                                 bool management = false);
+bool clientAllowsModel(const ClientConfig &client, std::string_view model);
+bool clientAllowsProvider(const ClientConfig &client, const ProviderConfig &provider);
+
+struct ClientUsage {
+    std::string client;
+    std::uint64_t requests = 0;
+    std::uint64_t successes = 0;
+    std::uint64_t failures = 0;
+    std::uint64_t tokens_prompt = 0;
+    std::uint64_t tokens_completion = 0;
+    double cost_usd = 0.0;
+    std::uint64_t active_requests = 0;
+    double day_unix = 0.0; // UTC midnight
+    std::uint64_t requests_today = 0;
+    std::uint64_t tokens_today = 0; // charged plus outstanding reservations
+    std::uint64_t reserved_tokens = 0;
+};
+
+struct ClientRejection {
+    int status = 429;
+    std::string message;
+    int retry_after_sec = 1;
+};
+
+// Shared by copies of a streaming request. Destruction releases concurrency
+// even on exceptions; an unfinished upstream request keeps its token reserve.
+class ClientRequest {
+public:
+    explicit ClientRequest(std::function<void(bool, std::uint64_t, std::uint64_t, double, bool)> done);
+    ~ClientRequest();
+    void finish(bool success, std::uint64_t prompt, std::uint64_t completion,
+                double cost_usd, bool usage_known);
+private:
+    friend class ClientLedger;
+    std::function<void(bool, std::uint64_t, std::uint64_t, double, bool)> done_;
+    std::atomic<bool> finished_{false};
+};
+
+class ClientLedger {
+public:
+    ClientLedger();
+    ~ClientLedger();
+    ClientLedger(const ClientLedger &) = delete;
+    ClientLedger &operator=(const ClientLedger &) = delete;
+    // Load independent quota state; malformed state fails closed. Existing
+    // state or require_ownership takes an exclusive lock before returning.
+    std::expected<void, std::string> open(const std::filesystem::path &path,
+                                          bool require_ownership = false);
+    // Stop admissions; keep ownership until all admitted requests finish.
+    // Snapshots remain available after closing.
+    void close();
+    std::expected<std::shared_ptr<ClientRequest>, ClientRejection> admit(
+        const ClientConfig &client, std::uint64_t token_estimate = 0);
+    std::vector<ClientUsage> snapshot() const;
+private:
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+};
+
+std::string toJsonString(const ClientUsage &usage);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Paths
@@ -206,6 +307,10 @@ std::filesystem::path defaultStateDir();
 // the pid file, because two instances are two histories — sharing one file meant
 // the second writer silently replaced the first one's counters.
 std::filesystem::path defaultTelemetryPath(int port);
+
+// Quotas follow the canonical config path across port changes. Library users
+// without a config path retain one ledger per bound port.
+std::filesystem::path defaultClientQuotaPath(const std::filesystem::path &config_path, int port);
 
 // Where a running instance of this build records itself: one file per port,
 // since the port is what identifies an instance. Written after a successful
@@ -383,6 +488,8 @@ struct ProviderHealth {
 };
 
 struct LogEntry {
+    std::string client_id;
+    std::string client_key_id;
     std::uint64_t seq = 0;
     double time_unix = 0.0;
     // "info" | "warn" | "error"
@@ -439,6 +546,7 @@ struct TrafficBucket {
 };
 
 struct Snapshot {
+    std::vector<ClientUsage> clients;
     bool running = false;
     std::string host;
     int port = 0;
@@ -689,7 +797,10 @@ private:
 struct TokenUsage {
     std::uint64_t prompt = 0;
     std::uint64_t completion = 0;
+    bool reported = false; // distinguishes an explicit zero from missing usage
 };
+
+bool tokenUsageReported(std::string_view body);
 
 // Reads the token counts out of a stream as it goes by.
 //
@@ -717,6 +828,7 @@ private:
     std::string carry_;
     std::uint64_t prompt_ = 0;
     std::uint64_t completion_ = 0;
+    bool reported_ = false;
 };
 
 

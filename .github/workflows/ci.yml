@@ -111,7 +111,7 @@ jobs:
           bin="$(ls -t cli/target/*/*/bin/literouter | head -1)"
           tmp="$(mktemp -d)"
           LITEROUTER_CONFIG="$tmp/seed.json" "$bin" config init --force
-          printf '{"providers":[{}],"routes":[{"targets":[{"provider":"p"}]}]}' > "$tmp/minimal.json"
+          printf '{"providers":[{}],"routes":[{"targets":[{"provider":"p"}]}],"clients":[{"keys":[{}]}]}' > "$tmp/minimal.json"
           LITEROUTER_CONFIG="$tmp/minimal.json" "$bin" serve --print-config --force > "$tmp/defaults.json"
           # A real status reply, from a short-lived instance on a port nothing
           # else on a runner is likely to hold, so the documented sample is
@@ -151,6 +151,12 @@ jobs:
           mcpp run -p cli -- --version
           mcpp run -p cli -- config init --force
           mcpp run -p cli -- config validate
+
+      - name: Client distribution CLI integration (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          bin="$(ls -t cli/target/*/*/bin/literouter | head -1)"
+          python3 scripts/check_client_cli.py "$bin"
 
       - name: GUI smoke test (Linux headless)
         if: runner.os == 'Linux'

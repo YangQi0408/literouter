@@ -1,5 +1,6 @@
 import {
   ChartLine,
+  Users,
   Globe,
   KeyRound,
   Moon,
@@ -24,11 +25,12 @@ import { useTheme } from '@/lib/theme'
 import { countChanges } from '@/lib/diff'
 import { useStore } from '@/store'
 
-export type Tab = 'overview' | 'providers' | 'routes' | 'logs' | 'settings'
+export type Tab = 'overview' | 'clients' | 'providers' | 'routes' | 'logs' | 'settings'
 
 const NAV: { tab: Tab; icon: typeof ChartLine; label: string; sub: string }[] = [
   { tab: 'overview', icon: ChartLine, label: 'tabOverview', sub: 'subOverview' },
   { tab: 'providers', icon: Server, label: 'tabProviders', sub: 'subProviders' },
+  { tab: 'clients', icon: Users, label: 'tabClients', sub: 'subClients' },
   { tab: 'routes', icon: RouteIcon, label: 'tabRoutes', sub: 'subRoutes' },
   { tab: 'logs', icon: SquareTerminal, label: 'tabLogs', sub: 'subLogs' },
   { tab: 'settings', icon: SlidersHorizontal, label: 'tabSettings', sub: 'subSettings' },

@@ -17,6 +17,7 @@
 #include "components/shell.h"
 #include "components/lr_theme.h"
 #include "components/widgets.h"
+#include "pages/clients.h"
 #include "pages/logs.h"
 #include "pages/overlays.h"
 #include "pages/overview.h"
@@ -37,7 +38,7 @@ const DslAppConfig& dslAppConfig() {
             .textFont(lr_gui::uiFontPath())
             .showDebugStatsInTitle(false);
         cfg.onKeyEvent([](const eui::KeyEvent& event) {
-            if (!event.isDown()) {
+            if (lr_gui::appState().clientEditor.saving || !event.isDown()) {
                 return;
             }
             if (event.modifiers.shortcut()) {
@@ -97,12 +98,23 @@ void compose(eui::Ui& ui, const eui::Screen& screen) {
             case lr_gui::Page::Logs:
                 lr_gui::composeLogs(ui, contentX, bodyY, contentWidth, bodyHeight);
                 break;
+            case lr_gui::Page::Clients:
+                lr_gui::composeClients(ui, contentX, bodyY, contentWidth, bodyHeight);
+                break;
             case lr_gui::Page::Settings:
                 lr_gui::composeSettings(ui, contentX, bodyY, contentWidth, bodyHeight);
                 break;
         }
 
         lr_gui::composeOverlays(ui, screen);
+        if (state->clientEditor.saving) {
+            ui.rect("clients.saving.block").fill().zIndex(1000)
+                .color(lr_gui::withAlpha(lr_gui::palette().canvas, 0.75f)).onClick([] {}).build();
+            ui.text("clients.saving.label").position(0.0f, height * 0.5f).size(width, 32.0f)
+                .zIndex(1001).text(literouter::i18n::tr("Saving client configuration..."))
+                .fontSize(16.0f).color(lr_gui::palette().text)
+                .horizontalAlign(eui::HorizontalAlign::Center).build();
+        }
     }).build();
 }
 

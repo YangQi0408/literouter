@@ -497,6 +497,77 @@ void testLoadAndSave() {
 #endif
 }
 
+void testSaveThroughSymlink() {
+#ifndef _WIN32
+    LR_GROUP("saving through a config symlink preserves its target and quota identity");
+    TempDir dir;
+    const lr_test::EnvGuard stateEnv{"LITEROUTER_STATE_DIR"};
+    const lr_test::EnvGuard keyEnv{"LITEROUTER_TEST_SYMLINK_KEY"};
+    stateEnv.assign(dir.file("state").string());
+    keyEnv.assign("resolved-symlink-key-must-not-be-saved");
+
+    const auto target = dir.file("actual/config.json");
+    const auto link = dir.file("configured.json");
+    const std::filesystem::path relativeTarget{"actual/config.json"};
+    std::filesystem::create_directories(target.parent_path());
+    writeFile(target, R"({"server":{"port":4321,"api_key":"${LITEROUTER_TEST_SYMLINK_KEY:-stored-default}"}})");
+    std::error_code ec;
+    std::filesystem::create_symlink(relativeTarget, link, ec);
+    LR_CHECK_MSG(!ec, ec.message());
+    if (ec) return;
+
+    const auto quotaBefore = literouter::defaultClientQuotaPath(link, 4321);
+    LR_CHECK_EQ(quotaBefore.string(), literouter::defaultClientQuotaPath(target, 4321).string());
+    auto store = ConfigStore::load(link);
+    LR_CHECK(store.has_value());
+    if (!store) return;
+    store->config().server.port = 7654;
+    const auto saved = store->save();
+    LR_CHECK_MSG(saved.has_value(), saved ? "" : saved.error());
+    LR_CHECK(std::filesystem::is_symlink(std::filesystem::symlink_status(link)));
+    const auto savedLink = std::filesystem::read_symlink(link, ec);
+    LR_CHECK_MSG(!ec, ec.message());
+    LR_CHECK_EQ(savedLink.string(), relativeTarget.string());
+    LR_CHECK_EQ(store->path().string(), link.string());
+    LR_CHECK_EQ(literouter::defaultClientQuotaPath(link, 7654).string(), quotaBefore.string());
+    auto reloaded = ConfigStore::load(link);
+    LR_CHECK(reloaded.has_value());
+    if (reloaded) {
+        LR_CHECK_EQ(reloaded->config().server.port, 7654);
+        LR_CHECK_EQ(reloaded->path().string(), link.string());
+        LR_CHECK_EQ(reloaded->config().server.api_key, "${LITEROUTER_TEST_SYMLINK_KEY:-stored-default}");
+        LR_CHECK_EQ(literouter::defaultClientQuotaPath(reloaded->path(), 7654).string(), quotaBefore.string());
+    }
+    const std::string onDisk = readFile(target);
+    LR_CHECK(onDisk.find("${LITEROUTER_TEST_SYMLINK_KEY:-stored-default}") != std::string::npos);
+    LR_CHECK(onDisk.find("resolved-symlink-key-must-not-be-saved") == std::string::npos);
+
+    // A broken link or cycle must remain a link, never silently become a new
+    // independent config with a fresh quota ledger identity.
+    const auto dangling = dir.file("dangling.json");
+    const auto missing = dir.file("missing.json");
+    std::filesystem::create_symlink(missing.filename(), dangling);
+    const auto failed = store->saveAs(dangling);
+    LR_CHECK(!failed.has_value());
+    if (!failed) LR_CHECK(failed.error().find("cannot resolve configuration symlink") != std::string::npos);
+    LR_CHECK(std::filesystem::is_symlink(std::filesystem::symlink_status(dangling)));
+    LR_CHECK(!std::filesystem::exists(missing));
+
+    const auto cycle = dir.file("cycle.json");
+    std::filesystem::create_symlink(cycle.filename(), cycle);
+    const auto cycleFailed = store->saveAs(cycle);
+    LR_CHECK(!cycleFailed.has_value());
+    if (!cycleFailed) LR_CHECK(cycleFailed.error().find("cannot resolve configuration symlink") != std::string::npos);
+    LR_CHECK(std::filesystem::is_symlink(std::filesystem::symlink_status(cycle)));
+    LR_CHECK_EQ(readFile(target), onDisk);
+    for (const auto &directory : {dir.path(), target.parent_path()}) {
+        for (const auto &entry : std::filesystem::directory_iterator{directory}) {
+            LR_CHECK(entry.path().filename().string().find(".tmp-") == std::string::npos);
+        }
+    }
+#endif
+}
+
 void testDefaultPaths() {
     LR_GROUP("default paths follow LITEROUTER_CONFIG / LITEROUTER_STATE_DIR");
     TempDir dir;
@@ -862,6 +933,7 @@ int main() {
     testProviderReaderDefaults();
     testStructurallyWrongInput();
     testLoadAndSave();
+    testSaveThroughSymlink();
     testDefaultPaths();
     testValidateProviders();
     testValidateServer();

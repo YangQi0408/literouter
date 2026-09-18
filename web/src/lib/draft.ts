@@ -20,3 +20,10 @@ export function shouldReplaceDraft(
   if (force) return true
   return JSON.stringify(working) === JSON.stringify(loaded)
 }
+
+/** A successful save clears secrets and flags from the submitted draft, while
+ * edits made during the request remain available for the next save. */
+export function settleSavedDraft(working: AppConfig | null, submitted: AppConfig, saved: AppConfig): AppConfig {
+  return !working || JSON.stringify(working) === JSON.stringify(submitted)
+    ? structuredClone(saved) : working
+}

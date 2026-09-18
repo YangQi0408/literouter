@@ -23,7 +23,8 @@ import {
   type ValidationIssue,
   type ValidationReport,
 } from '@/lib/api'
-import { shouldReplaceDraft } from '@/lib/draft'
+import { shouldReplaceDraft, settleSavedDraft } from '@/lib/draft'
+import { administratorKeyAfterSave } from '@/lib/clients'
 import { useI18n } from '@/lib/i18n'
 
 /** Everything the console knows lives here: telemetry polled from the server,
@@ -117,11 +118,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const handleError = useCallback(
     (error: unknown) => {
-      if (error instanceof ApiError && error.status === 401) {
+      setOnline(false)
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
         setKeyPrompt(true)
         return
       }
-      setOnline(false)
     },
     [],
   )
@@ -206,7 +207,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const report = await api.saveConfig(working)
       toast.success(report.saved ? t('saved') : t('savedInMemory'))
       setConsoleOff(working.server.web_ui === false)
-      await loadConfig()
+      const nextKey = administratorKeyAfterSave(loadedRef.current?.config.server ?? working.server, working.server)
+      if (nextKey !== null) setApiKey(nextKey)
+      const canonical = await api.config()
+      setLoaded(canonical)
+      setWorking((current) => settleSavedDraft(current, working, canonical.config))
       await refresh()
     } catch (error) {
       if (error instanceof ApiError && error.status === 422 && error.data) {
@@ -215,6 +220,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         toast.error(t('saveRefused'))
       } else {
         handleError(error)
+        if (!(error instanceof ApiError && (error.status === 401 || error.status === 403))) {
+          toast.error(t('saveFailed', { detail: error instanceof Error ? error.message : String(error) }))
+        }
       }
     } finally {
       setSaving(false)
@@ -224,7 +232,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const reload = useCallback(async () => {
     try {
       const report = await api.reload()
-      await loadConfig()
+      await loadConfig(true)
       await refresh()
       toast.success(t('reloaded', { summary: report.summary }))
       if (!report.ok) setSaveIssues(report.issues ?? [])

@@ -1444,24 +1444,29 @@ constexpr std::size_t kUsageCarryLimit = 8192;
 // The two numbers under every spelling these protocols use for them. A relay
 // advertising "OpenAI-compatible" may still answer with the newer
 // input/output naming, so both are read wherever a usage object turns up.
-void pullUsage(const json &node, std::uint64_t &prompt, std::uint64_t &completion) {
+void pullUsage(const json &node, std::uint64_t &prompt, std::uint64_t &completion, bool &reported) {
     if (!node.is_object()) {
         return;
     }
-    const auto count = [&node](const char *key) -> std::uint64_t {
+    const auto count = [&node, &reported](const char *key) -> std::uint64_t {
         const auto it = node.find(key);
         if (it == node.end()) {
             return 0;
         }
         if (it->is_number_unsigned()) {
+            reported = true;
             return it->get<std::uint64_t>();
         }
-        if (it->is_number_integer()) {
-            return static_cast<std::uint64_t>(std::max<long long>(0, it->get<long long>()));
+        if (it->is_number_integer() && it->get<long long>() >= 0) {
+            reported = true;
+            return static_cast<std::uint64_t>(it->get<long long>());
         }
         if (it->is_number_float()) {
             const double value = it->get<double>();
-            return value > 0.0 ? static_cast<std::uint64_t>(value) : 0;
+            if (value >= 0 && value < 18446744073709551616.0 && std::floor(value) == value) {
+                reported = true;
+                return static_cast<std::uint64_t>(value);
+            }
         }
         // A relay that sends the count as a string is not worth guessing at.
         return 0;
@@ -1474,43 +1479,45 @@ void pullUsage(const json &node, std::uint64_t &prompt, std::uint64_t &completio
 // Anthropic and the Responses API both nest the usage object one level down,
 // under an envelope that carries the event's own name.
 void pullNested(const json &root, const char *key, std::uint64_t &prompt,
-                std::uint64_t &completion) {
+                std::uint64_t &completion, bool &reported) {
     const auto it = root.find(key);
     if (it == root.end() || !it->is_object()) {
         return;
     }
-    pullUsage(*it, prompt, completion);
+    pullUsage(*it, prompt, completion, reported);
     if (const auto inner = it->find("usage"); inner != it->end()) {
-        pullUsage(*inner, prompt, completion);
+        pullUsage(*inner, prompt, completion, reported);
     }
 }
 
-void absorbDocument(const json &root, std::uint64_t &prompt, std::uint64_t &completion) {
+void absorbDocument(const json &root, std::uint64_t &prompt, std::uint64_t &completion, bool &reported) {
     if (root.is_array()) {
         // Gemini without ?alt=sse answers with an array of the same objects,
         // and the proxy cannot assume the query string survived the relay.
         for (const auto &item : root) {
-            absorbDocument(item, prompt, completion);
+            absorbDocument(item, prompt, completion, reported);
         }
         return;
     }
     if (!root.is_object()) {
         return;
     }
-    pullUsage(root, prompt, completion);
+    pullUsage(root, prompt, completion, reported);
     if (const auto it = root.find("usage"); it != root.end()) {
-        pullUsage(*it, prompt, completion);
+        pullUsage(*it, prompt, completion, reported);
     }
-    pullNested(root, "message", prompt, completion);
-    pullNested(root, "response", prompt, completion);
+    pullNested(root, "message", prompt, completion, reported);
+    pullNested(root, "response", prompt, completion, reported);
     if (const auto it = root.find("usageMetadata"); it != root.end() && it->is_object()) {
         // Gemini spells them its own way, and reports them cumulatively on
         // every chunk — which is why the merge is a max everywhere.
-        const auto count = [&it](const char *key) -> std::uint64_t {
+        const auto count = [&it, &reported](const char *key) -> std::uint64_t {
             const auto field = it->find(key);
-            return field != it->end() && field->is_number_unsigned()
-                       ? field->get<std::uint64_t>()
-                       : 0;
+            if (field != it->end() && field->is_number_unsigned()) {
+                reported = true;
+                return field->get<std::uint64_t>();
+            }
+            return 0;
         };
         prompt = std::max(prompt, count("promptTokenCount"));
         completion = std::max(completion, count("candidatesTokenCount"));
@@ -1538,7 +1545,7 @@ void StreamUsageObserver::absorbLine(std::string_view line) {
     if (root.is_discarded()) {
         return;
     }
-    absorbDocument(root, prompt_, completion_);
+    absorbDocument(root, prompt_, completion_, reported_);
 }
 
 void StreamUsageObserver::feed(std::string_view chunk) {
@@ -1573,7 +1580,42 @@ void StreamUsageObserver::feed(std::string_view chunk) {
 }
 
 TokenUsage StreamUsageObserver::usage() const {
-    return TokenUsage{.prompt = prompt_, .completion = completion_};
+    return TokenUsage{.prompt = prompt_, .completion = completion_, .reported = reported_};
+}
+
+bool tokenUsageReported(std::string_view body) {
+    const auto root = json::parse(body, nullptr, false);
+    // Buffered accounting only reads these top-level envelopes. Stream events
+    // have additional nesting; recognizing it here would refund an uncounted
+    // response as though it explicitly reported zero tokens.
+    const auto reported = [](const json &node) {
+        if (!node.is_object()) return false;
+        if (const auto usage = node.find("usage"); usage != node.end() && usage->is_object()) {
+            for (const auto *key : {"prompt_tokens", "input_tokens", "completion_tokens", "output_tokens"}) {
+                const auto value = usage->find(key);
+                if (value == usage->end()) continue;
+                if (value->is_number_unsigned()) return true;
+                if (value->is_number_float()) {
+                    const double n = value->get<double>();
+                    if (n >= 0 && n < 18446744073709551616.0 && std::floor(n) == n) return true;
+                }
+            }
+        }
+        if (const auto usage = node.find("usageMetadata"); usage != node.end() && usage->is_object()) {
+            for (const auto *key : {"promptTokenCount", "candidatesTokenCount"}) {
+                const auto value = usage->find(key);
+                if (value != usage->end() && value->is_number_unsigned()) return true;
+            }
+        }
+        return false;
+    };
+    if (root.is_object()) return reported(root);
+    if (root.is_array()) {
+        for (const auto &item : root) {
+            if (reported(item)) return true;
+        }
+    }
+    return false;
 }
 
 } // namespace literouter

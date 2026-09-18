@@ -36,6 +36,7 @@ export function makeServer(overrides: Partial<ServerConfig> = {}): ServerConfig 
 
 export function makeProvider(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
   return {
+    groups: [],
     id: 'relay',
     name: 'Relay',
     base_url: 'https://relay.example/v1',
@@ -69,6 +70,7 @@ export function makeRoute(overrides: Partial<RouteConfig> = {}): RouteConfig {
 
 export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
+    clients: [],
     schema: 1,
     server: makeServer(),
     providers: [makeProvider()],

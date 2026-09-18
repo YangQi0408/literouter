@@ -15,7 +15,9 @@ inline bool matchesSearch(const literouter::LogEntry& entry, const std::string& 
     if (needleLower.empty()) {
         return true;
     }
-    return literouter::toLower(entry.model).find(needleLower) != std::string::npos ||
+    return literouter::toLower(entry.client_id).find(needleLower) != std::string::npos ||
+           literouter::toLower(entry.client_key_id).find(needleLower) != std::string::npos ||
+           literouter::toLower(entry.model).find(needleLower) != std::string::npos ||
            literouter::toLower(entry.provider).find(needleLower) != std::string::npos ||
            literouter::toLower(entry.message).find(needleLower) != std::string::npos;
 }

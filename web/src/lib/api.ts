@@ -4,6 +4,7 @@
  *  added there, it shows up here as a compile error rather than as a silent
  *  `undefined` in a table cell. */
 import { normalizeConfig } from '@/lib/normalize'
+import { parseApiJson, stringifyConfig } from '@/lib/client-integers'
 
 
 export type LogLevel = 'info' | 'warn' | 'error'
@@ -12,6 +13,8 @@ export type HealthState = 'unknown' | 'healthy' | 'degraded' | 'open'
 export type Protocol = 'openai' | 'anthropic' | 'gemini' | 'openai_responses'
 
 export interface LogEntry {
+  client_id: string
+  client_key_id: string
   seq: number
   time_unix: number
   time: string
@@ -78,6 +81,7 @@ export interface TrafficBucket {
 }
 
 export interface Snapshot {
+  clients: ClientUsage[]
   running: boolean
   host: string
   port: number
@@ -122,6 +126,7 @@ export interface ModelInfo {
  *  reference, or empty. The console only ever sees the reference; a literal is
  *  blanked by the server and marked, and an untouched blank means "keep". */
 export interface ProviderConfig {
+  groups: string[]
   id: string
   name: string
   base_url: string
@@ -156,7 +161,7 @@ export interface RouteConfig {
   enabled: boolean
 }
 
-export interface ServerConfig {
+export interface ServerConfig extends SecretConfig {
   host: string
   port: number
   /** Both empty keep HTTP; TLS files and address changes require restart. */
@@ -185,7 +190,50 @@ export interface ServerConfig {
   ui_scale: number
 }
 
+export type UInt64 = number | string
+
+export interface SecretConfig {
+  api_key: string
+  api_key_source?: 'literal' | 'env'
+  api_key_clear?: boolean
+}
+
+export interface ClientKeyConfig extends SecretConfig {
+  id: string
+  enabled: boolean
+}
+
+export interface ClientConfig {
+  id: string
+  name: string
+  enabled: boolean
+  keys: ClientKeyConfig[]
+  models: string[]
+  provider_groups: string[]
+  requests_per_minute: number
+  max_concurrent: number
+  requests_per_day: number
+  tokens_per_day: number
+  token_reservation: number
+}
+
+export interface ClientUsage {
+  client: string
+  requests: UInt64
+  successes: UInt64
+  failures: UInt64
+  tokens_prompt: UInt64
+  tokens_completion: UInt64
+  cost_usd: number
+  active_requests: UInt64
+  day_unix: number
+  requests_today: UInt64
+  tokens_today: UInt64
+  reserved_tokens: UInt64
+}
+
 export interface AppConfig {
+  clients: ClientConfig[]
   schema?: number
   server: ServerConfig
   providers: ProviderConfig[]
@@ -261,7 +309,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let data: unknown = null
   if (text) {
     try {
-      data = JSON.parse(text)
+      data = parseApiJson(text)
     } catch {
       data = text
     }
@@ -285,7 +333,7 @@ export const api = {
   saveConfig: (config: AppConfig) =>
     request<SaveResponse>('/__literouter/config', {
       method: 'PUT',
-      body: JSON.stringify({ config }),
+      body: '{"config":' + stringifyConfig(config) + '}',
     }),
   reload: () => request<ValidationReport>('/__literouter/reload', { method: 'POST' }),
   resetStats: () => request<{ ok: boolean }>('/__literouter/reset-stats', { method: 'POST' }),

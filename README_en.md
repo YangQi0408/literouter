@@ -13,7 +13,7 @@
 
 ## What is literouter?
 
-`literouter` is a high-performance local AI proxy aggregator. It presents a unified local endpoint (default `http://127.0.0.1:8787`) to client applications while dispatching requests across multiple upstream relays and official model provider APIs according to your configurable rules.
+`literouter` is a high-performance AI gateway for both personal aggregation and API distribution. It presents a unified endpoint (default `http://127.0.0.1:8787`) to client applications while dispatching requests across multiple upstream relays and official model provider APIs according to your configurable rules.
 
 Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate, shell scripts, or standard SDKs) to `literouter`, and let it handle upstream orchestration seamlessly: **which provider offers the requested model, which node is down, which is rate-limited, and which requires model aliasing—all managed automatically in milliseconds**.
 
@@ -31,6 +31,8 @@ Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate
 ## Key Features
 
 - ⚡ **Single Endpoint Aggregation**: Centralizes upstream Base URLs and API Keys into a single local port, eliminating the need to reconfigure client applications.
+- 👥 **Client Distribution**: Separate administrator and client credentials, multiple keys per account, model/provider-group permissions, RPM/concurrency limits, and persistent daily request/token quotas. CLI, GUI and Web manage accounts and display usage and estimated cost; personal use requires no accounts.
+- 🔒 **HTTPS and Media Endpoints**: Listener TLS plus audio transcription, translation, speech synthesis, image generation, edits and variations through existing OpenAI-compatible providers.
 - 🛡️ **Header Gate & Lossless Streaming Failover**: Novel streaming safety mechanism. Network drops, timeouts, 429 rate limits, or 5xx server errors trigger seamless failover before the first response header reaches the client. Once the first byte is emitted, the connection is locked to **strictly prevent corrupting or interweaving answers**.
 - 🔌 **Circuit Breaker with Auto-Probing**: Consecutive failures trip down relays into cooldown. Once cooldown expires, a single-request probe tests recovery automatically without overwhelming services.
 - 🔄 **Multi-Protocol Gateway & Zero-Overhead Fast Path**: Supports inbound OpenAI, Claude Messages, Google Gemini, and OpenAI Responses requests. Matching protocols enjoy **zero JSON parsing and zero-copy streaming passthrough**, while mismatched protocols are converted bi-directionally on the fly.
@@ -38,10 +40,12 @@ Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate
 - 💻 **Three Frontends**:
   - **CLI**: Supports foreground server mode, `tail -f` live log streaming, status dashboards, and system diagnostics (`doctor`).
   - **Web Console**: `serve` carries a modern React + Vite + Tailwind + shadcn/ui `/ui` console on the same port, providing telemetry overview, provider/route management, probing, log filtering, and full config editing; assets are embedded in the binary with zero extra deployment (developing the web UI requires Node.js 22+).
-  - **GUI Console**: Native hardware-accelerated OpenGL desktop dashboard featuring real-time telemetry tiles, provider health matrices, visual route ordering, and one-click model auto-discovery.
+  - **GUI Console**: Native hardware-accelerated OpenGL desktop dashboard featuring real-time telemetry tiles, 24-hour usage trends, provider health matrices, visual route ordering, and one-click model auto-discovery.
 - 🌐 **Cross-Platform & Internationalization**: Native support for Linux, macOS, and Windows. Includes English and Simplified Chinese localization, alongside dynamic vector UI scaling (80% ~ 150%).
 
 ---
+
+The same gateway supports personal use and client distribution, with multiple keys per account, model/provider-group permissions, persistent quotas and rate limits. See [API distribution](docs/en/distribution.md).
 
 ## Quick Start
 
@@ -154,7 +158,7 @@ Technical details are organized into topic-specific documentation:
 
 ### Common Commands
 ```bash
-# Run core unit test suite (all 10 test suites pass)
+# Run core unit test suite (all 13 test suites pass)
 mcpp test -p core
 
 # Build individual members
@@ -173,4 +177,3 @@ LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
 This project is licensed under the [Apache-2.0 License](LICENSE).
 Third-party components and the license terms that apply to them are listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-

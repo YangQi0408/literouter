@@ -10,8 +10,8 @@ import literouter.core;
 // background work — lives in the one static AppState returned here.
 namespace lr_gui {
 
-enum class Page { Overview = 0, Providers, Routes, Logs, Settings };
-inline constexpr int kPageCount = 5;
+enum class Page { Overview = 0, Providers, Routes, Logs, Settings, Clients };
+inline constexpr int kPageCount = 6;
 
 inline const char* pageTitle(Page page) {
     using literouter::i18n::tr;
@@ -21,6 +21,7 @@ inline const char* pageTitle(Page page) {
         case Page::Routes: return tr("Routes");
         case Page::Logs: return tr("Logs");
         case Page::Settings: return tr("Settings");
+        case Page::Clients: return tr("Clients");
     }
     return tr("Overview");
 }
@@ -33,6 +34,7 @@ inline const char* pageSubtitle(Page page) {
         case Page::Routes: return tr("Model mapping and the ordered failover chain");
         case Page::Logs: return tr("Every request this proxy has handled");
         case Page::Settings: return tr("Listener, circuit breaker and logging");
+        case Page::Clients: return tr("Client access, keys, permissions and daily usage");
     }
     return "";
 }
@@ -59,7 +61,7 @@ struct ToastState {
     std::string message;
 };
 
-enum class ConfirmKind { None, DeleteProvider, DeleteRoute, ResetCounters };
+enum class ConfirmKind { None, DeleteProvider, DeleteRoute, DeleteClient, ResetCounters };
 
 struct ConfirmState {
     bool open = false;
@@ -80,6 +82,7 @@ struct ProviderEditor {
     std::string name;
     std::string baseUrl;
     std::string apiKey;
+    std::string groupsText;
     std::string modelsText;
     std::string headersText;
     std::string note;
@@ -97,6 +100,21 @@ struct ProviderEditor {
     bool supportsStream = true;
     std::string statusLine;
     bool statusError = false;
+};
+
+// Client edits stay separate from the live configuration until a successful
+// atomic save. Key values are only typed for additions/replacements.
+struct ClientEditor {
+    bool open = false;
+    bool saving = false;
+    std::string originalId;
+    literouter::ClientConfig draft;
+    std::string modelsText, groupsText;
+    std::string rpm = "0", concurrent = "0", dailyRequests = "0", dailyTokens = "0", reservation = "4096";
+    std::string keyId, keyValue;
+    int keyIndex = -1;
+    std::string error;
+    float scroll = 0.0f;
 };
 
 // Draft for the Route editor (create / rename / toggle route).
@@ -238,6 +256,8 @@ struct AppState {
     ToastState toast;
     ConfirmState confirm;
     ProviderEditor editor;
+    ClientEditor clientEditor;
+    float clientsScroll = 0.0f;
     RouteEditor routeEditor;
     HopEditor hop;
     LogsView logsView;
@@ -542,9 +562,12 @@ struct AppState {
         const literouter::AppConfig config = store.config();
         worker.post([this, config] {
             auto result = server.start(config);
-            const std::string error = result ? std::string{} : result.error();
+            const std::string error = result ? std::string{} : std::string(literouter::i18n::tr(result.error()));
             postToUi([this, error] {
                 serverStarting = false;
+                // Refresh the completed listener before reporting it: the
+                // previous snapshot may still contain port 0 or the old scheme.
+                pollTelemetry();
                 if (error.empty()) {
                     showToast(std::string(literouter::i18n::tr("Server started")),
                               std::string(literouter::i18n::tr("Listening on ")) + snapshot.base_url, false);
@@ -552,7 +575,6 @@ struct AppState {
                     serverError = error;
                     showToast(std::string(literouter::i18n::tr("Could not start server")), error, true);
                 }
-                pollTelemetry();
             });
         });
     }
@@ -660,6 +682,7 @@ struct AppState {
         provider.timeout_sec = editor.timeoutSec;
         provider.connect_timeout_sec = editor.connectTimeoutSec;
         provider.models = splitList(editor.modelsText);
+        provider.groups = splitList(editor.groupsText);
         probes[provider.id].running = true;
         probes[provider.id].done = false;
         worker.post([this, provider] {
@@ -707,6 +730,51 @@ struct AppState {
         return true;
     }
 
+    // Save the client draft on the worker. The busy overlay prevents another
+    // config edit from racing this full-document atomic write.
+    void saveClients(literouter::AppConfig next) {
+        if (clientEditor.saving) return;
+        const auto report = literouter::validate(next);
+        for (const auto& issue : report.issues) {
+            if (issue.level == literouter::ValidationIssue::Level::Error) {
+                clientEditor.error = issue.path + " · " + std::string(literouter::i18n::tr(issue.message));
+                showToast(std::string(literouter::i18n::tr("Save failed")), clientEditor.error, true);
+                return;
+            }
+        }
+        clientEditor.error.clear();
+        clientEditor.saving = true;
+        auto pending = store;
+        pending.config() = std::move(next);
+        worker.post([this, pending = std::move(pending)]() mutable {
+            const auto result = pending.save();
+            std::string error = result ? std::string{} : result.error();
+            if (result) {
+                std::error_code ec;
+                pending.mtime = std::filesystem::last_write_time(pending.path(), ec);
+                pending.setExistsOnDisk(true);
+                if (server.running()) server.updateConfig(pending.config());
+            }
+            postToUi([this, pending = std::move(pending), error = std::move(error)]() mutable {
+                clientEditor.saving = false;
+                if (!error.empty()) {
+                    clientEditor.error = error;
+                    showToast(std::string(literouter::i18n::tr("Save failed")), error, true);
+                    return;
+                }
+                store = std::move(pending);
+                ++configRevision_;
+                baselineRevision_ = configRevision_;
+                baselineJson = store.toJson();
+                configFileExisted = true;
+                diskChanged = false;
+                clientEditor = ClientEditor{};
+                showToast(std::string(literouter::i18n::tr("Client configuration saved")), store.path().string(), false);
+                pollTelemetry();
+            });
+        });
+    }
+
     void reloadFromDisk() {
         auto loaded = literouter::ConfigStore::load(store.path());
         if (!loaded) {
@@ -715,6 +783,7 @@ struct AppState {
             showToast(std::string(literouter::i18n::tr("Reload failed")), loaded.error(), true);
             return;
         }
+        clientEditor = ClientEditor{};
         store.config() = loaded->config();
         ++configRevision_;
         store.mtime = loaded->mtime;
@@ -768,6 +837,7 @@ struct AppState {
         editor.isNew = isNew;
         editor.index = index;
         editor.modelsText.clear();
+        editor.groupsText.clear();
         editor.headersText.clear();
         if (isNew) {
             editor.protocol = "openai";
@@ -793,6 +863,7 @@ struct AppState {
             editor.priceOutText = priceText(provider.price_out_per_million);
             editor.note = provider.note;
             editor.modelsText = joinLines(provider.models);
+            editor.groupsText = joinLines(provider.groups);
             editor.headersText = headersToText(provider.headers);
         }
     }
@@ -860,6 +931,8 @@ struct AppState {
         }
 
         literouter::ProviderConfig provider;
+        if (!editor.isNew && editor.index >= 0 && editor.index < static_cast<int>(providers.size()))
+            provider = providers[static_cast<std::size_t>(editor.index)];
         provider.id = id;
         provider.name = literouter::trim(editor.name);
         provider.base_url = literouter::trim(editor.baseUrl);
@@ -877,6 +950,7 @@ struct AppState {
         provider.price_out_per_million = parsePrice(editor.priceOutText);
         provider.note = editor.note;
         provider.models = splitList(editor.modelsText);
+        provider.groups = splitList(editor.groupsText);
         provider.headers = parseHeaders(editor.headersText);
 
         if (editor.isNew || editor.index < 0 ||
@@ -919,6 +993,14 @@ struct AppState {
             case ConfirmKind::DeleteRoute:
                 deleteRoute(index);
                 break;
+            case ConfirmKind::DeleteClient: {
+                auto next = store.config();
+                if (index >= 0 && index < static_cast<int>(next.clients.size())) {
+                    next.clients.erase(next.clients.begin() + index);
+                    saveClients(std::move(next));
+                }
+                break;
+            }
             case ConfirmKind::ResetCounters:
                 resetCounters();
                 break;
@@ -1310,7 +1392,7 @@ inline const std::string& uiFontPath() {
     return path;
 }
 
-// Smoke budget: five pages at 150 frames each.
+// Smoke budget: every page at 150 frames each.
 inline int smokeFrameBudget() {
     return kPageCount * 150;
 }

@@ -128,6 +128,7 @@ ProviderConfig providerFromJson(const json &node) {
     out.connect_timeout_sec = readInt(node, "connect_timeout_sec", 15);
     out.supports_stream = readBool(node, "supports_stream", true);
     out.models = readStringArray(node, "models");
+    out.groups = readStringArray(node, "groups");
     out.headers = readStringMap(node, "headers");
     out.chat_path = readString(node, "chat_path", "/chat/completions");
     out.embeddings_path = readString(node, "embeddings_path", "/embeddings");
@@ -156,6 +157,7 @@ json providerToJson(const ProviderConfig &value) {
     node["connect_timeout_sec"] = value.connect_timeout_sec;
     node["supports_stream"] = value.supports_stream;
     node["models"] = value.models;
+    node["groups"] = value.groups;
     if (!value.headers.empty()) {
         node["headers"] = value.headers;
     }
@@ -413,6 +415,18 @@ std::string toJsonString(const AppConfig &config) {
     }
     root["routes"] = std::move(routes);
 
+    root["clients"] = json::array();
+    for (const auto &client : config.clients) {
+        json keys = json::array();
+        for (const auto &key : client.keys)
+            keys.push_back(json{{"id", key.id}, {"api_key", key.api_key}, {"enabled", key.enabled}});
+        root["clients"].push_back(json{{"id", client.id}, {"name", client.name},
+            {"enabled", client.enabled}, {"keys", keys}, {"models", client.models},
+            {"provider_groups", client.provider_groups}, {"requests_per_minute", client.requests_per_minute},
+            {"max_concurrent", client.max_concurrent}, {"requests_per_day", client.requests_per_day},
+            {"tokens_per_day", client.tokens_per_day}, {"token_reservation", client.token_reservation}});
+    }
+
     return root.dump(2);
 }
 
@@ -427,6 +441,51 @@ std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text) {
 
     AppConfig out;
     out.schema = readInt(root, "schema", out.schema);
+
+    // Access rules fail closed on malformed types: treating a misspelled
+    // allowlist as an empty list would silently grant access to everything.
+    try {
+        if (root.contains("clients")) {
+            const auto &list = root.at("clients");
+            if (!list.is_array()) throw std::runtime_error("clients must be an array");
+            for (const auto &entry : list) {
+                if (!entry.is_object()) throw std::runtime_error("client must be an object");
+                ClientConfig c;
+                c.id = entry.value("id", std::string{});
+                c.name = entry.value("name", std::string{});
+                c.enabled = entry.value("enabled", true);
+                c.models = entry.value("models", std::vector<std::string>{});
+                c.provider_groups = entry.value("provider_groups", std::vector<std::string>{});
+                const auto nonnegative = [&](const char *key, std::uint64_t fallback) {
+                    if (!entry.contains(key)) return fallback;
+                    const auto &v = entry.at(key);
+                    if (!v.is_number_unsigned() || v.get<std::uint64_t>() > 9007199254740991ULL)
+                        throw std::runtime_error(std::string{key} + " must be a nonnegative safe integer");
+                    return v.get<std::uint64_t>();
+                };
+                const auto rpm = nonnegative("requests_per_minute", 0);
+                const auto concurrent = nonnegative("max_concurrent", 0);
+                if (rpm > 2147483647ULL || concurrent > 2147483647ULL)
+                    throw std::runtime_error("client rate or concurrency is too large");
+                c.requests_per_minute = static_cast<int>(rpm);
+                c.max_concurrent = static_cast<int>(concurrent);
+                c.requests_per_day = nonnegative("requests_per_day", 0);
+                c.tokens_per_day = nonnegative("tokens_per_day", 0);
+                c.token_reservation = nonnegative("token_reservation", 4096);
+                if (entry.contains("keys")) {
+                    if (!entry.at("keys").is_array()) throw std::runtime_error("keys must be an array");
+                    for (const auto &key : entry.at("keys")) {
+                        if (!key.is_object()) throw std::runtime_error("key must be an object");
+                        c.keys.push_back(ClientKeyConfig{key.value("id", std::string{}),
+                            key.value("api_key", std::string{}), key.value("enabled", true)});
+                    }
+                }
+                out.clients.push_back(std::move(c));
+            }
+        }
+    } catch (const std::exception &e) {
+        return std::unexpected(std::string{"invalid clients configuration: "} + e.what());
+    }
 
     if (const auto it = root.find("server"); it != root.end()) {
         if (!it->is_object()) {
@@ -485,6 +544,9 @@ std::string toJsonString(const Snapshot &snapshot) {
     node["latency_ms_avg"] = snapshot.latency_ms_avg;
     node["log_seq"] = snapshot.log_seq;
     node["breakers_open"] = snapshot.breakers_open;
+    node["clients"] = json::array();
+    for (const auto &usage : snapshot.clients)
+        node["clients"].push_back(json::parse(toJsonString(usage)));
 
     json providers = json::array();
     for (const auto &entry : snapshot.providers) {
@@ -535,6 +597,8 @@ std::string toJsonString(const LogEntry &entry) {
     node["datetime"] = entry.dateTimeText();
     node["level"] = entry.level;
     node["request_id"] = entry.request_id;
+    node["client_id"] = entry.client_id;
+    node["client_key_id"] = entry.client_key_id;
     node["kind"] = entry.kind;
     node["model"] = entry.model;
     node["provider"] = entry.provider;

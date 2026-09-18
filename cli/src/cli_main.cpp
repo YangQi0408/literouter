@@ -55,6 +55,7 @@ int main(int argc, char **argv) {
     lrcli::register_serve(app, ctx);
     lrcli::register_status(app, ctx);
     lrcli::register_models(app, ctx);
+    lrcli::register_clients(app, ctx);
     lrcli::register_providers(app, ctx);
     lrcli::register_routes(app, ctx);
     lrcli::register_config(app, ctx);

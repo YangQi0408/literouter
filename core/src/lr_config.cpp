@@ -123,7 +123,27 @@ std::expected<void, std::string> ConfigStore::save() const {
 
 std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path &path) const {
     std::error_code ec;
-    const auto parent = path.parent_path();
+    auto destination = path;
+    const auto status = std::filesystem::symlink_status(path, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory) {
+        return std::unexpected(
+            std::format("cannot inspect configuration path {}: {}", path.string(), ec.message()));
+    }
+    if (std::filesystem::is_symlink(status)) {
+        // Keep the configured link (and its canonical quota-ledger identity)
+        // intact. Rename into the target directory, never over the link itself.
+        destination = std::filesystem::canonical(path, ec);
+        if (ec) {
+            return std::unexpected(
+                std::format("cannot resolve configuration symlink {}: {}", path.string(), ec.message()));
+        }
+        if (!std::filesystem::is_regular_file(destination, ec)) {
+            return std::unexpected(std::format("cannot save configuration symlink {}: {}", path.string(),
+                ec ? ec.message() : "target is not a regular file"));
+        }
+    }
+    ec.clear();
+    const auto parent = destination.parent_path();
     if (!parent.empty()) {
         std::filesystem::create_directories(parent, ec);
         if (ec) {
@@ -138,7 +158,7 @@ std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path
     // filesystem is atomic, so a reader sees either the old file or the new
     // one — never a truncated one. A temp elsewhere would fail the moment the
     // two paths crossed a mount point.
-    auto temp = path;
+    auto temp = destination;
     temp += std::format(".tmp-{}", hexId(4));
 
     {
@@ -155,25 +175,26 @@ std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path
         }
     }
 
-    std::filesystem::rename(temp, path, ec);
+    std::filesystem::rename(temp, destination, ec);
     if (ec) {
 #ifdef _WIN32
         // On Windows, rename may fail if the destination file exists with certain file sharing flags.
         // Try remove + rename as fallback.
         ec.clear();
-        std::filesystem::remove(path, ec);
+        std::filesystem::remove(destination, ec);
         ec.clear();
-        std::filesystem::rename(temp, path, ec);
+        std::filesystem::rename(temp, destination, ec);
 #endif
         if (ec) {
+            const auto message = std::format("cannot replace {}: {}", path.string(), ec.message());
             std::filesystem::remove(temp, ec);
-            return std::unexpected(std::format("cannot replace {}: {}", path.string(), ec.message()));
+            return std::unexpected(message);
         }
     }
 
     // Keys are in here, so the file should not be readable by anyone else.
 #ifndef _WIN32
-    std::filesystem::permissions(path,
+    std::filesystem::permissions(destination,
                                  std::filesystem::perms::owner_read |
                                      std::filesystem::perms::owner_write,
                                  std::filesystem::perm_options::replace, ec);
@@ -413,6 +434,53 @@ ValidationReport validate(const AppConfig &config) {
                      std::format("relay `{}` lists no models; it is only reachable through a "
                                  "route that names it explicitly",
                                  label));
+        }
+    }
+
+    // Distribution is opt-in. Existing local-only configs need no account;
+    // configuring accounts requires a distinct administration credential.
+    if (!config.clients.empty() && config.server.api_key.empty())
+        addIssue(report, ValidationIssue::Level::Error, "server.api_key",
+                 "an administrator key is required when clients are configured");
+    std::set<std::string, std::less<>> clientIds;
+    std::set<std::string, std::less<>> keyValues;
+    if (!config.server.api_key.empty()) keyValues.insert(config.server.api_key);
+    std::set<std::string, std::less<>> groups;
+    for (const auto &provider : config.providers)
+        for (const auto &group : provider.groups) groups.insert(group);
+    for (std::size_t i = 0; i < config.clients.size(); ++i) {
+        const auto &client = config.clients[i];
+        const auto where = std::format("clients[{}]", i);
+        if (client.id.empty() || !clientIds.insert(client.id).second)
+            addIssue(report, ValidationIssue::Level::Error, where + ".id", "client id must be nonempty and unique");
+        if (client.requests_per_minute < 0 || client.max_concurrent < 0)
+            addIssue(report, ValidationIssue::Level::Error, where, "client limits cannot be negative");
+        if (client.requests_per_day > 9007199254740991ULL ||
+            client.tokens_per_day > 9007199254740991ULL ||
+            client.token_reservation > 9007199254740991ULL)
+            addIssue(report, ValidationIssue::Level::Error, where,
+                     "client quota values must not exceed 9007199254740991");
+        if (client.tokens_per_day > 0 && (client.token_reservation == 0 ||
+                                          client.token_reservation > client.tokens_per_day))
+            addIssue(report, ValidationIssue::Level::Error, where + ".token_reservation",
+                     "token reservation must be positive and fit within the daily token quota");
+        std::set<std::string, std::less<>> keyIds;
+        for (std::size_t k = 0; k < client.keys.size(); ++k) {
+            const auto &key = client.keys[k];
+            const auto path = std::format("{}.keys[{}]", where, k);
+            if (key.id.empty() || !keyIds.insert(key.id).second)
+                addIssue(report, ValidationIssue::Level::Error, path + ".id", "key id must be nonempty and unique within its client");
+            if (key.api_key.empty()) {
+                if (key.enabled) addIssue(report, ValidationIssue::Level::Error, path + ".api_key", "an enabled client key must not be empty");
+            } else if (!keyValues.insert(key.api_key).second) {
+                addIssue(report, ValidationIssue::Level::Error, path + ".api_key", "client keys must differ from all other keys and the administrator key");
+            }
+        }
+        for (std::size_t g = 0; g < client.provider_groups.size(); ++g) {
+            const auto &group = client.provider_groups[g];
+            if (group.empty() || !groups.contains(group))
+                addIssue(report, ValidationIssue::Level::Warning, std::format("{}.provider_groups[{}]", where, g),
+                         "no provider belongs to this group; requests cannot use it");
         }
     }
 

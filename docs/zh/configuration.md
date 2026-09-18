@@ -56,7 +56,7 @@
     "port": 8787,                 // 监听端口；设为 0 表示由系统随机分配空闲端口
     "tls_cert_file": "",         // PEM 证书链绝对路径；两项 TLS 路径都为空时保持 HTTP
     "tls_key_file": "",          // 匹配证书的未加密 PEM 私钥绝对路径；重启生效
-    "api_key": "",                // 客户端访问本代理的鉴权 Bearer Token；留空表示不校验
+    "api_key": "",                // 管理员密钥；仅无 clients 时留空可关闭鉴权
     "pass_through_unknown": true, // 路由表未显式收录的模型，自动按优先级透传给拥有该模型的中转站
     "max_attempts": 0,            // 单次请求最多重试尝试的中转站数量；0 表示遍历所有可用候选站
     "routing_policy": "priority", // 候选链排序：priority（默认）/ fastest（实测最快）/ cheapest（单价最低）
@@ -75,6 +75,8 @@
     "reload_on_change": false     // 配置文件在磁盘上变化时自动应用（默认关闭）
   },
 
+  "clients": [],
+
   "providers": [
     {
       "id": "openai-official",                 // 唯一标识符（全局唯一，路由与统计均以此为键）
@@ -90,6 +92,7 @@
       "timeout_sec": 120,                      // 响应超时时间（秒）
       "connect_timeout_sec": 15,               // TCP/TLS 连接建立超时（秒）
       "supports_stream": true,                 // 是否支持流式传输（SSE）
+      "groups": [],
       "models": ["gpt-4o", "text-embedding-3-small"], // 声明该中转站支持的模型列表
       "headers": {                             // 附加向上游发送的自定义 HTTP 请求头
         "HTTP-Referer": "https://example.com"
@@ -154,7 +157,7 @@
 | `port` | `uint16` | `8787` | 服务监听端口。设置为 `0` 表示由内核自动分配空闲端口。 |
 | `tls_cert_file` | `string` | `""` | PEM 证书链绝对路径；与 `tls_key_file` 同时填写启用 HTTPS，同时留空保持 HTTP。启动时校验文件、证书有效期与密钥匹配；监听设置重启后生效。 |
 | `tls_key_file` | `string` | `""` | 与证书匹配的未加密 PEM 私钥绝对路径。文件内容不会写入配置或返回 Web 控制台。 |
-| `api_key` | `string` | `""` | 代理本身的客户端访问鉴权密钥。客户端需在请求头携带 `Authorization: Bearer <api_key>`；若为空则不校验。 |
+| `api_key` | `string` | `""` | 管理员密钥，支持环境变量引用；也可调用模型接口。有 `clients` 时必填，客户端使用自己的密钥；仅在没有客户端且此项为空时关闭鉴权。 |
 | `pass_through_unknown` | `bool` | `true` | 若客户端请求的模型未在 `routes` 表中定义，是否自动按优先级透传至声称拥有该模型的中转站。 |
 | `max_attempts` | `size_t` | `0` | 一次请求最多尝试的中转站数量上限。`0` 表示不限（尝试链路中所有健康候选站）。 |
 | `routing_policy` | `string` | `"priority"` | 首次尝试前**候选链的排序方式**：`priority`（默认，按 `priority`/`weight` 声明顺序）、`fastest`（有实测延迟者优先，按 p95 排序——通常快、偶尔极慢的中转站不该排在前面）、`cheapest`（已填价者优先，按输入+输出单价之和排序；未填价者排在最后，因为它的花费是未知而非零）。平局保持原优先级顺序；**会话亲和仍然优先于两者**（哪个站已经见过这段对话是更具体的事实）。 |
@@ -200,7 +203,7 @@
 
 写入方式与配置保持一致：先写同目录临时文件再原子重命名，文件权限 `0600`。刷写由后台线程按需进行（有变更时最多 3 秒一次），并在 `stop()` 时补齐最后一次。文件损坏或版本不符时会被忽略并记录一条系统日志，绝不会阻止服务启动；磁盘写入失败只记录一次错误日志，不影响请求处理。
 
-> ⚠️ **隐私提示**：若同时开启 `log_bodies`，报文体（即提示词）也会被一并写入磁盘。校验时会就此组合给出告警。如需每次运行都不留痕迹，请把 `persist_telemetry` 设为 `false`。
+> ⚠️ **隐私提示**：若同时开启 `log_bodies`，报文体（即提示词）也会被一并写入磁盘。校验时会就此组合给出告警。若不需要保存遥测，把 `persist_telemetry` 设为 `false`；客户端配额账本仍独立持久化。
 
 ### 中转站配置 (`providers`)
 
@@ -222,6 +225,7 @@
 | `connect_timeout_sec` | `uint32` | `15` | TCP / TLS 握手连接超时（秒）。 |
 | `supports_stream` | `bool` | `true` | 该中转站是否支持 Server-Sent Events (SSE) 流式传输。 |
 | `models` | `string[]`| `[]` | 声明该站点支持的模型列表。自动透传与一键探测时使用。 |
+| `groups` | `string[]` | `[]` | 中转站所属的分发组；客户端通过 `provider_groups` 获得使用权限。 |
 | `headers` | `object` | `{}` | 自定义请求头字典（键值对），每个发往该站点的请求都会自动附带。 |
 | `chat_path` | `string` | 依协议 | 自定义对话补全端点路径。留空时依据 `protocol` 自动推导为标准路径。 |
 | `embeddings_path`| `string` | `"/embeddings"`| 自定义向量嵌入端点路径。 |
@@ -277,7 +281,7 @@
 - 🟡 **Warning 警告**（配置可运行，但存在潜在隐患）：
   - 引用的环境变量在当前系统环境中未被定义；
   - 路由规则的目标链路中包含了已禁用的中转站；
-  - 服务监听在非回环地址（如 `0.0.0.0`）却未配置客户端鉴权密钥 `server.api_key`。
+  - 服务监听在非回环地址（如 `0.0.0.0`）却未配置管理员密钥 `server.api_key`。
 - 🔵 **Info 提示**（常规提示）：
   - 中转站未声明任何模型列表（只能通过路由规则显式调度）；
   - 监听端口设为 `0`（动态分配端口）。
@@ -303,3 +307,31 @@ curl -X POST http://127.0.0.1:8787/__literouter/reload
 
 # 方式 3：在 GUI 控制台的“设置”面板中点击【从磁盘重载】按钮
 ```
+
+### 客户端配置 (`clients`)
+
+默认空数组，保持个人自用行为。配置客户端后需要独立的 `server.api_key` 管理员密钥。完整示例、权限与配额结算语义见[个人自用与 API 分发](distribution.md)。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `id` | `string` | 必填 | 稳定且唯一的账户 ID，用量按此 ID 保留。 |
+| `name` | `string` | `""` | 显示名称。 |
+| `enabled` | `bool` | `true` | 是否允许此账户接收新请求。 |
+| `keys` | `object[]` | `[]` | 多把密钥共用账户权限和额度。 |
+| `models` | `string[]` | `[]` | 允许的逻辑模型名；空数组不限制。 |
+| `provider_groups` | `string[]` | `[]` | 允许的中转站组；空数组不限制。 |
+| `requests_per_minute` | `int` | `0` | 滚动 60 秒请求上限；0 不限制。 |
+| `max_concurrent` | `int` | `0` | 在途请求上限，覆盖完整流；0 不限制。 |
+| `requests_per_day` | `integer` | `0` | UTC 日请求配额；0 不限制。 |
+| `tokens_per_day` | `integer` | `0` | UTC 日 Token 预算；0 不限制。 |
+| `token_reservation` | `integer` | `4096` | 每次预算请求的最小预留额度，未知用量保留预留。 |
+
+### 客户端密钥 (`client_keys`)
+
+以下字段位于每个 `clients[].keys[]` 对象中。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `id` | `string` | 必填 | 账户内唯一的密钥 ID。 |
+| `api_key` | `string` | `""` | 明文或环境变量引用；启用时不可为空。 |
+| `enabled` | `bool` | `true` | 是否启用这把密钥。 |

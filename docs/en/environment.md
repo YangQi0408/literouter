@@ -34,17 +34,18 @@ Controls where the configuration file is loaded and saved.
   ```
 
 ### 2. `LITEROUTER_STATE_DIR`
-Directory for state the server keeps (currently persisted telemetry).
+Directory for telemetry, listener records and client quota state.
 
 - **Default Paths**:
   - **Linux / macOS**: `$XDG_STATE_HOME/literouter` (or `~/.local/state/literouter`)
   - **Windows**: `%LOCALAPPDATA%\literouter`
 - **Contents**:
   - **`telemetry-<port>.json`**: with `server.persist_telemetry` on, the global counters, per-relay stats, the recent request log and the last 24 hourly buckets are written here (mode `0600`, temp file plus atomic rename) and read back on the next start. With the switch off, no such file is created. The port in the name is the one the instance actually bound, so each instance owns its history instead of replacing another's. See [Configuration & Secrets](configuration.md);
-  - **`literouter-<port>.pid`**: while an instance is listening it records its `pid`, port, start time and config path here, and `stop()` removes it. It exists so a later start can say *which* process is holding the port — httplib, which this depends on, sets `SO_REUSEPORT` by default, so two instances can bind the same port and let the kernel split requests between them, which a failed bind would never reveal. A `serve` aimed at a port an instance already answers on refuses to start and names the holder.
+  - **`literouter-<port>.pid`**: records the listener PID, port, start time and config path, and is removed on stop. Listener sockets prevent sharing the same address and port; the PID file identifies the owner when startup conflicts.
+  - **`clients-config-<hash>.json`**: client quota and usage ledger, keyed by the full SHA-256 of the canonical absolute configuration path. It survives listening-port changes and is independent of optional telemetry persistence. A sibling `.json.lock` file enforces exclusive ownership. Library callers without a configuration path use `clients-<port>.json`. Keep this directory on persistent storage. See [API distribution](distribution.md).
 - **Example**:
   ```bash
-  export LITEROUTER_STATE_DIR="/var/run/literouter"
+  export LITEROUTER_STATE_DIR="/var/lib/literouter"
   ```
 
 ### 3. `LITEROUTER_LANG`

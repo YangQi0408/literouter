@@ -1,5 +1,8 @@
 // String, path, formatting and secret helpers. No sockets here — this unit is
 // the part of the engine a test can call without a network or a config file.
+module;
+#include <openssl/sha.h>
+
 module literouter.core;
 
 import std;
@@ -94,6 +97,22 @@ std::filesystem::path defaultStateDir() {
 
 std::filesystem::path defaultTelemetryPath(int port) {
     return defaultStateDir() / std::format("telemetry-{}.json", port);
+}
+
+std::filesystem::path defaultClientQuotaPath(const std::filesystem::path &config_path, int port) {
+    if (config_path.empty()) return defaultStateDir() / std::format("clients-{}.json", port);
+    std::error_code ec;
+    auto absolute = std::filesystem::absolute(config_path, ec);
+    if (ec) absolute = config_path;
+    auto canonical = std::filesystem::weakly_canonical(absolute, ec);
+    if (ec) canonical = absolute.lexically_normal();
+    const auto bytes = canonical.generic_u8string();
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+    SHA256(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size(), digest.data());
+    std::string hex;
+    hex.reserve(digest.size() * 2);
+    for (const auto byte : digest) hex += std::format("{:02x}", byte);
+    return defaultStateDir() / ("clients-config-" + hex + ".json");
 }
 
 std::filesystem::path defaultPidPath(int port) {
@@ -522,7 +541,7 @@ std::string redactSecrets(std::string_view text) {
          std::regex_constants::ECMAScript | std::regex_constants::icase},
         // Known key prefixes. The prefix survives, so a reader can tell what it
         // was without being able to use it.
-        {R"(\b(sk-ant-|sk-proj-|sk-|AIza|ghp_|gho_|github_pat_|xoxb-|xoxp-|AKIA|glpat-)[A-Za-z0-9_-]{16,})",
+        {R"(\b(lr_|sk-ant-|sk-proj-|sk-|AIza|ghp_|gho_|github_pat_|xoxb-|xoxp-|AKIA|glpat-)[A-Za-z0-9_-]{16,})",
          "$1[redacted]"},
         // A JWT: three base64url segments, the first of which decodes to `{"`.
         {R"(\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})", "[redacted jwt]"},

@@ -34,16 +34,19 @@ export function TextField({
   placeholder,
   mono = true,
   type = 'text',
+  ariaLabel,
 }: {
   value: string
   onChange: (value: string) => void
   placeholder?: string
   mono?: boolean
   type?: string
+  ariaLabel?: string
 }) {
   return (
     <Input
       type={type}
+      aria-label={ariaLabel}
       value={value}
       placeholder={placeholder}
       spellCheck={false}
@@ -115,11 +118,13 @@ export function LinesField({
   onChange,
   placeholder,
   rows = 4,
+  ariaLabel,
 }: {
   value: string[]
   onChange: (value: string[]) => void
   placeholder?: string
   rows?: number
+  ariaLabel?: string
 }) {
   // `?? []`: a missing key must not be able to take the page down, whatever the
   // caller hands over.
@@ -128,6 +133,7 @@ export function LinesField({
   return (
     <Textarea
       rows={rows}
+      aria-label={ariaLabel}
       spellCheck={false}
       placeholder={placeholder}
       value={text}
@@ -189,14 +195,16 @@ export function SwitchField({
   checked,
   onChange,
   label,
+  ariaLabel,
 }: {
   checked: boolean
   onChange: (checked: boolean) => void
   label: string
+  ariaLabel?: string
 }) {
   return (
     <div className="flex h-9 items-center gap-3">
-      <Switch checked={checked} onCheckedChange={onChange} />
+      <Switch aria-label={ariaLabel ?? label} checked={checked} onCheckedChange={onChange} />
       <span className="text-xs text-muted-foreground">{label}</span>
     </div>
   )

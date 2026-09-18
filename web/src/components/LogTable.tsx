@@ -15,6 +15,7 @@ export function LogTable({ entries }: { entries: LogEntry[] }) {
             <th>{t('colTime')}</th>
             <th>{t('colLevel')}</th>
             <th>{t('colKind')}</th>
+            <th>{t('colClient')}</th>
             <th>{t('colModel')}</th>
             <th>{t('colProvider')}</th>
             <th className="text-right">{t('colStatus')}</th>
@@ -25,7 +26,7 @@ export function LogTable({ entries }: { entries: LogEntry[] }) {
         <tbody>
           {entries.length === 0 ? (
             <tr>
-              <td colSpan={8} className="py-10 text-center text-muted-foreground">
+              <td colSpan={9} className="py-10 text-center text-muted-foreground">
                 {t('empty')}
               </td>
             </tr>
@@ -41,6 +42,10 @@ export function LogTable({ entries }: { entries: LogEntry[] }) {
                   </Badge>
                 </td>
                 <td className="text-xs text-muted-foreground">{entry.kind}</td>
+                <td className="font-mono text-xs">
+                  <div>{entry.client_id || '—'}</div>
+                  {entry.client_key_id ? <div className="text-[11px] text-muted-foreground">{entry.client_key_id}</div> : null}
+                </td>
                 <td className="font-mono text-xs">
                   {entry.model}
                   {entry.stream ? (

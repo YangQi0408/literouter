@@ -289,9 +289,9 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                         .build();
 
                     fieldLabel(contentUi, "settings.apikey.label", listenerX + 18.0f, listenerY + 240.0f, fieldWidth,
-                               std::string(literouter::i18n::tr("Client API key")),
-                               std::string(literouter::i18n::tr("Empty disables the check. Set it and clients must send "
-                                                                "Authorization: Bearer <key>.")));
+                               std::string(literouter::i18n::tr("Administrator API key")),
+                               std::string(literouter::i18n::tr("Required for distribution; empty disables auth only "
+                                                                "without client accounts.")));
                     contentUi.stack("settings.apikey.wrap")
                         .position(listenerX + 18.0f, listenerY + 276.0f)
                         .size(fieldWidth, 38.0f)
@@ -300,7 +300,7 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                                 .theme(uiTokens())
                                 .size(fieldWidth, 38.0f)
                                 .value(server.api_key)
-                                .placeholder(std::string(literouter::i18n::tr("leave empty to accept any key")))
+                                .placeholder(std::string(literouter::i18n::tr("key or ${ENV_VAR}; optional for personal use")))
                                 .onChange([](const std::string& value) {
                                     appState().store.config().server.api_key = value;
                                 })

@@ -46,6 +46,7 @@ export function Providers() {
                 <th>{t('colProvider')}</th>
                 <th>protocol</th>
                 <th>{t('colBaseUrl')}</th>
+                <th>{t('providerGroups')}</th>
                 <th className="text-right">priority</th>
                 <th>{t('colKey')}</th>
                 <th>{t('colEnabled')}</th>
@@ -55,7 +56,7 @@ export function Providers() {
             <tbody>
               {providers.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <td colSpan={8} className="py-10 text-center text-muted-foreground">
                     {t('empty')}
                   </td>
                 </tr>
@@ -76,6 +77,7 @@ export function Providers() {
                         </span>
                       </td>
                       <td className="max-w-[20rem] truncate font-mono text-xs">{provider.base_url}</td>
+                      <td className="max-w-48 text-xs break-words text-muted-foreground">{provider.groups.join(', ') || '—'}</td>
                       <td className="text-right font-mono text-xs tnum">{provider.priority}</td>
                       <td className="font-mono text-xs text-muted-foreground">{key.text}</td>
                       <td>

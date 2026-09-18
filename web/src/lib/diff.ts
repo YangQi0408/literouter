@@ -7,6 +7,7 @@ export function countChanges(current: AppConfig, saved: AppConfig): number {
   if (JSON.stringify(current.server) !== JSON.stringify(saved.server)) count += 1
   count += countList(current.providers, saved.providers)
   count += countList(current.routes, saved.routes)
+  count += countList(current.clients ?? [], saved.clients ?? [])
   return count
 }
 

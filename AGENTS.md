@@ -47,6 +47,7 @@ literouter/
 | `lr_protocol.cpp` | 四种协议的请求/响应双向转换与 `StreamProtocolAdapter` |
 | `lr_router.cpp` | `candidatesFor()` 候选链推导与熔断器状态机（纯决策层，不持有 socket） |
 | `lr_upstream.cpp` | 单次 `upstreamPost()` / `probeProvider()`、上游连接池（每线程每中转站一条，缓冲与流式共用），不含路由逻辑 |
+| `lr_clients.cpp` | 客户端鉴权、模型/渠道组授权、独立持久化配额账本和流式请求预留结算 |
 | `lr_config.cpp` | `ConfigStore` 加载与原子保存、路径解析、`validate()` |
 | `lr_json.cpp` | 配置与遥测的 JSON 编解码 |
 | `lr_i18n.cpp` | C++ 侧 en/zh 字典（CLI 与 GUI 共用） |
@@ -147,7 +148,7 @@ mcpp build -p gui
 `mcpp` 把 `core/tests/**/*.cpp` 中每个文件编译成一个独立二进制，以退出码判定成败，因此没有外部测试框架。
 
 ```bash
-# 运行 core 全部 10 个测试套件（必须全部 PASS）
+# 运行 core 全部 13 个测试套件（必须全部 PASS）
 mcpp test -p core
 
 # 只列出套件名，不构建不运行
@@ -160,7 +161,7 @@ mcpp test -p core test_proxy
 mcpp test -p core test_proxy --timeout 600
 ```
 
-当前套件：`test_config`、`test_i18n`、`test_json_api`、`test_malformed`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`。
+当前套件：`test_clients`、`test_distribution`、`test_media`、`test_config`、`test_i18n`、`test_json_api`、`test_malformed`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`。
 
 Web 控制台的纯函数另有一套 vitest 单测（`web/src/lib/*.test.ts`，与源码同目录）：
 
@@ -385,7 +386,7 @@ ci: unify multi-platform CI into single workflow
 
 任何 Agent 在声称任务完成或提交代码前，必须对照以下清单进行自查：
 
-- [ ] `mcpp test -p core` 执行无误，10 组测试套件全部通过（0 failures）；
+- [ ] `mcpp test -p core` 执行无误，13 组测试套件全部通过（0 failures）；
 - [ ] 涉及 `web/src/lib` 或 `store.tsx` 的，`npm --prefix web test` 全部通过；
 - [ ] `mcpp build --workspace` 执行无误，全工作区无 warning、无 error；
 - [ ] 涉及 CLI 修改的，手动运行一次对应子命令确认控制台输出无乱码、对齐正常；
@@ -397,3 +398,13 @@ ci: unify multi-platform CI into single workflow
 - [ ] 未在任何 member 中遗留 `src/main.cpp` 或临时测试垃圾文件；
 - [ ] 提交信息符合第 7 节的 Conventional Commits 规范；
 - [ ] 保持代码风格整洁，保留所有既有注释和文档。
+
+## 9. 个人自用与分发约束
+
+- `clients` 为空时保留个人使用方式；存在客户端时 `server.api_key` 必须是独立管理员凭据。客户端密钥不能访问管理 API。
+- 客户端权限过滤必须覆盖文本、嵌入、音频和图像请求；路由策略、会话亲和与故障转移只能在授权候选内执行。
+- `clients-config-<hash>.json` 是独立额度账本，使用规范化绝对配置路径的 SHA-256 标识；未设置配置路径的核心库调用才回退到 `clients-<port>.json`。必须持有独占系统锁才能读写账本。禁止让改监听端口、清空遥测、关闭 `persist_telemetry`、重启或删除后重建账户重置配额。无客户端、无已有账本的个人实例不创建配额或锁文件。
+- 流式请求到结束或中断时才释放并发槽位；用量未知保留预留。明确报告零 Token 与没有报告用量必须区分。
+- 管理 API 不返回明文密钥，也不能暴露 `${VAR:-fallback}` 中的默认凭据；回写空密钥时按稳定账户/密钥 ID 保留原始配置。
+- 修改客户端功能后执行 `mcpp test -p core`、Web 测试与构建，以及 `python3 scripts/check_client_cli.py <literouter-binary>`。
+- TLS 默认关闭，证书与私钥成对配置，监听变更重启生效；管理客户端保持证书及主机名验证。

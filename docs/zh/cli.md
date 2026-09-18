@@ -305,3 +305,43 @@ literouter replay --file request.json --provider openai-official --show
 | `--timeout` | 单次超时（秒，默认用中转站自己的配置） |
 | `--show` | 打印回答正文（若上游是别的协议，会先转回 Chat 形状） |
 | `--json` | 以 JSON 输出（全局标志） |
+
+
+## 客户端分发管理 (`clients`)
+
+个人自用无需创建客户端账户。需要分发时，先设置 `server.api_key` 管理员密钥（支持原文或 `${ENV_VAR}` 引用）；它保留管理接口权限，`clients` 中的密钥只能调用模型接口。同一账户下的多把密钥共享配额。
+
+```bash
+# 给已有中转站分组，并限制账户可用的模型和中转站组。
+literouter providers groups relay-primary --group team
+literouter clients add team-a --name "Team A" --model gpt-4o --group team \
+  --rpm 60 --concurrent 4 --requests-per-day 2000 --tokens-per-day 1000000 \
+  --token-reservation 4096
+
+# 原样保存环境变量引用，或从标准输入读取密钥。
+literouter clients keys add team-a desktop --key-env TEAM_A_DESKTOP_KEY
+literouter clients keys add team-a server --key-stdin < /secure/client-key.txt
+literouter clients keys replace team-a desktop --key-env TEAM_A_ROTATED_KEY
+
+literouter clients list
+literouter clients show team-a --json
+literouter clients usage team-a
+literouter clients usage --json
+
+# 仅修改显式指定的字段；模型和组参数会替换对应的原列表。
+literouter clients update team-a --rpm 120 --model gpt-4o --model gpt-4o-mini
+literouter clients update team-a --all-models --all-groups
+literouter clients keys disable team-a desktop
+literouter clients keys enable team-a desktop
+literouter clients keys remove team-a desktop
+literouter clients disable team-a
+literouter clients enable team-a
+literouter clients remove team-a
+literouter providers groups relay-primary --clear
+```
+
+`providers add` 也支持可重复的 `--group`。每把密钥在所属账户内使用唯一 ID；列表和 JSON 输出均不显示密钥值。添加和替换密钥必须指定 `--key-env` 或 `--key-stdin`，不接受命令行明文密钥参数。
+
+模型和中转站组列表留空表示不限。`--rpm`、`--concurrent`、`--requests-per-day`、`--tokens-per-day` 默认为 `0`（不限）。每日配额在 **UTC 00:00** 重置。`--token-reservation` 默认为 `4096`；启用每日 Token 配额时，预留值必须大于 0 且不超过该配额。请求发送前预留 Token，收到上游用量后按实际值结算；缺失用量时保留预留扣费。`tokens_today` 包含预留用量，`reserved_tokens` 表示尚未结算的预留量。配额账本独立持久化，关闭遥测或重置图表计数不会清零配额。
+
+账户、密钥和组管理命令写入配置文件后，需要重新加载运行中的代理，或启用 `server.reload_on_change`。`clients usage` 使用已配置的管理员密钥查询正在运行的代理。不存在的账户或无效修改返回非零退出码，并保持配置文件不变。

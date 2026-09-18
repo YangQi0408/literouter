@@ -34,17 +34,18 @@
   ```
 
 ### 2. `LITEROUTER_STATE_DIR`
-存放服务状态数据的目录（当前用于持久化遥测）。
+存放遥测、实例信息与客户端配额账本的目录。
 
 - **默认行为**：
   - **Linux / macOS**：`$XDG_STATE_HOME/literouter`（若环境变量未设则为 `~/.local/state/literouter`）
   - **Windows**：`%LOCALAPPDATA%\literouter`
 - **内容**：
   - **`telemetry-<port>.json`**：开启 `server.persist_telemetry` 时，全局计数器、逐中转站统计、最近的请求日志与最近 24 小时的小时趋势写入此处（权限 `0600`，临时文件 + 原子重命名），供下一次启动读回；关闭该开关则不会创建该文件。文件名以实例实际绑定的端口区分——每个实例一份历史，不会互相覆盖。详见[配置文件与密钥管理](configuration.md)；
-  - **`literouter-<port>.pid`**：实例监听期间记录自身的 `pid`、端口、启动时间与配置文件路径，`stop()` 时删除。它用于让后续启动能明确指出"这个端口是谁在占着"——`literouter` 依赖的 httplib 默认开启 `SO_REUSEPORT`，两个实例可以同时绑定同一端口并由内核分流请求，仅靠 bind 失败无法察觉。已有实例在监听时，新的 `serve` 会拒绝启动并报出占用者。
+  - **`literouter-<port>.pid`**：记录监听实例的 PID、端口、启动时间与配置路径，停止时删除。监听套接字禁止共享同一地址与端口；PID 文件用于在启动冲突时显示占用者。
+  - **`clients-config-<hash>.json`**：客户端配额和用量账本，使用规范化绝对配置路径的完整 SHA-256 区分实例，更改监听端口不会重置配额，且独立于可选遥测持久化。同目录的 `.json.lock` 文件保证独占访问。直接调用核心库且未设置配置路径时使用 `clients-<port>.json`。此目录应使用持久存储。详见[API 分发](distribution.md)。
 - **示例**：
   ```bash
-  export LITEROUTER_STATE_DIR="/var/run/literouter"
+  export LITEROUTER_STATE_DIR="/var/lib/literouter"
   ```
 
 ### 3. `LITEROUTER_LANG`

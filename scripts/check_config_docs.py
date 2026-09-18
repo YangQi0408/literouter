@@ -59,7 +59,7 @@ BULLET_FIELD = re.compile(r"^\s*-\s*`([A-Za-z_]+)`\s*\(([^)]*)\)")
 BULLET_DEFAULT = re.compile(r"(?:默认|default)s?[^`]*`([^`]+)`", re.IGNORECASE)
 # The sections whose fields this knows how to resolve. A route's target fields
 # are documented inside the routes section, as nested bullets.
-KNOWN_SECTIONS = ("server", "providers", "routes")
+KNOWN_SECTIONS = ("server", "providers", "routes", "clients", "client_keys")
 
 
 def strip_jsonc(text: str) -> str:
@@ -187,6 +187,10 @@ def check_coverage_and_defaults(text: str, defaults: dict, lang: str, problems: 
         "providers": defaults["providers"][0],
         "routes": {**defaults["routes"][0], **defaults["routes"][0]["targets"][0]},
     }
+    if defaults.get("clients"):
+        objects["clients"] = defaults["clients"][0]
+        if defaults["clients"][0].get("keys"):
+            objects["client_keys"] = defaults["clients"][0]["keys"][0]
     for section, fields in objects.items():
         body = sections.get(section)
         if body is None:
@@ -270,6 +274,10 @@ def main() -> int:
     print(f"  checked: {len(seed['server'])} server, {len(defaults['providers'][0])} provider, "
           f"{len(defaults['routes'][0])} route and "
           f"{len(defaults['routes'][0]['targets'][0])} target fields, zh and en")
+    if defaults.get("clients"):
+        client = defaults["clients"][0]
+        print(f"  distribution: {len(client)} client and "
+              f"{len(client.get('keys', [{}])[0]) if client.get('keys') else 0} client-key fields, zh and en")
     print("  note: a field the JSON writer only emits when it is not at its default "
           "(protocol, headers) cannot be enumerated from a default config, so its "
           "table row is compared but its presence is not required by this check")
