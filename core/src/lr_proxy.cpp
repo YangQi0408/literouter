@@ -423,6 +423,9 @@ struct StreamBridge {
     int status = 0;
     std::vector<std::pair<std::string, std::string>> headers;
     std::string error;
+    // The transport's own code, not just its text: the retry below is only for
+    // the one error that means nothing was sent, and a string cannot say that.
+    h::Error error_code = h::Error::Success;
 
     std::shared_ptr<h::Client> client;
     std::atomic<std::uint64_t> bytes_out{0};
@@ -1516,70 +1519,102 @@ struct ProxyServer::Impl {
         }
 
         auto bridge = std::make_shared<StreamBridge>();
-        // The connection comes from the same per-thread pool the buffered path
-        // uses, so a streamed request does not pay for a TCP and TLS handshake
-        // the previous one already paid for. Configuration is therefore also
-        // shared with that path (follow_location, both timeouts, keep-alive, the
-        // trust store) instead of being repeated here, where it could drift.
-        UpstreamConnection connection = checkoutUpstreamConnection(root, provider);
-        auto client = std::shared_ptr<h::Client>(connection,
+        // One transport attempt: take a pooled connection, build the request on
+        // it, and start the reader that will deliver the answer. A lambda because
+        // it can run a second time (see the retry at the gate), and because
+        // duplicating twenty lines of request setup is how two copies drift.
+        std::shared_ptr<h::Client> client;
+        std::thread reader;
+        const auto open_transport = [&] {
+            // The connection comes from the same per-thread pool the buffered
+            // path uses, so a streamed request does not pay for a TCP and TLS
+            // handshake the previous one already paid for. Configuration is
+            // therefore also shared with that path (follow_location, both
+            // timeouts, keep-alive, the trust store) instead of being repeated
+            // here, where it could drift.
+            UpstreamConnection connection = checkoutUpstreamConnection(root, provider);
+            client = std::shared_ptr<h::Client>(connection,
                                                 static_cast<h::Client *>(connection.get()));
-        bridge->client = client;
+            bridge->client = client;
+            {
+                // A retry starts from a clean bridge: whatever the failed attempt
+                // had queued is not part of the answer the client will get.
+                std::scoped_lock lock{bridge->mutex};
+                bridge->headers_ready = false;
+                bridge->finished = false;
+                bridge->aborted = false;
+                bridge->error.clear();
+                bridge->error_code = h::Error::Success;
+                bridge->queue.clear();
+                bridge->queued_bytes = 0;
+            }
 
-        h::Request upstream;
-        upstream.method = "POST";
-        upstream.path = joinPath(prefix, path);
-        upstream.body = payload;
-        upstream.set_header("Content-Type", "application/json");
-        upstream.set_header("Accept", "text/event-stream");
-        upstream.set_header("User-Agent", std::string{kUserAgent});
-        const std::string key = resolveSecret(provider.api_key);
-        if (!key.empty()) {
-            if (ciEqual(provider.protocol, "anthropic")) {
-                upstream.set_header("x-api-key", key);
-                upstream.set_header("anthropic-version", "2023-06-01");
-            } else if (ciEqual(provider.protocol, "gemini")) {
-                upstream.set_header("x-goog-api-key", key);
-            } else {
-                upstream.set_header("Authorization", "Bearer " + key);
+            h::Request upstream;
+            upstream.method = "POST";
+            upstream.path = joinPath(prefix, path);
+            upstream.body = payload;
+            upstream.set_header("Content-Type", "application/json");
+            upstream.set_header("Accept", "text/event-stream");
+            upstream.set_header("User-Agent", std::string{kUserAgent});
+            const std::string key = resolveSecret(provider.api_key);
+            if (!key.empty()) {
+                if (ciEqual(provider.protocol, "anthropic")) {
+                    upstream.set_header("x-api-key", key);
+                    upstream.set_header("anthropic-version", "2023-06-01");
+                } else if (ciEqual(provider.protocol, "gemini")) {
+                    upstream.set_header("x-goog-api-key", key);
+                } else {
+                    upstream.set_header("Authorization", "Bearer " + key);
+                }
             }
-        }
-        for (const auto &[name, value] : provider.headers) {
-            if (!name.empty()) {
-                upstream.set_header(name, value);
+            for (const auto &[name, value] : provider.headers) {
+                if (!name.empty()) {
+                    upstream.set_header(name, value);
+                }
             }
-        }
 
-        upstream.response_handler = [bridge](const h::Response &response) {
-            std::scoped_lock lock{bridge->mutex};
-            bridge->status = response.status;
-            bridge->headers.clear();
-            for (const auto &[name, value] : response.headers) {
-                bridge->headers.emplace_back(name, value);
-            }
-            bridge->headers_ready = true;
-            bridge->cv.notify_all();
-            // The body is wanted either way: on 2xx it is the answer, on a
-            // retryable status it is the diagnostic that gets logged.
-            return true;
-        };
+            upstream.response_handler = [bridge](const h::Response &response) {
+                std::scoped_lock lock{bridge->mutex};
+                bridge->status = response.status;
+                bridge->headers.clear();
+                for (const auto &[name, value] : response.headers) {
+                    bridge->headers.emplace_back(name, value);
+                }
+                bridge->headers_ready = true;
+                bridge->cv.notify_all();
+                // The body is wanted either way: on 2xx it is the answer, on a
+                // retryable status it is the diagnostic that gets logged.
+                return true;
+            };
 
-        upstream.content_receiver = [bridge](const char *data, std::size_t length, std::size_t,
-                                             std::size_t) {
-            std::unique_lock lock{bridge->mutex};
-            if (bridge->aborted) {
-                return false;
-            }
-            bridge->cv.wait(lock, [&] {
-                return bridge->aborted || bridge->queued_bytes < kStreamHighWatermark;
+            upstream.content_receiver = [bridge](const char *data, std::size_t length, std::size_t,
+                                                 std::size_t) {
+                std::unique_lock lock{bridge->mutex};
+                if (bridge->aborted) {
+                    return false;
+                }
+                bridge->cv.wait(lock, [&] {
+                    return bridge->aborted || bridge->queued_bytes < kStreamHighWatermark;
+                });
+                if (bridge->aborted) {
+                    return false;
+                }
+                bridge->queue.emplace_back(data, length);
+                bridge->queued_bytes += length;
+                bridge->cv.notify_all();
+                return true;
+            };
+
+            reader = std::thread([bridge, client, upstream = std::move(upstream)]() mutable {
+                auto result = client->send(upstream);
+                std::scoped_lock lock{bridge->mutex};
+                if (!result) {
+                    bridge->error = errorText(result.error());
+                    bridge->error_code = result.error();
+                }
+                bridge->finished = true;
+                bridge->cv.notify_all();
             });
-            if (bridge->aborted) {
-                return false;
-            }
-            bridge->queue.emplace_back(data, length);
-            bridge->queued_bytes += length;
-            bridge->cv.notify_all();
-            return true;
         };
 
         // What the relay was asked for: the route's model when it renames, the
@@ -1587,31 +1622,43 @@ struct ProxyServer::Impl {
         // including the failovers, which log their own entry — records it.
         const std::string upstream_model = candidate.model.empty() ? ctx.model : candidate.model;
 
-        const double attempt_started = nowUnix();
-        std::thread reader([bridge, client, upstream = std::move(upstream)]() mutable {
-            auto result = client->send(upstream);
-            std::scoped_lock lock{bridge->mutex};
-            if (!result) {
-                bridge->error = errorText(result.error());
-            }
-            bridge->finished = true;
-            bridge->cv.notify_all();
-        });
-
         // ── the failover gate ───────────────────────────────────────────────
         // Wait for headers-or-death. The deadline is generous because a relay
         // legitimately takes a while to first token on a large prompt; it
         // exists so a black-holed connection cannot pin a worker forever.
-        {
+        const auto wait_for_gate = [&] {
             std::unique_lock lock{bridge->mutex};
             bridge->cv.wait_for(lock, std::chrono::seconds(std::max(10, provider.timeout_sec)),
                                 [&] { return bridge->headers_ready || bridge->finished; });
-        }
-
-        const bool got_headers = [&] {
-            std::scoped_lock lock{bridge->mutex};
             return bridge->headers_ready;
-        }();
+        };
+
+        const double attempt_started = nowUnix();
+        open_transport();
+        bool got_headers = wait_for_gate();
+        if (!got_headers) {
+            client->stop();
+            if (reader.joinable()) {
+                reader.join();
+            }
+            // `Error::Connection` is the one transport error that means nothing
+            // was ever sent — the pooled socket was found dead and the reconnect
+            // did not happen — which is why the buffered path retries it on a
+            // fresh connection. This does the same, but only when there is no
+            // other candidate to move to: otherwise failing over is both faster
+            // and likelier to work, and the retry would only add a connect
+            // timeout in front of a relay that is down.
+            h::Error transport_error = h::Error::Success;
+            {
+                std::scoped_lock lock{bridge->mutex};
+                transport_error = bridge->error_code;
+            }
+            if (transport_error == h::Error::Connection && attempt + 1 >= budget) {
+                retireUpstreamConnection(root, provider);
+                open_transport();
+                got_headers = wait_for_gate();
+            }
+        }
 
         if (!got_headers) {
             // Transport failure before any byte: safe to fail over.
