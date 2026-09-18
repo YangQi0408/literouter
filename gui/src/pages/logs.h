@@ -30,8 +30,8 @@ inline bool matchesLevel(const literouter::LogEntry& entry, int filter) {
 }
 
 inline bool matchesKind(const literouter::LogEntry& entry, int filter) {
-    static const char* kinds[] = {"chat", "embeddings", "models", "admin", "system"};
-    if (filter <= 0 || filter > 5) {
+    static const char* kinds[] = {"chat", "embeddings", "models", "admin", "system", "audio", "images"};
+    if (filter <= 0 || filter > 7) {
         return true;
     }
     return entry.kind == kinds[filter - 1];
@@ -96,7 +96,9 @@ inline void composeLogs(eui::Ui& ui, float x, float y, float width, float height
                             std::string(literouter::i18n::tr("Embeddings")),
                             std::string(literouter::i18n::tr("Models")),
                             std::string(literouter::i18n::tr("Admin")),
-                            std::string(literouter::i18n::tr("System"))})
+                            std::string(literouter::i18n::tr("System")),
+                            std::string(literouter::i18n::tr("Audio")),
+                            std::string(literouter::i18n::tr("Images"))})
                     .selected(view.kindFilter)
                     .open(view.kindOpen)
                     .onChange([&view](int value) {
@@ -188,7 +190,9 @@ inline void composeLogs(eui::Ui& ui, float x, float y, float width, float height
                             std::string(literouter::i18n::tr("Embeddings")),
                             std::string(literouter::i18n::tr("Models")),
                             std::string(literouter::i18n::tr("Admin")),
-                            std::string(literouter::i18n::tr("System"))})
+                            std::string(literouter::i18n::tr("System")),
+                            std::string(literouter::i18n::tr("Audio")),
+                            std::string(literouter::i18n::tr("Images"))})
                     .selected(view.kindFilter)
                     .open(view.kindOpen)
                     .onChange([&view](int value) {

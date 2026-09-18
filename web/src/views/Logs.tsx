@@ -73,6 +73,8 @@ export function Logs() {
               <SelectItem value="all">{t('allKinds')}</SelectItem>
               <SelectItem value="chat">chat</SelectItem>
               <SelectItem value="embeddings">embeddings</SelectItem>
+              <SelectItem value="audio">{t('kindAudio')}</SelectItem>
+              <SelectItem value="images">{t('kindImages')}</SelectItem>
               <SelectItem value="models">models</SelectItem>
               <SelectItem value="admin">admin</SelectItem>
               <SelectItem value="system">system</SelectItem>

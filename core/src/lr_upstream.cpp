@@ -279,6 +279,13 @@ void evictClient(const std::string &key) {
 
 UpstreamResult upstreamPost(const ProviderConfig &provider, std::string_view path,
                             std::string_view body, int timeout_sec_override) {
+    return upstreamPostRaw(provider, path, body, {}, "application/json",
+                           timeout_sec_override);
+}
+
+UpstreamResult upstreamPostRaw(const ProviderConfig &provider, std::string_view path,
+                              std::string_view body, std::string_view content_type,
+                              std::string_view accept, int timeout_sec_override) {
     UpstreamResult out;
     const double started = nowUnix();
 
@@ -295,11 +302,18 @@ UpstreamResult upstreamPost(const ProviderConfig &provider, std::string_view pat
     // pool entirely.
     const bool pooled = timeout_sec_override <= 0;
     const std::string key = poolKey(root, provider);
-    const auto headers = buildHeaders(provider, "application/json").toHttplib();
+    auto header_set = buildHeaders(provider, accept);
+    // Multipart framing and its boundary belong to the payload, not a relay's
+    // default JSON headers. Preserve the exact media type selected by the caller.
+    // Empty is used by the legacy JSON wrapper to retain its provider-header
+    // override behavior. Media callers supply an explicit payload MIME type.
+    if (!content_type.empty()) header_set.put("Content-Type", std::string{content_type});
+    const auto headers = header_set.toHttplib();
+    const std::string effective_type = content_type.empty() ? "application/json" : std::string{content_type};
     const std::string target = joinPath(prefix, path);
 
     const auto attempt = [&](h::Client &client) {
-        return client.Post(target, headers, std::string{body}, "application/json");
+        return client.Post(target, headers, std::string{body}, effective_type);
     };
 
     h::Result result;

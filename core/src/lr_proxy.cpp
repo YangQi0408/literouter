@@ -319,7 +319,9 @@ std::string metricsText(const Snapshot &snapshot) {
     return out;
 }
 
-constexpr std::size_t kMaxRequestBody = 16ull * 1024 * 1024;
+constexpr std::size_t kMaxRequestBody = 64ull * 1024 * 1024;
+
+#include "lr_media.h"
 // How much un-drained upstream data may sit in a bridge before the reader stops
 // pulling. Bounded so a fast relay cannot balloon the process, high enough that
 // an ordinary token cadence never blocks.
@@ -1057,7 +1059,7 @@ struct ProxyServer::Impl {
     // Redacted before it is truncated, never after: a truncated key is still a
     // prefix of a key, while a masked one is not a key at all.
     std::string logged_body(const RequestContext &ctx, std::string_view body) const {
-        if (!ctx.config.server.log_bodies) {
+        if (!ctx.config.server.log_bodies || ctx.kind == "audio" || ctx.kind == "images") {
             return {};
         }
         return truncateUtf8(redactSecrets(body),
@@ -1701,11 +1703,13 @@ struct ProxyServer::Impl {
 
     // ── the chat / embeddings pipeline ───────────────────────────────────────
 
-    void serveJson(const h::Request &req, h::Response &res, std::string_view kind) {
+    void serveJson(const h::Request &req, h::Response &res, std::string_view kind,
+                   const MediaRequest *multipart = nullptr) {
+        const bool media = kind == "audio" || kind == "images";
         RequestContext ctx;
         ctx.id = hexId(6);
         ctx.kind = std::string{kind};
-        ctx.body = req.body;
+        ctx.body = multipart ? multipart->metadata() : req.body;
         ctx.started = nowUnix();
         ctx.config = snapshotConfig();
 
@@ -1722,7 +1726,7 @@ struct ProxyServer::Impl {
             ctx.model = req.matches[1].str();
         }
 
-        std::string effective_req_body = req.body;
+        std::string effective_req_body = ctx.body;
         if (ingress_protocol == "openai_responses") {
             effective_req_body = adaptResponsesToChat(req.body);
         } else if (ingress_protocol == "anthropic") {
@@ -1743,13 +1747,23 @@ struct ProxyServer::Impl {
                 ctx.model = it->get<std::string>();
             }
         }
+        if (ctx.model.empty() && kind == "images" && !body.contains("model")) {
+            ctx.model = "dall-e-2";
+        } else if (ctx.model.empty() && kind == "images" && multipart && multipart->model.empty()) {
+            ctx.model = "dall-e-2";
+        }
         if (ctx.model.empty()) {
             sendError(res, 400, "`model` is required");
             finish(ctx, {.status = res.status, .message = "missing model"});
             return;
         }
 
-        if (kind == "gemini_stream") {
+        if (media) {
+            // Speech responses can be binary and start arriving before the
+            // generation finishes, even without an explicit JSON stream flag.
+            ctx.stream = req.path == "/v1/audio/speech" ||
+                         (body.contains("stream") && body["stream"].is_boolean() && body["stream"].get<bool>());
+        } else if (kind == "gemini_stream") {
             ctx.stream = true;
         } else if (ingress_protocol == "gemini") {
             ctx.stream = req.has_param("alt") && req.get_param_value("alt") == "sse";
@@ -1758,11 +1772,27 @@ struct ProxyServer::Impl {
                          body.contains("stream") && body["stream"].is_boolean() && body["stream"].get<bool>();
         }
 
-        if (ctx.config.server.session_affinity_sec > 0) {
+        if (!media && ctx.config.server.session_affinity_sec > 0) {
             ctx.affinity_key = sessionKey(body);
         }
 
         auto candidates = order(router.candidatesFor(ctx.model));
+        if (media && !candidates.empty()) {
+            // Media endpoints have no chat representation. Do not feed uploads
+            // or image parameters through a text protocol adapter; compatible
+            // candidates still share the same policy, breaker and retry budget.
+            std::erase_if(candidates, [&](const Candidate &candidate) {
+                const auto *provider = ctx.config.provider(candidate.provider);
+                return provider == nullptr ||
+                       (!provider->protocol.empty() && !ciEqual(provider->protocol, "openai"));
+            });
+            if (candidates.empty()) {
+                sendError(res, 400, "audio and image endpoints require an openai provider",
+                          "invalid_request_error", "unsupported_media_protocol");
+                finish(ctx, {.status = res.status, .message = "unsupported media protocol"});
+                return;
+            }
+        }
         // The policy reorders the chain the operator's priority produced; it does
         // not replace it. Ties keep the priority order, and a relay with no
         // measurement yet sorts after the ones with one — it has not earned a
@@ -1854,10 +1884,14 @@ struct ProxyServer::Impl {
             const bool same_protocol = ciEqual(ingress_protocol, egress_protocol);
 
             const std::string path =
-                kind == "embeddings" ? provider->embeddings_path
-                                     : resolveChatPath(*provider, upstream_model, effective_stream);
+                media ? req.path.substr(3)
+                      : (kind == "embeddings" ? provider->embeddings_path
+                                              : resolveChatPath(*provider, upstream_model, effective_stream));
             std::string payload = req.body;
-            if (kind != "embeddings") {
+            const std::string request_type = multipart ? multipart->contentType() : "application/json";
+            if (multipart) {
+                payload = multipart->payload(upstream_model);
+            } else if (kind != "embeddings") {
                 if (same_protocol) {
                     // Direct passthrough! When model renaming is configured, rewrite model only if not Gemini (Gemini embeds in path)
                     if (!candidate.model.empty() && candidate.model != ctx.model && egress_protocol != "gemini") {
@@ -1879,7 +1913,7 @@ struct ProxyServer::Impl {
 
             if (ctx.stream) {
                 last_status = relayStream(ctx, res, *provider, candidate, path, payload, attempt,
-                                          budget, last_error, ingress_protocol);
+                                          budget, last_error, ingress_protocol, request_type, media);
                 if (last_status == 0) {
                     return; // committed: the response is the client's now
                 }
@@ -1887,7 +1921,9 @@ struct ProxyServer::Impl {
             }
 
             const double attempt_started = nowUnix();
-            UpstreamResult result = upstreamPost(*provider, path, payload);
+            UpstreamResult result = media
+                ? upstreamPostRaw(*provider, path, payload, request_type)
+                : upstreamPost(*provider, path, payload);
             const auto waited_ms = [&] { return (attempt_started - ctx.started) * 1000.0; };
             if (!result.ok) {
                 last_error = std::format("{}: {}", provider->id, result.error);
@@ -2036,7 +2072,8 @@ struct ProxyServer::Impl {
     int relayStream(const RequestContext &ctx, h::Response &res, const ProviderConfig &provider,
                     const Candidate &candidate, const std::string &path,
                     const std::string &payload, std::size_t attempt, std::size_t budget,
-                    std::string &last_error, const std::string &ingress_protocol) {
+                    std::string &last_error, const std::string &ingress_protocol,
+                    const std::string &request_type = "application/json", bool opaque_response = false) {
         std::string root;
         std::string prefix;
         std::string scheme;
@@ -2083,7 +2120,7 @@ struct ProxyServer::Impl {
             upstream.path = joinPath(prefix, path);
             upstream.body = payload;
             upstream.set_header("Content-Type", "application/json");
-            upstream.set_header("Accept", "text/event-stream");
+            upstream.set_header("Accept", opaque_response ? "*/*" : "text/event-stream");
             upstream.set_header("User-Agent", std::string{kUserAgent});
             const std::string key = resolveSecret(provider.api_key);
             if (!key.empty()) {
@@ -2100,6 +2137,12 @@ struct ProxyServer::Impl {
                 if (!name.empty()) {
                     upstream.set_header(name, value);
                 }
+            }
+
+            // Provider headers cannot override a multipart boundary.
+            if (opaque_response) {
+                upstream.headers.erase("Content-Type");
+                upstream.set_header("Content-Type", request_type);
             }
 
             upstream.response_handler = [bridge](const h::Response &response) {
@@ -2417,11 +2460,16 @@ struct ProxyServer::Impl {
         // Keep the relay's own content type when it named one; SSE is the
         // default because that is what a streamed chat answer is.
         std::string stream_type = headerValue(headers, "content-type");
-        if (stream_type.empty() || !startsWith(toLower(stream_type), "text/event-stream")) {
+        if (stream_type.empty()) {
+            stream_type = opaque_response ? "application/octet-stream" : "text/event-stream";
+        } else if (!opaque_response && !startsWith(toLower(stream_type), "text/event-stream")) {
             stream_type = "text/event-stream";
         }
-        res.set_header("Cache-Control", "no-cache");
-        res.set_header("X-Accel-Buffering", "no");
+        const bool observe_sse = startsWith(toLower(stream_type), "text/event-stream");
+        if (observe_sse) {
+            res.set_header("Cache-Control", "no-cache");
+            res.set_header("X-Accel-Buffering", "no");
+        }
 
         const std::string provider_id = provider.id;
         const bool failover = attempt > 0;
@@ -2438,7 +2486,7 @@ struct ProxyServer::Impl {
         const bool same_protocol = ciEqual(ingress_proto, egress_proto);
 
         std::shared_ptr<StreamProtocolAdapter> adapter;
-        if (!same_protocol) {
+        if (!opaque_response && !same_protocol) {
             adapter = std::make_shared<StreamProtocolAdapter>(egress_proto, ingress_proto, ctx.model, request_ctx.id);
             stream_type = "text/event-stream";
         }
@@ -2447,12 +2495,13 @@ struct ProxyServer::Impl {
         // usage block sits somewhere in the tail, and the reader the
         // non-streaming path uses never gets a body here to read it from.
         auto usage_observer = std::make_shared<StreamUsageObserver>();
+        auto media_usage_filter = opaque_response ? std::make_shared<MediaUsageFilter>() : nullptr;
 
         // The log's copy of a streamed answer, for the same reason and with the
         // same bound: a stream is relayed as it arrives, so "the response body"
         // has to be accumulated on the way past. Shared with the provider below,
         // which is what actually sees the bytes that reach the client.
-        const bool log_body = ctx.config.server.log_bodies;
+        const bool log_body = ctx.config.server.log_bodies && !opaque_response;
         const std::size_t log_body_limit =
             static_cast<std::size_t>(ctx.config.server.log_body_limit);
         auto streamed_body = std::make_shared<std::string>();
@@ -2463,7 +2512,7 @@ struct ProxyServer::Impl {
             [this, bridge, client, provider_id, upstream_model, request_ctx, failover, absorbed,
              stream_ok, attempt_number, total_attempts, attempt_started,
              adapter, usage_observer, provider_root = root, provider, log_body, log_body_limit,
-             streamed_body, payload_size](std::size_t, h::DataSink &sink) -> bool {
+             streamed_body, payload_size, observe_sse, media_usage_filter](std::size_t, h::DataSink &sink) -> bool {
                 // Where this attempt's time went. `headers_unix` is the first
                 // response byte, which is the boundary between the relay thinking
                 // and the answer arriving; before it, the whole elapsed time is
@@ -2504,6 +2553,44 @@ struct ProxyServer::Impl {
                     bridge->cv.notify_all();
 
                     if (done) {
+                        std::string transport_error;
+                        {
+                            std::scoped_lock lock{bridge->mutex};
+                            transport_error = bridge->error;
+                        }
+                        if (!transport_error.empty()) {
+                            // Headers have already committed this response. A
+                            // truncated audio file or SSE answer must terminate
+                            // as a transport error, never gain a success marker
+                            // or concatenate bytes from a second provider.
+                            retireUpstreamConnection(provider_root, provider);
+                            router.recordFailure(provider_id, transport_error, nowUnix());
+                            const double latency = (nowUnix() - attempt_started) * 1000.0;
+                            const auto bytes = bridge->bytes_out.load();
+                            const auto tokens = usage_observer->usage();
+                            const auto measured = phases(latency);
+                            const double cost = estimateCost(provider.price_in_per_million,
+                                                             provider.price_out_per_million,
+                                                             tokens.prompt, tokens.completion);
+                            recordAttempt(provider_id, AttemptOutcome::Failure, latency, bytes,
+                                          tokens.prompt, tokens.completion, payload_size, cost);
+                            finish(request_ctx, {.provider = provider_id,
+                                                 .upstream_model = upstream_model,
+                                                 .status = 502,
+                                                 .bytes = bytes,
+                                                 .prompt_tokens = tokens.prompt,
+                                                 .completion_tokens = tokens.completion,
+                                                 .cost_usd = cost,
+                                                 .message = "upstream stream interrupted: " + transport_error,
+                                                 .wait_ms = (attempt_started - request_ctx.started) * 1000.0,
+                                                 .ttfb_ms = measured.first,
+                                                 .stream_ms = measured.second,
+                                                 .response_body = log_body ? *streamed_body : std::string{},
+                                                 .failover = failover,
+                                                 .attempt = attempt_number,
+                                                 .attempts_total = total_attempts});
+                            return false;
+                        }
                         if (adapter) {
                             const std::string fin = adapter->finish();
                             if (!fin.empty()) {
@@ -2575,7 +2662,10 @@ struct ProxyServer::Impl {
                         continue;
                     }
                     // Watched before conversion: the counts are the upstream's.
-                    usage_observer->feed(chunk);
+                    if (observe_sse) {
+                        if (media_usage_filter) usage_observer->feed(media_usage_filter->feed(chunk));
+                        else usage_observer->feed(chunk);
+                    }
 
                     std::string send_chunk;
                     if (adapter) {
@@ -2843,10 +2933,11 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
 
     // ── OpenAI surface ──────────────────────────────────────────────────────
 
-    const auto pipeline = [this](const h::Request &req, h::Response &res, std::string_view kind) {
+    const auto pipeline = [this](const h::Request &req, h::Response &res, std::string_view kind,
+                                 const MediaRequest *multipart = nullptr) {
         impl_->active_requests.fetch_add(1, std::memory_order_relaxed);
         try {
-            impl_->serveJson(req, res, kind);
+            impl_->serveJson(req, res, kind, multipart);
         } catch (...) {
             // A throw before finish() would otherwise leak the counter and make
             // the console report a permanently busy server.
@@ -2872,6 +2963,48 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     server.Post("/responses", [pipeline](const h::Request &req, h::Response &res) {
         pipeline(req, res, "responses");
     });
+
+    // Read MIME incrementally into bounded ordered parts. httplib's ordinary
+    // handler separates fields/files, losing their interleaving and raw body.
+    // The content reader preserves duplicate image[] / timestamp fields and
+    // all part headers while sharing the JSON pipeline's admission point.
+    for (const char *path : {"/v1/audio/transcriptions", "/v1/audio/translations",
+                             "/v1/audio/speech", "/v1/images/generations",
+                             "/v1/images/edits", "/v1/images/variations"}) {
+        server.Post(path, [pipeline](const h::Request &req, h::Response &res,
+                                    const h::ContentReader &reader) {
+            const std::string_view kind = startsWith(req.path, "/v1/audio/") ? "audio" : "images";
+            const bool multipart_only = req.path == "/v1/audio/transcriptions" ||
+                                        req.path == "/v1/audio/translations" ||
+                                        req.path == "/v1/images/variations";
+            const bool json_only = req.path == "/v1/audio/speech" ||
+                                   req.path == "/v1/images/generations";
+            if ((multipart_only && !req.is_multipart_form_data()) ||
+                (json_only && req.is_multipart_form_data())) {
+                sendError(res, 415, multipart_only ? "multipart/form-data is required" : "application/json is required");
+                return;
+            }
+            if (req.is_multipart_form_data()) {
+                auto media = readMediaMultipart(reader);
+                if (!media) {
+                    sendError(res, res.status == 413 ? 413 : 400, media.error());
+                    return;
+                }
+                pipeline(req, res, kind, &*media);
+            } else {
+                h::Request buffered = req;
+                if (!reader([&](const char *data, std::size_t size) {
+                        if (size > kMaxRequestBody - buffered.body.size()) return false;
+                        buffered.body.append(data, size);
+                        return true;
+                    })) {
+                    sendError(res, res.status == 413 ? 413 : 400, "could not read media request");
+                    return;
+                }
+                pipeline(buffered, res, kind);
+            }
+        });
+    }
 
     // Anthropic Messages API
     server.Post("/v1/messages", [pipeline](const h::Request &req, h::Response &res) {

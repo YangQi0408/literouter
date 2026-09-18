@@ -15,6 +15,7 @@
   - [Google Gemini 原生接口 (GenerateContent)](#google-gemini-原生接口-generatecontent)
   - [OpenAI Responses API](#openai-responses-api)
   - [向量嵌入 (Embeddings) 与旧版补全 (Completions)](#向量嵌入-embeddings-与旧版补全-completions)
+  - [音频与图像](#音频与图像)
   - [模型查询与健康检查](#模型查询与健康检查)
 - [上游提供商协议 (Upstream Protocols)](#上游提供商协议-upstream-protocols)
   - [支持的协议类型](#支持的协议类型)
@@ -98,6 +99,40 @@ curl http://127.0.0.1:8787/v1/messages \
 
 - **向量嵌入**：`POST /v1/embeddings`
 - **传统补全**：`POST /v1/completions`
+
+### 音频与图像
+
+| 端点（`POST`） | 请求 | 响应 |
+|---|---|---|
+| `/v1/audio/transcriptions` | `multipart/form-data`，包含 `file` 与 `model` | JSON、文本/字幕格式；`stream=true` 时可透传上游 SSE |
+| `/v1/audio/translations` | `multipart/form-data`，包含 `file` 与 `model` | 上游 JSON 或文本/字幕格式 |
+| `/v1/audio/speech` | JSON，包含 `model`、`input`、`voice`，可选 `response_format` | 音频二进制或上游 SSE，随到随发 |
+| `/v1/images/generations` | JSON，包含 `prompt` 及模型支持的参数 | JSON；`stream=true` 时可透传上游 SSE |
+| `/v1/images/edits` | 图片/蒙版 Multipart，或上游支持的 JSON | JSON；`stream=true` 时可透传上游 SSE |
+| `/v1/images/variations` | 图片及参数 Multipart | 上游 JSON |
+
+这些端点要求中转站采用 **`openai` 协议**，并且上游实现相应端点。其他协议的候选站会在计算尝试次数前排除；模型已有路由但没有兼容站时，返回 `400`，错误码为 `unsupported_media_protocol`。音频、图像请求不会被转换成 Chat、Anthropic、Gemini 或 Responses 请求。具体模型支持范围和参数校验由上游决定。
+
+`base_url` 是 API 前缀，例如 `https://api.openai.com/v1` 加上 `/audio/speech`。`chat_path` 和 `embeddings_path` 不影响这些路径。`model` 沿用现有模型路由与重命名规则；图像请求未填写模型时，按 OpenAI 默认的 `dall-e-2` 路由，音频请求必须填写模型。Multipart 按原顺序保留重复字段（如 `image[]`、时间戳选项）、文件名、分段 MIME 头与二进制内容；只重新生成 MIME 边界并替换模型字段。上传内容会缓冲以支持重试，网关请求体上限为 **64 MiB**；上游可能有更低限制。
+
+媒体请求共用鉴权、路由策略、故障转移、熔断、日志和用量统计。非流式响应完整接收后才提交。语音生成及显式流式请求沿用响应头闸门：提交前的连接失败、`429` 和可重试 `5xx` 可切换中转站；成功响应头一旦提交，上游音频/SSE 中断就会终止客户端连接并记录失败，绝不切换站点拼接另一段内容。二进制响应及上游 `Content-Type` 保持原样；网关自身错误使用 OpenAI JSON 格式。无法确认上游是否已处理的传输失败可能造成重复操作或计费，不能接受重放时可设置 `max_attempts: 1`。
+
+Token 统计只采纳上游 JSON/SSE 实际返回的用量；Token 单价字段不会估算音频时长费用或按张图像费用。二进制上传和媒体响应不进入正文日志；Multipart 日志仅保存模型、流式标志和分段元数据（字段名、文件名、MIME 类型、字节数）。GUI 与 Web 日志支持音频、图像筛选。
+
+```bash
+curl http://127.0.0.1:8787/v1/audio/transcriptions \
+  -H "Authorization: Bearer $LITEROUTER_KEY" \
+  -F model=whisper-1 -F file=@recording.wav
+
+curl http://127.0.0.1:8787/v1/audio/speech \
+  -H "Authorization: Bearer $LITEROUTER_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"tts-1","input":"你好","voice":"alloy","response_format":"mp3"}' \
+  --output speech.mp3
+
+curl http://127.0.0.1:8787/v1/images/generations \
+  -H "Authorization: Bearer $LITEROUTER_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-image-1","prompt":"水彩山丘","size":"1024x1024"}'
+```
 
 ### 模型查询与健康检查
 

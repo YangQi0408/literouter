@@ -15,6 +15,7 @@ This document covers `literouter`'s inbound client endpoints, supported upstream
   - [Google Gemini GenerateContent](#google-gemini-generatecontent)
   - [OpenAI Responses API](#openai-responses-api)
   - [Embeddings & Legacy Completions](#embeddings--legacy-completions)
+  - [Audio and Images](#audio-and-images)
   - [Model Discovery & Health Check](#model-discovery--health-check)
 - [Upstream Provider Protocols](#upstream-provider-protocols)
   - [Supported Protocols](#supported-protocols)
@@ -97,6 +98,40 @@ curl http://127.0.0.1:8787/v1/messages \
 
 - **Embeddings**: `POST /v1/embeddings`
 - **Legacy Completions**: `POST /v1/completions`
+
+### Audio and Images
+
+| Endpoint (`POST`) | Request | Response |
+|---|---|---|
+| `/v1/audio/transcriptions` | `multipart/form-data` with `file` and `model` | JSON, text/subtitle formats, or upstream SSE with `stream=true` |
+| `/v1/audio/translations` | `multipart/form-data` with `file` and `model` | Upstream JSON or text/subtitle format |
+| `/v1/audio/speech` | JSON with `model`, `input`, `voice`, and optional `response_format` | Audio bytes or upstream SSE; delivered as they arrive |
+| `/v1/images/generations` | JSON with `prompt` and model-specific options | JSON or upstream SSE with `stream=true` |
+| `/v1/images/edits` | Multipart images/mask, or upstream-compatible JSON | JSON or upstream SSE with `stream=true` |
+| `/v1/images/variations` | Multipart image and options | Upstream JSON |
+
+These endpoints require an **`openai` provider** that implements the requested endpoint. Other provider protocols are excluded before the attempt limit; an otherwise routed model with no compatible provider returns `400` with code `unsupported_media_protocol`. There is no audio/image conversion into Chat, Anthropic, Gemini, or Responses requests. Provider-specific field validation and model support remain with that provider.
+
+`base_url` is the API prefix: `https://api.openai.com/v1` plus `/audio/speech`, for example. `chat_path` and `embeddings_path` do not change media paths. The `model` field uses the existing route/model mapping. Image requests that omit it route the OpenAI default `dall-e-2`; audio requests require a model. Multipart fields, repeated fields (`image[]`, timestamp options), filenames, MIME part headers, and binary contents are preserved in order; the MIME boundary is regenerated and only the model field is renamed. Uploads are buffered for replay, bounded by the gateway's **64 MiB request-body limit**; upstream limits may be lower.
+
+Media requests share authentication, routing policy, failover, circuit breakers, request logs, and usage counters with text requests. Non-streaming responses are buffered before commitment. Speech and explicit streaming requests use the response-header gate: connection failures, `429`, and retryable `5xx` may switch providers before a response is committed. After successful headers are committed, a truncated upstream audio/SSE response terminates the client connection, records a failure, and never switches providers. Binary response bytes and the upstream `Content-Type` are preserved; gateway-generated errors remain OpenAI-style JSON. A retry after an ambiguous transport failure may repeat an upstream operation or charge, so use `max_attempts: 1` when replay is unacceptable.
+
+Usage reflects token counts actually reported in JSON/SSE. Audio duration charges and image-per-item charges are not estimated by the token price fields. Binary uploads and media responses are omitted from body logs; multipart logs retain only model/stream and part metadata (names, filenames, MIME types, byte counts). GUI and Web logs include audio/image filters.
+
+```bash
+curl http://127.0.0.1:8787/v1/audio/transcriptions \
+  -H "Authorization: Bearer $LITEROUTER_KEY" \
+  -F model=whisper-1 -F file=@recording.wav
+
+curl http://127.0.0.1:8787/v1/audio/speech \
+  -H "Authorization: Bearer $LITEROUTER_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"tts-1","input":"Hello","voice":"alloy","response_format":"mp3"}' \
+  --output speech.mp3
+
+curl http://127.0.0.1:8787/v1/images/generations \
+  -H "Authorization: Bearer $LITEROUTER_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-image-1","prompt":"A watercolor hill","size":"1024x1024"}'
+```
 
 ### Model Discovery & Health Check
 

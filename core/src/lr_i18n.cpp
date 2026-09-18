@@ -260,6 +260,8 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
     {"Warn", "警告"},
     {"Error", "错误"},
     {"All kinds", "所有类型"},
+    {"Audio", "音频"},
+    {"Images", "图像"},
     {"Chat", "对话"},
     {"Embeddings", "嵌入"},
     {"Models", "模型"},

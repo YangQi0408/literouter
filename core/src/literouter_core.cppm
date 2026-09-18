@@ -388,7 +388,7 @@ struct LogEntry {
     // "info" | "warn" | "error"
     std::string level = "info";
     std::string request_id;
-    // "chat" | "embeddings" | "models" | "admin" | "system"
+    // "chat" | "embeddings" | "audio" | "images" | "models" | "admin" | "system"
     std::string kind;
     std::string model;            // as the client asked
     std::string provider;         // the relay that answered
@@ -548,6 +548,15 @@ UpstreamResult upstreamPost(const ProviderConfig &provider,
                             std::string_view path,
                             std::string_view body,
                             int timeout_sec_override = 0);
+
+// Buffered media POST; preserves binary body bytes and caller-supplied MIME type.
+// Existing JSON callers continue using upstreamPost(). No protocol conversion.
+UpstreamResult upstreamPostRaw(const ProviderConfig &provider,
+                              std::string_view path,
+                              std::string_view body,
+                              std::string_view content_type,
+                              std::string_view accept = "*/*",
+                              int timeout_sec_override = 0);
 
 // What `prompt_tokens` + `completion_tokens` cost on this relay, in US dollars,
 // from the prices written down for it. The proxy accumulates this per attempt;

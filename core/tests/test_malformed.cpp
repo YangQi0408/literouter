@@ -169,16 +169,23 @@ struct Exchange {
 Exchange post(httplib::Client &client, bool stream) {
     Exchange out;
     const std::string body = stream ? R"({"model":"m","stream":true})" : R"({"model":"m"})";
-    auto result = client.Post("/v1/chat/completions",
-                              httplib::Headers{{"Content-Type", "application/json"}}, body,
-                              "application/json");
-    if (!result) {
-        return out;
-    }
-    out.client_ok = true;
-    out.status = result->status;
-    out.content_type = result->get_header_value("Content-Type");
-    out.body = result->body;
+    httplib::Request request;
+    request.method = "POST";
+    request.path = "/v1/chat/completions";
+    request.body = body;
+    request.set_header("Content-Type", "application/json");
+    // Keep committed headers and received bytes even when the final chunk is
+    // missing: a buffered Result discards them when it reports a short read.
+    request.response_handler = [&](const httplib::Response &response) {
+        out.status = response.status;
+        out.content_type = response.get_header_value("Content-Type");
+        return true;
+    };
+    request.content_receiver = [&](const char *data, std::size_t size, std::size_t, std::size_t) {
+        out.body.append(data, size);
+        return true;
+    };
+    out.client_ok = static_cast<bool>(client.send(request));
     return out;
 }
 
@@ -428,11 +435,14 @@ void testStreamWithoutTerminatorCloses() {
         return;
     }
     const Exchange exchange = post(*fixture.client, /*stream=*/true);
-    LR_CHECK_MSG(exchange.client_ok, "the client never got a response object");
+    LR_CHECK_MSG(!exchange.client_ok, "a truncated stream must report a transport failure");
     LR_CHECK_MSG(exchange.status == 200, "a truncated stream changed the status");
     LR_CHECK_MSG(exchange.body.find("data:") != std::string::npos,
                  "the frames that did arrive were dropped");
-    fixture.finish("stream without terminator");
+    const auto snapshot = fixture.finish("stream without terminator");
+    LR_CHECK_EQ(snapshot.total_failure, 1);
+    if (const auto *one = statOf(snapshot, "one")) LR_CHECK_EQ(one->failures, 1);
+    if (const auto *two = statOf(snapshot, "two")) LR_CHECK_EQ(two->requests, 0);
     raw.stop();
 #endif
 }
