@@ -135,14 +135,31 @@ bool isConsolePath(std::string_view path) {
     return path == "/" || path == "/favicon.ico" || path == "/ui" || startsWith(path, "/ui/");
 }
 
-// The liveness probe, which answers before any credential is presented.
+// Liveness and readiness, which answer two different questions and are
+// therefore two endpoints.
 //
-// A healthcheck is run by something that holds no key — a container runtime, a
-// load balancer, a systemd unit — so gating it behind `server.api_key` turns
+// Liveness ("is this process alive?") answers before any credential is
+// presented, because the things that ask it hold no key — a container runtime,
+// a load balancer, a systemd unit — and gating it behind `server.api_key` turns
 // every such probe into a 401 and reports a healthy proxy as down. It leaks
 // nothing: the body is a constant, and it says only that the listener is up.
-bool isLivenessPath(std::string_view path) {
-    return path == "/health";
+//
+// Readiness ("should traffic be sent here?") is the one that may say no: a
+// proxy whose config has no enabled relay can accept a connection and still
+// cannot answer a single request, and a load balancer that keeps sending to it
+// is sending to a proxy that will 503. `/health` is the historical name for the
+// liveness probe and keeps meaning that, so an existing healthcheck does not
+// silently change behaviour.
+enum class HealthProbe { None, Live, Ready };
+
+HealthProbe healthProbeFor(std::string_view path) {
+    if (path == "/health" || path == "/health/live") {
+        return HealthProbe::Live;
+    }
+    if (path == "/health/ready") {
+        return HealthProbe::Ready;
+    }
+    return HealthProbe::None;
 }
 
 json validationJson(const ValidationReport &report) {
@@ -322,16 +339,31 @@ std::string metricsText(const Snapshot &snapshot) {
     header("literouter_client_active_requests", "gauge", "Active requests by client account.");
     header("literouter_client_requests_today", "gauge", "Accepted requests in the UTC quota day.");
     header("literouter_client_tokens_today", "gauge", "Charged tokens plus reservations in the UTC quota day.");
+    header("literouter_client_cost_today_usd", "gauge",
+           "Settled upstream spend in the UTC quota day, which is what a daily budget is measured "
+           "against.");
     for (const auto &client : snapshot.clients) {
         const auto labels = std::format("client=\"{}\"", metricLabel(client.client));
         counter("literouter_client_requests_total", labels, client.requests);
         counter("literouter_client_tokens_total", labels + ",direction=\"input\"", client.tokens_prompt);
         counter("literouter_client_tokens_total", labels + ",direction=\"output\"", client.tokens_completion);
         sample("literouter_client_cost_usd_total", labels, client.cost_usd);
+        sample("literouter_client_cost_today_usd", labels, client.cost_today);
         counter("literouter_client_active_requests", labels, client.active_requests);
         counter("literouter_client_requests_today", labels, client.requests_today);
         counter("literouter_client_tokens_today", labels, client.tokens_today);
     }
+    header("literouter_cache_enabled", "gauge",
+           "1 while the local response cache is storing answers.");
+    sample("literouter_cache_enabled", "", snapshot.cache_enabled ? 1 : 0);
+    header("literouter_cache_hits_total", "counter",
+           "Requests answered from the local response cache without asking a relay.");
+    counter("literouter_cache_hits_total", "", snapshot.cache_hits);
+    header("literouter_cache_misses_total", "counter",
+           "Cache lookups that found nothing usable, including expired entries.");
+    counter("literouter_cache_misses_total", "", snapshot.cache_misses);
+    header("literouter_cache_entries", "gauge", "Answers currently held in the cache.");
+    sample("literouter_cache_entries", "", static_cast<double>(snapshot.cache_entries));
     return out;
 }
 
@@ -914,6 +946,11 @@ struct ProxyServer::Impl {
     std::unique_ptr<h::Server> server;
     Router router;
     ClientLedger client_ledger;
+    // Two more gates in front of a relay, for two questions the breaker cannot
+    // answer: is this relay full, and has this exact question already been
+    // answered.
+    UpstreamLimiter upstream_limiter;
+    ResponseCache response_cache;
 
     mutable std::mutex config_mutex;
     AppConfig config;
@@ -986,9 +1023,13 @@ struct ProxyServer::Impl {
         affinity[std::string{key}] = Affinity{provider, now_unix + ttl_sec};
     }
 
-    // The last kHourlyBuckets hours of traffic, oldest first. Bounded by
-    // construction: the oldest falls off when a new hour starts.
-    static constexpr std::size_t kHourlyBuckets = 24;
+    // The last buckets of traffic, oldest first. Bounded by construction: the
+    // oldest falls off when a new bucket starts. Both the width and the count
+    // come from server.traffic_bucket_sec / server.traffic_bucket_count, so a
+    // relay being debugged right now can be watched at minute resolution
+    // instead of hour resolution.
+    std::size_t traffic_bucket_count = 24;
+    int traffic_bucket_sec = 3600;
     std::deque<TrafficBucket> hourly;
 
     mutable std::mutex telemetry_mutex;
@@ -1029,6 +1070,18 @@ struct ProxyServer::Impl {
     std::mutex flush_wait_mutex;
     std::condition_variable flush_wait;
     std::thread flusher;
+
+    // ── OTLP metrics export ──────────────────────────────────────────────────
+    //
+    // The Prometheus endpoint is pull-based, which is the wrong shape for a
+    // machine behind a home router or inside a container nobody scrapes. This
+    // pushes the same numbers to a collector the operator already runs. The
+    // endpoint is read under its own lock and re-read every tick, so editing it
+    // in the console takes effect without a restart.
+    mutable std::mutex otlp_mutex;
+    std::string otlp_endpoint;
+    double last_otlp_export_unix = 0.0;
+    bool otlp_write_failed = false;
 
     AppConfig snapshotConfig() const {
         std::scoped_lock lock{config_mutex};
@@ -1188,11 +1241,13 @@ struct ProxyServer::Impl {
     // request — as opposed to an attempt — is accounted for, so a failover adds
     // one request here and two to the relay stats, exactly as the totals do.
     void noteHour(const AttemptFacts &facts, double cost_usd, double time_unix) {
-        const double hour = std::floor(time_unix / 3600.0) * 3600.0;
+        const double width = static_cast<double>(std::max(60, traffic_bucket_sec));
+        const double hour = std::floor(time_unix / width) * width;
         if (hourly.empty() || hourly.back().hour_unix < hour) {
             hourly.push_back(TrafficBucket{});
             hourly.back().hour_unix = hour;
-            while (hourly.size() > kHourlyBuckets) {
+            hourly.back().bucket_sec = std::max(60, traffic_bucket_sec);
+            while (hourly.size() > traffic_bucket_count) {
                 hourly.pop_front();
             }
         }
@@ -1279,6 +1334,7 @@ struct ProxyServer::Impl {
         for (const auto &bucket : hourly) {
             json node = json::object();
             node["hour_unix"] = bucket.hour_unix;
+            node["bucket_sec"] = bucket.bucket_sec;
             node["requests"] = bucket.requests;
             node["successes"] = bucket.successes;
             node["failures"] = bucket.failures;
@@ -1439,6 +1495,9 @@ struct ProxyServer::Impl {
                 }
                 TrafficBucket bucket;
                 bucket.hour_unix = item.value("hour_unix", 0.0);
+                // A file written before the bucket width was configurable has
+                // no `bucket_sec`, and it was recorded hourly.
+                bucket.bucket_sec = item.value("bucket_sec", 3600);
                 bucket.requests = item.value("requests", std::uint64_t{0});
                 bucket.successes = item.value("successes", std::uint64_t{0});
                 bucket.failures = item.value("failures", std::uint64_t{0});
@@ -1464,7 +1523,7 @@ struct ProxyServer::Impl {
                 stats[it->first] = std::move(it->second);
             }
             log.restore(std::move(entries), next_seq);
-            while (restored_hours.size() > kHourlyBuckets) {
+            while (restored_hours.size() > traffic_bucket_count) {
                 restored_hours.pop_front();
             }
             hourly = std::move(restored_hours);
@@ -1482,9 +1541,25 @@ struct ProxyServer::Impl {
             this->config = config;
         }
         router.setConfig(config);
+        upstream_limiter.setConfig(config);
+        response_cache.configure(config.server.response_cache_ttl_sec,
+                                config.server.response_cache_max_entries);
+        traffic_bucket_sec = std::clamp(config.server.traffic_bucket_sec, 60, 86400);
+        traffic_bucket_count =
+            static_cast<std::size_t>(std::clamp(config.server.traffic_bucket_count, 2, 10000));
         {
             std::scoped_lock lock{telemetry_mutex};
             log.setCapacity(static_cast<std::size_t>(std::max(16, config.server.log_capacity)));
+            // A narrower window than the trend currently holds trims it now
+            // rather than at the next bucket boundary, so the chart reflects
+            // the setting the operator just saved.
+            while (hourly.size() > traffic_bucket_count) {
+                hourly.pop_front();
+            }
+        }
+        {
+            std::scoped_lock lock{otlp_mutex};
+            otlp_endpoint = config.server.otlp_endpoint;
         }
         // A live edit decides whether the next flush writes anything, and marking
         // it dirty is what makes switching the flag on take effect now rather than
@@ -1572,8 +1647,201 @@ struct ProxyServer::Impl {
                     writeState();
                 }
                 checkConfigFile();
+                exportOtlp();
             }
         });
+    }
+
+    // ── OTLP ─────────────────────────────────────────────────────────────────
+
+    static constexpr double kOtlpIntervalSec = 30.0;
+
+    // One OTLP sum or gauge metric, with optional attributes. `monotonic` is
+    // what tells a collector that a counter never decreases, which is the
+    // difference between a rate() and a garbage chart.
+    static json otlpMetric(std::string name, std::string unit, double value,
+                           std::string_view start_nano, std::string_view now_nano,
+                           bool gauge, const json &attributes) {
+        json point = json::object();
+        point["asDouble"] = value;
+        point["timeUnixNano"] = std::string{now_nano};
+        point["startTimeUnixNano"] = std::string{start_nano};
+        if (!attributes.empty()) {
+            point["attributes"] = attributes;
+        }
+        json metric = json::object();
+        metric["name"] = std::move(name);
+        metric["unit"] = std::move(unit);
+        json body = json::object();
+        body["dataPoints"] = json::array({std::move(point)});
+        if (gauge) {
+            metric["gauge"] = std::move(body);
+        } else {
+            // 2 is CUMULATIVE in the OTLP enumeration; 1 would be DELTA.
+            body["aggregationTemporality"] = 2;
+            body["isMonotonic"] = true;
+            metric["sum"] = std::move(body);
+        }
+        return metric;
+    }
+
+    static json otlpAttribute(std::string_view key, std::string_view value) {
+        return json::array({json{{"key", std::string{key}},
+                                 {"value", json{{"stringValue", std::string{value}}}}}});
+    }
+
+    std::string otlpPayload() {
+        std::uint64_t requests = 0;
+        std::uint64_t successes = 0;
+        std::uint64_t failures = 0;
+        std::uint64_t bytes = 0;
+        std::uint64_t prompt_tokens = 0;
+        std::uint64_t completion_tokens = 0;
+        double cost = 0.0;
+        std::vector<ProviderStat> providers;
+        {
+            std::scoped_lock lock{telemetry_mutex};
+            requests = total_requests;
+            successes = total_success;
+            failures = total_failure;
+            bytes = bytes_out;
+            prompt_tokens = tokens_prompt;
+            completion_tokens = tokens_completion;
+            cost = cost_usd;
+            for (auto it = stats.begin(); it != stats.end(); ++it) {
+                providers.push_back(it->second);
+            }
+        }
+        const std::vector<ClientUsage> clients = client_ledger.snapshot();
+        const std::uint64_t active =
+            static_cast<std::uint64_t>(std::max(0, active_requests.load()));
+        const std::uint64_t cache_hits = response_cache.hits();
+        const std::uint64_t cache_misses = response_cache.misses();
+        const std::uint64_t cache_entries = response_cache.size();
+        const std::uint64_t cache_enabled = response_cache.enabled() ? 1 : 0;
+
+        // Nanosecond strings: OTLP JSON encodes a uint64 as a string, because a
+        // JSON number cannot hold it. The window starts when the process did,
+        // which is what makes a cumulative sum meaningful across a restart.
+        const auto nano = [](double seconds) {
+            return std::format("{}", static_cast<std::uint64_t>(seconds * 1e9));
+        };
+        const std::string start_nano = nano(started_unix > 0.0 ? started_unix : nowUnix());
+        const std::string now_nano = nano(nowUnix());
+
+        json metrics = json::array();
+        metrics.push_back(otlpMetric("literouter.requests", "1",
+                                     static_cast<double>(requests), start_nano, now_nano, false,
+                                     json::array()));
+        metrics.push_back(otlpMetric("literouter.successes", "1",
+                                     static_cast<double>(successes), start_nano, now_nano, false,
+                                     json::array()));
+        metrics.push_back(otlpMetric("literouter.failures", "1",
+                                     static_cast<double>(failures), start_nano, now_nano, false,
+                                     json::array()));
+        metrics.push_back(otlpMetric("literouter.bytes_out", "By",
+                                     static_cast<double>(bytes), start_nano, now_nano, false,
+                                     json::array()));
+        metrics.push_back(otlpMetric("literouter.tokens", "1",
+                                     static_cast<double>(prompt_tokens + completion_tokens),
+                                     start_nano, now_nano, false, json::array()));
+        metrics.push_back(otlpMetric("literouter.cost_usd", "USD", cost, start_nano, now_nano,
+                                     false, json::array()));
+        metrics.push_back(otlpMetric("literouter.active_requests", "1",
+                                     static_cast<double>(active), start_nano, now_nano, true,
+                                     json::array()));
+        metrics.push_back(otlpMetric("literouter.breakers_open", "1",
+                                     static_cast<double>(router.openBreakerCount(nowUnix())),
+                                     start_nano, now_nano, true, json::array()));
+        metrics.push_back(otlpMetric("literouter.cache_enabled", "1",
+                                     static_cast<double>(cache_enabled), start_nano, now_nano, true,
+                                     json::array()));
+        metrics.push_back(otlpMetric("literouter.cache_hits", "1",
+                                     static_cast<double>(cache_hits), start_nano, now_nano, false,
+                                     json::array()));
+        metrics.push_back(otlpMetric("literouter.cache_misses", "1",
+                                     static_cast<double>(cache_misses), start_nano, now_nano, false,
+                                     json::array()));
+        metrics.push_back(otlpMetric("literouter.cache_entries", "1",
+                                     static_cast<double>(cache_entries), start_nano, now_nano, true,
+                                     json::array()));
+        for (const auto &stat : providers) {
+            const auto attributes = otlpAttribute("relay", stat.provider);
+            metrics.push_back(otlpMetric("literouter.relay.requests", "1",
+                                         static_cast<double>(stat.requests), start_nano, now_nano,
+                                         false, attributes));
+            metrics.push_back(otlpMetric("literouter.relay.failures", "1",
+                                         static_cast<double>(stat.failures), start_nano, now_nano,
+                                         false, attributes));
+            metrics.push_back(otlpMetric("literouter.relay.cost_usd", "USD", stat.cost_usd,
+                                         start_nano, now_nano, false, attributes));
+            metrics.push_back(otlpMetric("literouter.relay.latency_ms_p95", "ms",
+                                         stat.latency_ms_p95, start_nano, now_nano, true,
+                                         attributes));
+        }
+        for (const auto &client : clients) {
+            const auto attributes = otlpAttribute("client", client.client);
+            metrics.push_back(otlpMetric("literouter.client.requests", "1",
+                                         static_cast<double>(client.requests), start_nano, now_nano,
+                                         false, attributes));
+            metrics.push_back(otlpMetric("literouter.client.cost_usd", "USD", client.cost_usd,
+                                         start_nano, now_nano, false, attributes));
+            metrics.push_back(otlpMetric("literouter.client.cost_today_usd", "USD",
+                                         client.cost_today, start_nano, now_nano, true, attributes));
+        }
+
+        json payload = json::object();
+        payload["resourceMetrics"] = json::array({json{
+            {"resource", json{{"attributes", otlpAttribute("service.name", "literouter")}}},
+            {"scopeMetrics", json::array({json{
+                {"scope", json{{"name", "literouter"}, {"version", std::string{kVersion}}}},
+                {"metrics", std::move(metrics)}}})}
+        }});
+        return payload.dump();
+    }
+
+    void exportOtlp() {
+        std::string endpoint;
+        {
+            std::scoped_lock lock{otlp_mutex};
+            endpoint = otlp_endpoint;
+        }
+        if (endpoint.empty()) {
+            otlp_write_failed = false;
+            return;
+        }
+        const double now = nowUnix();
+        if (last_otlp_export_unix > 0.0 && now - last_otlp_export_unix < kOtlpIntervalSec) {
+            return;
+        }
+        last_otlp_export_unix = now;
+
+        // A synthetic provider rather than a bespoke HTTP call: the collector is
+        // just another HTTPS endpoint, and reusing the upstream unit means the
+        // trust store, the timeouts and the error text are the same ones every
+        // relay already goes through.
+        ProviderConfig sink;
+        sink.id = "otlp";
+        sink.base_url = endpoint;
+        sink.timeout_sec = 10;
+        sink.connect_timeout_sec = 5;
+        const UpstreamResult result =
+            upstreamPostRaw(sink, "/v1/metrics", otlpPayload(), "application/json");
+        if (!result.ok || result.status < 200 || result.status >= 300) {
+            // Reported once per failure run, like the telemetry file: a collector
+            // that is down would otherwise fill the log it cannot receive.
+            if (!otlp_write_failed) {
+                otlp_write_failed = true;
+                recordSystem(result.ok
+                                 ? std::format("OTLP export to {} failed with HTTP {}", endpoint,
+                                               result.status)
+                                 : std::format("OTLP export to {} failed: {}", endpoint,
+                                               result.error),
+                             "error");
+            }
+            return;
+        }
+        otlp_write_failed = false;
     }
 
     // Requests a stop and joins. No final write: used by the paths where there
@@ -1863,6 +2131,38 @@ struct ProxyServer::Impl {
             if (!key.empty()) ctx.affinity_key = ctx.identity.client_id + ":" + key;
         }
 
+        // ── the local response cache ────────────────────────────────────────
+        // Looked up before a candidate is chosen, because a hit needs no relay at
+        // all. Streaming is excluded by construction: a cached answer is one
+        // body, and the client asked for an event stream. Media is excluded
+        // because its request is multipart and its answer can be binary.
+        //
+        // The account is part of the key. An administrator is the operator's own
+        // session, so it shares one namespace; two client accounts never share
+        // anything, because an answer can carry one account's private context.
+        const bool cacheable = !media && !ctx.stream;
+        const std::string cache_key =
+            cacheable ? ResponseCache::keyFor(ctx.identity.administrator ? std::string_view{}
+                                                                       : ctx.identity.client_id,
+                                              ingress_protocol, ctx.model, effective_req_body)
+                      : std::string{};
+        if (cacheable) {
+            if (auto hit = response_cache.lookup(cache_key, nowUnix()); hit) {
+                res.status = hit->status;
+                res.set_header("X-Literouter-Cache", "hit");
+                res.set_content(hit->body, hit->content_type);
+                // Counted as a request, and counted against nobody: no relay was
+                // asked, so no relay stat moves and no tokens are charged. That
+                // is the point of the cache.
+                finish(ctx, {.provider = "cache",
+                             .status = hit->status,
+                             .bytes = hit->body.size(),
+                             .message = std::format("{} · served from the local response cache",
+                                                    ctx.model)});
+                return;
+            }
+        }
+
         auto candidates = order(router.candidatesFor(ctx.model));
         if (const auto *client = policy(ctx.config, ctx.identity)) {
             std::erase_if(candidates, [&](const auto &candidate) {
@@ -1953,6 +2253,11 @@ struct ProxyServer::Impl {
         std::string last_error;
         int last_status = 0;
         bool deadline_hit = false;
+        // Set when a candidate was passed over because the relay is at its own
+        // concurrency or rate limit, which is a different answer to give the
+        // client than "every relay failed".
+        bool rate_limited = false;
+        int last_retry_after = 1;
 
         for (std::size_t attempt = 0; attempt < budget; ++attempt) {
             const Candidate &candidate = candidates[attempt];
@@ -1974,8 +2279,35 @@ struct ProxyServer::Impl {
                 candidate.model.empty() ? ctx.model : candidate.model;
             const bool effective_stream = ctx.stream && provider->supports_stream;
 
+            // ── relay-side admission ────────────────────────────────────────
+            // A relay that is full is not a relay that failed, which is why this
+            // does not touch the breaker: skipping it for this request and
+            // letting the next candidate answer is the right remedy, and the
+            // relay may be perfectly healthy again a second from now. The slot
+            // lives until the attempt's response ends — for a stream, until the
+            // last byte — so a limit of 4 really does mean four in flight.
+            auto admitted = upstream_limiter.admit(provider->id, nowUnix());
+            if (!admitted) {
+                last_error = std::format("{}: {}", provider->id, admitted.error().message);
+                last_status = 429;
+                rate_limited = true;
+                last_retry_after = std::max(last_retry_after, admitted.error().retry_after_sec);
+                logFailover(ctx, provider->id, static_cast<int>(attempt), upstream_model, 0.0,
+                            (nowUnix() - ctx.started) * 1000.0, 429,
+                            std::format("{} — skipping a full relay", last_error),
+                            static_cast<int>(budget));
+                continue;
+            }
+            const std::shared_ptr<UpstreamSlot> slot = std::move(*admitted);
+
             const std::string egress_protocol = provider->protocol.empty() ? "openai" : provider->protocol;
-            const bool same_protocol = media || ciEqual(ingress_protocol, egress_protocol);
+            // Compared by wire shape, not by name: an `azure` relay speaks
+            // OpenAI's JSON, so a request that arrived in OpenAI's shape needs no
+            // conversion even though the two protocol names differ. Comparing
+            // names here would send an unconverted body to a relay that cannot
+            // read it.
+            const bool same_protocol =
+                media || wireShapeOf(ingress_protocol) == wireShapeOf(egress_protocol);
 
             const std::string path =
                 media ? req.path.substr(3)
@@ -2008,7 +2340,8 @@ struct ProxyServer::Impl {
             ctx.attempted_upstream = true;
             if (ctx.stream) {
                 last_status = relayStream(ctx, res, *provider, candidate, path, payload, attempt,
-                                          budget, last_error, ingress_protocol, request_type, media);
+                                          budget, last_error, ingress_protocol, request_type, media,
+                                          slot);
                 if (last_status == 0) {
                     return; // committed: the response is the client's now
                 }
@@ -2120,6 +2453,19 @@ struct ProxyServer::Impl {
                 }
             }
             res.set_content(out_body, out_content_type);
+            if (cacheable && good && response_cache.enabled()) {
+                // Stored after the client-facing transformation, not before: the
+                // cache must hold what this client would have been sent, or a
+                // later hit would hand an Anthropic client an OpenAI body.
+                response_cache.store(cache_key,
+                                     CachedResponse{result.status, out_content_type, out_body},
+                                     nowUnix());
+                // Marked only when the cache actually stored something. A
+                // disabled cache that still answered "miss" would be claiming a
+                // decision it did not make, and an operator debugging a stale
+                // answer would look in the wrong place.
+                res.set_header("X-Literouter-Cache", "miss");
+            }
 
             finish(ctx, {.provider = provider->id,
                          .upstream_model = upstream_model,
@@ -2146,15 +2492,25 @@ struct ProxyServer::Impl {
         // that is unavailable: the relays may be perfectly fine, they were
         // simply not given the chance. The retryable-status rule below would
         // otherwise turn it into a 503, which says something less true.
+        //
+        // A relay-side limit is reported as 429 rather than 503 because it comes
+        // with a real Retry-After and because the client's remedy is to slow
+        // down and come back, which is exactly what a 429 says.
         const int status = deadline_hit
                                ? 504
-                               : (last_status != 0 && !Router::retryableStatus(last_status)
-                                      ? last_status
-                                      : 503);
+                               : (rate_limited
+                                      ? 429
+                                      : (last_status != 0 && !Router::retryableStatus(last_status)
+                                             ? last_status
+                                             : 503));
         if (last_error.empty()) {
             last_error = std::format("every relay for `{}` was skipped or disabled", ctx.model);
         }
-        sendError(res, status, last_error, "upstream_error", "all_relays_failed");
+        sendError(res, status, last_error, rate_limited ? "rate_limit_error" : "upstream_error",
+                  rate_limited ? "relay_capacity_exceeded" : "all_relays_failed");
+        if (rate_limited) {
+            res.set_header("Retry-After", std::to_string(last_retry_after));
+        }
         finish(ctx, {.status = status,
                      .message = last_error,
                      .failover = budget > 1,
@@ -2169,7 +2525,9 @@ struct ProxyServer::Impl {
                     const Candidate &candidate, const std::string &path,
                     const std::string &payload, std::size_t attempt, std::size_t budget,
                     std::string &last_error, const std::string &ingress_protocol,
-                    const std::string &request_type = "application/json", bool opaque_response = false) {
+                    const std::string &request_type = "application/json",
+                    bool opaque_response = false,
+                    std::shared_ptr<UpstreamSlot> slot = nullptr) {
         std::string root;
         std::string prefix;
         std::string scheme;
@@ -2218,15 +2576,19 @@ struct ProxyServer::Impl {
             upstream.set_header("Content-Type", "application/json");
             upstream.set_header("Accept", opaque_response ? "*/*" : "text/event-stream");
             upstream.set_header("User-Agent", std::string{kUserAgent});
-            const std::string key = resolveSecret(provider.api_key);
-            if (!key.empty()) {
-                if (ciEqual(provider.protocol, "anthropic")) {
-                    upstream.set_header("x-api-key", key);
-                    upstream.set_header("anthropic-version", "2023-06-01");
-                } else if (ciEqual(provider.protocol, "gemini")) {
-                    upstream.set_header("x-goog-api-key", key);
-                } else {
-                    upstream.set_header("Authorization", "Bearer " + key);
+            // The same auth unit the buffered path uses, so a signature or a
+            // minted Vertex token is produced identically on both legs. A
+            // credential that cannot be produced is reported through the bridge,
+            // which is what turns it into a failover rather than a crash.
+            auto auth = upstreamAuthHeaders(provider, "POST", upstream.path, payload, nowUnix());
+            if (!auth) {
+                std::scoped_lock lock{bridge->mutex};
+                bridge->error = auth.error();
+                bridge->finished = true;
+                bridge->cv.notify_all();
+            } else {
+                for (const auto &header : *auth) {
+                    upstream.set_header(header.name, header.value);
                 }
             }
             for (const auto &[name, value] : provider.headers) {
@@ -2588,7 +2950,8 @@ struct ProxyServer::Impl {
 
         const std::string egress_proto = provider.protocol.empty() ? "openai" : provider.protocol;
         const std::string ingress_proto = ingress_protocol.empty() ? "openai" : ingress_protocol;
-        const bool same_protocol = ciEqual(ingress_proto, egress_proto);
+        // Shape, not name — see the note where the buffered path decides this.
+        const bool same_protocol = wireShapeOf(ingress_proto) == wireShapeOf(egress_proto);
 
         std::shared_ptr<StreamProtocolAdapter> adapter;
         if (!opaque_response && !same_protocol) {
@@ -2617,7 +2980,8 @@ struct ProxyServer::Impl {
             [this, bridge, client, provider_id, upstream_model, request_ctx, failover, absorbed,
              stream_ok, attempt_number, total_attempts, attempt_started,
              adapter, usage_observer, provider_root = root, provider, log_body, log_body_limit,
-             streamed_body, payload_size, observe_sse, media_usage_filter](std::size_t, h::DataSink &sink) -> bool {
+             streamed_body, payload_size, observe_sse, media_usage_filter,
+             slot = std::move(slot)](std::size_t, h::DataSink &sink) -> bool {
                 // Where this attempt's time went. `headers_unix` is the first
                 // response byte, which is the boundary between the relay thinking
                 // and the answer arriving; before it, the whole elapsed time is
@@ -2934,6 +3298,19 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         impl_->bound_server = config.server;
     }
     impl_->router.setConfig(config);
+    // The gates are configured here as well as in applyConfig(), because start()
+    // does not go through applyConfig() and a freshly started server must not
+    // run with the previous process's limits — or, on a first start, with none.
+    impl_->upstream_limiter.setConfig(config);
+    impl_->response_cache.configure(config.server.response_cache_ttl_sec,
+                                   config.server.response_cache_max_entries);
+    impl_->traffic_bucket_sec = std::clamp(config.server.traffic_bucket_sec, 60, 86400);
+    impl_->traffic_bucket_count =
+        static_cast<std::size_t>(std::clamp(config.server.traffic_bucket_count, 2, 10000));
+    {
+        std::scoped_lock lock{impl_->otlp_mutex};
+        impl_->otlp_endpoint = config.server.otlp_endpoint;
+    }
     {
         std::scoped_lock lock{impl_->telemetry_mutex};
         impl_->log.setCapacity(static_cast<std::size_t>(std::max(16, config.server.log_capacity)));
@@ -2997,7 +3374,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         }
         // Liveness answers unauthenticated, as both protocol documents promise:
         // whatever runs a healthcheck does not carry the operator's key.
-        if (isLivenessPath(req.path) && req.method == "GET") {
+        if (healthProbeFor(req.path) != HealthProbe::None && req.method == "GET") {
             return h::Server::HandlerResponse::Unhandled;
         }
         // The console shell is static and holds no data: it has to load before
@@ -3208,6 +3585,34 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     server.Get("/health", [](const h::Request &, h::Response &res) {
         res.status = 200;
         res.set_content(R"({"status":"ok"})", "application/json");
+    });
+    server.Get("/health/live", [](const h::Request &, h::Response &res) {
+        // Deliberately the same answer as /health: liveness asks whether the
+        // process is alive, and a process that can answer this is.
+        res.status = 200;
+        res.set_content(R"({"status":"ok"})", "application/json");
+    });
+    server.Get("/health/ready", [this](const h::Request &, h::Response &res) {
+        // Readiness asks the different question: can this instance actually
+        // serve a request? A listener with no enabled relay can accept a
+        // connection and still cannot answer anything, and telling a load
+        // balancer it is ready would be telling it to send work here to fail.
+        const AppConfig cfg = impl_->snapshotConfig();
+        const bool running = impl_->running.load();
+        const bool has_relay = std::ranges::any_of(cfg.providers, [](const ProviderConfig &p) {
+            return p.enabled;
+        });
+        const bool ready = running && has_relay;
+        json body = json::object();
+        body["status"] = ready ? "ready" : "not_ready";
+        body["running"] = running;
+        body["enabled_relays"] = has_relay;
+        if (!ready) {
+            body["reason"] = running ? "no enabled relay can serve a request"
+                                     : "the listener is not accepting requests";
+        }
+        res.status = ready ? 200 : 503;
+        res.set_content(body.dump(), "application/json");
     });
 
     // ── the built-in web console ────────────────────────────────────────────────
@@ -3701,6 +4106,8 @@ Snapshot ProxyServer::snapshot() const {
         out.tokens_completion = impl_->tokens_completion;
         out.cost_usd = impl_->cost_usd;
         out.hourly.assign(impl_->hourly.begin(), impl_->hourly.end());
+        out.traffic_bucket_sec = impl_->traffic_bucket_sec;
+        out.traffic_bucket_count = static_cast<int>(impl_->traffic_bucket_count);
         out.latency_ms_avg = impl_->latency_ms_avg;
         out.log_seq = impl_->log.next_seq > 0 ? impl_->log.next_seq - 1 : 0;
         for (const auto &provider : cfg.providers) {
@@ -3714,6 +4121,10 @@ Snapshot ProxyServer::snapshot() const {
         }
     }
     out.clients = impl_->client_ledger.snapshot();
+    out.cache_enabled = impl_->response_cache.enabled();
+    out.cache_hits = impl_->response_cache.hits();
+    out.cache_misses = impl_->response_cache.misses();
+    out.cache_entries = impl_->response_cache.size();
     for (const auto &client : cfg.clients) {
         if (std::ranges::none_of(out.clients, [&](const auto &u) { return u.client == client.id; })) {
             ClientUsage empty;

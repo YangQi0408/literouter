@@ -21,6 +21,14 @@ export namespace literouter {
 inline constexpr std::string_view kVersion = "0.1.0";
 inline constexpr std::string_view kUserAgent = "literouter/0.1.0";
 
+// The config schema this build reads and writes. Bumping it is what gives a
+// breaking rename somewhere to live: `migrateConfigJson` walks an older document
+// up to this number, and a document from a NEWER build is refused rather than
+// silently loaded minus the fields this build has never heard of — losing those
+// fields on the next save is exactly the kind of quiet damage a tolerant reader
+// would cause.
+inline constexpr int kConfigSchema = 2;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration model
 //
@@ -64,8 +72,38 @@ struct ProviderConfig {
     // chat completions somewhere other than /chat/completions.
     std::string chat_path = "/chat/completions";
     std::string embeddings_path = "/embeddings";
-    // Upstream API protocol: "openai" (default), "anthropic", "gemini", "openai_responses".
+    // Upstream API protocol: "openai" (default), "anthropic", "gemini",
+    // "openai_responses", "azure" (Azure OpenAI: same JSON as openai, different
+    // path, `api-key` header and api-version query), "vertex" (Vertex AI: the
+    // Gemini generateContent JSON, OAuth2 bearer, project/location path),
+    // "bedrock" (AWS Bedrock Converse API: its own body, SigV4-signed), "ollama"
+    // (its own /api/chat body, no auth by default).
     std::string protocol = "openai";
+    // Azure: the `api-version` query value. Vertex: the API version segment.
+    // Empty picks the protocol's own default.
+    std::string api_version;
+    // Bedrock region (`us-east-1`), or the Vertex location (`us-central1`).
+    // Bedrock requires it; Vertex defaults to `us-central1` when empty.
+    std::string region;
+    // Vertex project id. Required by the Vertex path builder.
+    std::string project;
+    // Vertex: path to a service-account JSON key. Its private key signs the
+    // OAuth2 assertion exchanged for an access token, which is cached until it
+    // is nearly expired. Unreadable or malformed is a startup-time config error.
+    std::string credentials_file;
+    // Bedrock SigV4 credentials. `${ENV_VAR}` references work exactly as they
+    // do for api_key and are resolved only when a request is signed.
+    std::string aws_access_key;
+    std::string aws_secret_key;
+    // Bedrock: an STS session token, when the credentials above are temporary.
+    std::string aws_session_token;
+    // Relay-side protection, distinct from the per-client limits in
+    // ClientConfig: this bounds what literouter itself sends to one relay. 0
+    // disables each. A relay at its limit is skipped like an open breaker and
+    // the next candidate is tried, so a busy relay degrades to a slower answer
+    // rather than to a failure.
+    int max_concurrent = 0;
+    int requests_per_minute = 0;
     // What this relay charges per million tokens, in US dollars. 0 means "not
     // written down", and such a relay contributes nothing to the reported cost
     // rather than a made-up number: an estimate built on a guess is worse than
@@ -169,6 +207,27 @@ struct ServerConfig {
     std::string language = "auto";
     // UI display scale (e.g. 1.0 = 100%, 0.8 = 80%, 1.25 = 125%). 0.0 or 1.0 means default.
     double ui_scale = 1.0;
+    // How wide one traffic-trend bucket is, in seconds, and how many are kept.
+    // 3600 x 24 is the historical hour-by-day chart; 60 x 120 is the last two
+    // hours at minute resolution, which is what a relay being debugged right now
+    // wants. Values below 60 are raised to 60, because the persisted file and
+    // the chart's own labels both assume a whole number of minutes.
+    int traffic_bucket_sec = 3600;
+    int traffic_bucket_count = 24;
+    // Local response cache. 0 disables it. When on, an identical non-streaming
+    // request (same client, protocol, model and body) is answered from memory
+    // until the TTL expires instead of being sent upstream — the cheapest way to
+    // stop paying twice for the same question. Streaming requests are never
+    // cached, because a cached answer cannot be replayed as an event stream
+    // without inventing timing the client would notice.
+    int response_cache_ttl_sec = 0;
+    // Entries kept before the least recently used one is dropped. Bounds memory:
+    // each entry is a whole answer.
+    int response_cache_max_entries = 128;
+    // OpenTelemetry OTLP/HTTP endpoint for metrics, e.g.
+    // "http://127.0.0.1:4318". Empty disables export. The payload is sent to
+    // `{endpoint}/v1/metrics` every 30 seconds as OTLP JSON.
+    std::string otlp_endpoint;
 };
 
 // Scheme-aware listener URL, with IPv6 brackets; path may be empty.
@@ -196,13 +255,21 @@ struct ClientConfig {
     int max_concurrent = 0;
     std::uint64_t requests_per_day = 0;
     std::uint64_t tokens_per_day = 0;
+    // Spend ceiling for the UTC day, in US dollars. 0 disables it. Unlike the
+    // token quota this cannot be reserved before dispatch, because the price
+    // depends on which relay answers and how many tokens it reports: the check
+    // is made at admission and the actual cost is added when the request
+    // settles, so a request already in flight when the ceiling is reached still
+    // completes and is still charged. It is a ceiling on the next request, not
+    // a promise that the day can never exceed it.
+    double budget_usd_per_day = 0.0;
     // Reserved before dispatch, reconciled against upstream usage afterwards.
     // Missing usage retains the reservation so an unmetered stream is not free.
     std::uint64_t token_reservation = 4096;
 };
 
 struct AppConfig {
-    int schema = 1;
+    int schema = kConfigSchema;
     ServerConfig server;
     std::vector<ProviderConfig> providers;
     std::vector<RouteConfig> routes;
@@ -245,6 +312,9 @@ struct ClientUsage {
     std::uint64_t requests_today = 0;
     std::uint64_t tokens_today = 0; // charged plus outstanding reservations
     std::uint64_t reserved_tokens = 0;
+    // Settled spend for the UTC day. Only relays that report usage and have a
+    // price contribute, so it is a floor on what was spent, like cost_usd.
+    double cost_today = 0.0;
 };
 
 struct ClientRejection {
@@ -380,6 +450,26 @@ struct ValidationReport {
 ValidationReport validate(const AppConfig &config);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Config schema migration
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct ConfigMigration {
+    int from_schema = kConfigSchema;
+    int to_schema = kConfigSchema;
+    // One line per normalisation actually performed, for a front end to show
+    // rather than leaving the operator to diff two files.
+    std::vector<std::string> notes;
+    // True when the document was older than this build and had to be walked up.
+    bool changed() const { return from_schema != to_schema; }
+};
+
+// Rewrites a config document onto the current schema and reports what it did.
+// The returned document is what this build would write; `rewritten` receives it.
+// An unreadable document and one from a newer build are both errors.
+std::expected<ConfigMigration, std::string> migrateConfigJson(std::string_view text,
+                                                             std::string &rewritten);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Config store
 //
 // Holds one AppConfig, knows where it came from, and writes it back
@@ -423,6 +513,11 @@ public:
     // refusing to start.
     const std::string &loadError() const { return loadError_; }
 
+    // What load() had to change to bring the file onto this build's schema.
+    // `changed()` is false for a file that already matched.
+    const ConfigMigration &migration() const { return migration_; }
+    bool needsMigration() const { return migration_.changed(); }
+
     // Atomic write. Creates parent directories. `saveAs` writes the same bytes
     // somewhere else without rebinding the store, which is what `--print-config`
     // style export needs; both are const because neither mutates the model.
@@ -438,6 +533,115 @@ private:
     std::filesystem::path path_ = defaultConfigPath();
     bool exists_ = false;
     std::string loadError_;
+    ConfigMigration migration_;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Upstream admission
+//
+// A per-relay gate on what literouter itself sends, which is a different
+// question from what a client may ask for (ClientLedger) and from whether a
+// relay is healthy (Router). A relay can be perfectly healthy and still be one
+// this proxy is already hammering with more concurrent streams than the operator
+// paid for. Distinct from the breaker because the remedy differs: a breaker says
+// "this relay is failing", a limit says "this relay is full".
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct UpstreamRejection {
+    std::string message;
+    int retry_after_sec = 1;
+};
+
+// An admitted slot. Releasing happens on destruction, so a slot taken for a
+// streamed answer is held until the stream ends — including when the client
+// hangs up, because the chunked provider that owns this handle is destroyed
+// either way.
+class UpstreamSlot {
+public:
+    UpstreamSlot();
+    ~UpstreamSlot();
+    UpstreamSlot(const UpstreamSlot &) = delete;
+    UpstreamSlot &operator=(const UpstreamSlot &) = delete;
+
+private:
+    friend class UpstreamLimiter;
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+};
+
+class UpstreamLimiter {
+public:
+    UpstreamLimiter();
+    ~UpstreamLimiter();
+    UpstreamLimiter(const UpstreamLimiter &) = delete;
+    UpstreamLimiter &operator=(const UpstreamLimiter &) = delete;
+
+    // Replaces the limits. Relays that disappear keep their counters until the
+    // slots they hold are released, which is what makes removing a relay from
+    // the config safe while it is answering.
+    void setConfig(const AppConfig &config);
+
+    // Takes a slot for `provider`, or says why not. `retry_after_sec` is the
+    // time until the oldest start in the rolling minute leaves the window.
+    std::expected<std::shared_ptr<UpstreamSlot>, UpstreamRejection> admit(
+        std::string_view provider, double now_unix);
+
+    std::size_t active(std::string_view provider) const;
+    // The limit in force for a relay, or 0 when it has none. Read under the same
+    // lock as admit() so a caller cannot report a limit it is not enforcing.
+    int limitFor(std::string_view provider) const;
+    void reset();
+
+private:
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Local response cache
+//
+// Exact-match, non-streaming only, and bounded on both axes (TTL and entry
+// count). The key is a hash of the client, the protocol, the model and the
+// request body as the upstream would have received it, so a request that
+// differs in any way that could change the answer is a different key. The
+// client is part of it on purpose: two accounts must never be served each
+// other's answer, and a cache that could do that is worse than no cache.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct CachedResponse {
+    int status = 0;
+    std::string content_type;
+    std::string body;
+};
+
+class ResponseCache {
+public:
+    ResponseCache();
+    ~ResponseCache();
+    ResponseCache(const ResponseCache &) = delete;
+    ResponseCache &operator=(const ResponseCache &) = delete;
+
+    // `ttl_sec <= 0` turns the cache off and drops what it held.
+    void configure(int ttl_sec, int max_entries);
+    bool enabled() const;
+
+    static std::string keyFor(std::string_view client, std::string_view protocol,
+                              std::string_view model, std::string_view body);
+
+    // A hit refreshes the entry's position in the LRU order, because a cache
+    // that evicts what is being used is a cache with a worse hit rate than the
+    // policy it claims to implement.
+    std::optional<CachedResponse> lookup(std::string_view key, double now_unix);
+    void store(std::string_view key, CachedResponse response, double now_unix);
+
+    std::size_t size() const;
+    std::uint64_t hits() const;
+    std::uint64_t misses() const;
+    void clear();
+
+private:
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -536,6 +740,10 @@ struct LogEntry {
 // it free of a timezone the proxy would otherwise have to resolve.
 struct TrafficBucket {
     double hour_unix = 0.0;
+    // How wide this bucket is. Carried per bucket rather than assumed, because
+    // server.traffic_bucket_sec can change between runs and a reader that
+    // hard-coded 3600 would mislabel a restored history.
+    int bucket_sec = 3600;
     std::uint64_t requests = 0;
     std::uint64_t successes = 0;
     std::uint64_t failures = 0;
@@ -570,8 +778,20 @@ struct Snapshot {
     std::vector<ProviderStat> providers;
     std::vector<ProviderHealth> health;
     int breakers_open = 0;
-    // The most recent hours, oldest first. Empty until there has been traffic.
+    // The most recent buckets, oldest first. Empty until there has been traffic.
     std::vector<TrafficBucket> hourly;
+    // The bucket width the trend above was recorded at, and how many buckets the
+    // server is configured to keep. Both travel with the snapshot because a
+    // chart that assumed 3600 x 24 would mislabel a minute-resolution history.
+    int traffic_bucket_sec = 3600;
+    int traffic_bucket_count = 24;
+    // Local response cache state, so a console can show whether the cache is
+    // working rather than only whether it is configured — "enabled with no hits"
+    // and "disabled" look identical from the config alone.
+    bool cache_enabled = false;
+    std::uint64_t cache_hits = 0;
+    std::uint64_t cache_misses = 0;
+    std::uint64_t cache_entries = 0;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -718,6 +938,53 @@ std::string caBundleSummary();
 // ─────────────────────────────────────────────────────────────────────────────
 // Protocol Adapters (OpenAI, Anthropic Claude, Google Gemini, OpenAI Responses)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Which wire format a protocol name actually speaks.
+//
+// Several names share one shape, and the proxy's "no conversion needed" fast
+// path has to compare shapes rather than names: an `azure` relay speaks OpenAI's
+// JSON behind a different path and header, so a chat request arriving in
+// OpenAI's shape needs no conversion even though the two names differ. Getting
+// this wrong is expensive in the quiet direction — a name comparison would send
+// an unconverted body to a relay that cannot read it.
+enum class WireShape {
+    OpenAi,
+    Anthropic,
+    Gemini,
+    Responses,
+    Ollama,
+    Bedrock,
+};
+
+WireShape wireShapeOf(std::string_view protocol);
+std::string_view wireShapeName(WireShape shape);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Upstream authentication
+//
+// One header the upstream leg must carry. An ordered vector rather than a map
+// because the order is the operator's: a relay's own `headers` entry has to be
+// able to replace a default, and a map would silently pick one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct UpstreamHeader {
+    std::string name;
+    std::string value;
+};
+
+// Every protocol-specific header one request to one relay needs: the credential
+// in whatever form the protocol wants (`Authorization: Bearer`, `x-api-key`,
+// `api-key`, a SigV4 signature), plus the version headers Anthropic and Gemini
+// require. `method`, `path` and `body` are inputs because SigV4 signs all three,
+// and `now_unix` is a parameter rather than a call to nowUnix() so a test can
+// sign a fixed instant and compare bytes.
+//
+// An error means the credential could not be produced at all — an unreadable
+// Vertex service-account file, a token endpoint that refused the exchange —
+// which is a request-level failure, not something a second relay fixes.
+std::expected<std::vector<UpstreamHeader>, std::string> upstreamAuthHeaders(
+    const ProviderConfig &provider, std::string_view method, std::string_view path,
+    std::string_view body, double now_unix);
 
 // Determines the upstream HTTP path for chat requests according to protocol and model.
 std::string resolveChatPath(const ProviderConfig &provider,

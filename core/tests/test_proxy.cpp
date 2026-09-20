@@ -491,6 +491,10 @@ struct Hit {
     std::string body;
     std::string content_type;
     std::string acao; // Access-Control-Allow-Origin, empty when absent
+    // "hit" / "miss" / empty. A cache that cannot say whether it answered from
+    // memory is a cache nobody can debug.
+    std::string cache;
+    std::string retry_after;
 };
 
 Hit postJson(int port, const std::string &path, const std::string &body,
@@ -513,6 +517,8 @@ Hit postJson(int port, const std::string &path, const std::string &body,
     hit.body = result->body;
     hit.content_type = result->get_header_value("Content-Type");
     hit.acao = result->get_header_value("Access-Control-Allow-Origin");
+    hit.cache = result->get_header_value("X-Literouter-Cache");
+    hit.retry_after = result->get_header_value("Retry-After");
     return hit;
 }
 
@@ -536,6 +542,8 @@ Hit putJson(int port, const std::string &path, const std::string &body,
     hit.body = result->body;
     hit.content_type = result->get_header_value("Content-Type");
     hit.acao = result->get_header_value("Access-Control-Allow-Origin");
+    hit.cache = result->get_header_value("X-Literouter-Cache");
+    hit.retry_after = result->get_header_value("Retry-After");
     return hit;
 }
 
@@ -557,6 +565,8 @@ Hit getPath(int port, const std::string &path, const std::string &key = {}) {
     hit.body = result->body;
     hit.content_type = result->get_header_value("Content-Type");
     hit.acao = result->get_header_value("Access-Control-Allow-Origin");
+    hit.cache = result->get_header_value("X-Literouter-Cache");
+    hit.retry_after = result->get_header_value("Retry-After");
     return hit;
 }
 
@@ -2896,6 +2906,486 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
     }
 }
 
+// The local response cache, end to end: a repeated question must not be paid for
+// twice, and two accounts must never be served each other's answer.
+void group29ResponseCache(StubRelay &relay_a) {
+    LR_GROUP("29. a repeated request is answered from the local cache, per account");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+    // Off by default, which is the first thing to prove: a cache nobody asked
+    // for is a stale answer nobody can explain.
+    LR_CHECK_EQ(config.server.response_cache_ttl_sec, 0);
+
+    literouter::ProviderConfig relay;
+    relay.id = "cached";
+    relay.base_url = relay_a.baseUrl();
+    relay.timeout_sec = 10;
+    relay.connect_timeout_sec = 2;
+    config.providers = {relay};
+
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "cached", .model = {}}};
+    config.routes = {route};
+
+    // Two accounts, so the cache key's client component can be observed rather
+    // than assumed.
+    config.server.api_key = "admin-key";
+    literouter::ClientConfig alice;
+    alice.id = "alice";
+    alice.keys = {{"k", "alice-key", true}};
+    literouter::ClientConfig bob;
+    bob.id = "bob";
+    bob.keys = {{"k", "bob-key", true}};
+    config.clients = {alice, bob};
+    config.server.response_cache_ttl_sec = 300;
+    config.server.response_cache_max_entries = 8;
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = proxy.boundPort();
+    relay_a.setMode(StubRelay::Mode::Normal);
+    relay_a.resetCounters();
+    const std::string request = chatRequest(kRouteModel);
+
+    // First: a miss, and the answer is stored.
+    const Hit first = postJson(port, "/v1/chat/completions", request, "alice-key");
+    LR_CHECK_EQ(first.status, 200);
+    LR_CHECK_EQ(first.cache, "miss");
+    LR_CHECK_EQ(relay_a.chatRequests(), 1);
+
+    // Second: a hit, byte-identical, and the relay is not asked again.
+    const Hit second = postJson(port, "/v1/chat/completions", request, "alice-key");
+    LR_CHECK_EQ(second.status, 200);
+    LR_CHECK_EQ(second.cache, "hit");
+    LR_CHECK_MSG(second.body == first.body, "a cached answer must be byte-identical");
+    LR_CHECK_MSG(relay_a.chatRequests() == 1,
+                 std::format("the relay was asked {} times", relay_a.chatRequests()));
+
+    // The counters say so too, and no relay statistic moved for the hit.
+    const literouter::Snapshot snapshot = proxy.snapshot();
+    LR_CHECK_EQ(snapshot.cache_hits, std::uint64_t{1});
+    LR_CHECK_EQ(snapshot.cache_misses, std::uint64_t{1});
+    LR_CHECK_EQ(snapshot.cache_entries, std::uint64_t{1});
+    LR_CHECK(snapshot.cache_enabled);
+    const auto *stat = statOf(snapshot, "cached");
+    LR_CHECK(stat != nullptr);
+    if (stat != nullptr) {
+        LR_CHECK_MSG(stat->requests == 1,
+                     std::format("a cache hit must not count as a relay attempt ({})",
+                                 stat->requests));
+    }
+    // The request is still counted, and the log says where it came from.
+    LR_CHECK_EQ(snapshot.total_requests, std::uint64_t{2});
+    bool saw_cache_entry = false;
+    for (const auto &entry : proxy.logsSince(0, 500)) {
+        if (entry.provider == "cache") {
+            saw_cache_entry = true;
+        }
+    }
+    LR_CHECK_MSG(saw_cache_entry, "the log must name the cache as the responder");
+
+    // A different account asks the same thing: its own key, so its own miss.
+    const Hit other = postJson(port, "/v1/chat/completions", request, "bob-key");
+    LR_CHECK_EQ(other.status, 200);
+    LR_CHECK_EQ(other.cache, "miss");
+    LR_CHECK_MSG(relay_a.chatRequests() == 2,
+                 "another account's cached answer must not be reused");
+
+    // A different body is a different question.
+    const std::string different =
+        std::format(R"({{"model":"{}","messages":[{{"role":"user","content":"something else"}}]}})",
+                    kRouteModel);
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", different, "alice-key").cache, "miss");
+
+    // A streamed request is never cached: a cached answer cannot be replayed as
+    // an event stream without inventing timing the client would notice.
+    const Hit streamed =
+        postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true), "alice-key");
+    LR_CHECK_EQ(streamed.status, 200);
+    LR_CHECK_MSG(streamed.cache.empty(),
+                 "a streaming response must carry no cache marker: " + streamed.cache);
+    const std::uint64_t entries_before = proxy.snapshot().cache_entries;
+    postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true), "alice-key");
+    LR_CHECK_EQ(proxy.snapshot().cache_entries, entries_before);
+
+    // A non-2xx answer is not stored: caching a relay's 400 would make a
+    // transient upstream problem permanent for the TTL. A fresh body, because a
+    // question already in the cache would be answered from it and never reach
+    // the relay at all.
+    relay_a.setMode(StubRelay::Mode::BadRequest);
+    const std::string never_cached =
+        std::format(R"({{"model":"{}","messages":[{{"role":"user","content":"not seen before"}}]}})",
+                    kRouteModel);
+    const Hit bad = postJson(port, "/v1/chat/completions", never_cached, "alice-key");
+    LR_CHECK_EQ(bad.status, 400);
+    LR_CHECK(bad.cache.empty());
+    // And it really was not stored: asking again still reaches the relay.
+    const int before_repeat = relay_a.chatRequests();
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", never_cached, "alice-key").status, 400);
+    LR_CHECK_MSG(relay_a.chatRequests() == before_repeat + 1,
+                 "a failed answer must not be cached");
+    relay_a.setMode(StubRelay::Mode::Normal);
+
+    // Turning the cache off drops what it held.
+    literouter::AppConfig off = config;
+    off.server.response_cache_ttl_sec = 0;
+    proxy.updateConfig(off);
+    LR_CHECK(!proxy.snapshot().cache_enabled);
+    LR_CHECK_EQ(proxy.snapshot().cache_entries, std::uint64_t{0});
+    const int before_uncached = relay_a.chatRequests();
+    const Hit uncached = postJson(port, "/v1/chat/completions", request, "alice-key");
+    LR_CHECK_EQ(uncached.status, 200);
+    LR_CHECK_MSG(uncached.cache.empty(), "a disabled cache must not mark anything");
+    // It really did go to the relay, which is the other half of "not cached".
+    LR_CHECK_EQ(relay_a.chatRequests(), before_uncached + 1);
+
+    proxy.stop();
+}
+
+// Relay-side protection: a relay that is full is skipped rather than failed, and
+// when every candidate is full the client is told to come back.
+void group30RelayLimits(StubRelay &relay_a, StubRelay &relay_b) {
+    LR_GROUP("30. a full relay is skipped, and a full chain answers 429 with a Retry-After");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+
+    literouter::ProviderConfig limited;
+    limited.id = "limited";
+    limited.base_url = relay_a.baseUrl();
+    limited.timeout_sec = 10;
+    limited.connect_timeout_sec = 2;
+    // One request per minute: the second request in this group cannot start on
+    // this relay, which is the whole point.
+    limited.requests_per_minute = 1;
+    literouter::ProviderConfig backup;
+    backup.id = "backup";
+    backup.base_url = relay_b.baseUrl();
+    backup.timeout_sec = 10;
+    backup.connect_timeout_sec = 2;
+    config.providers = {limited, backup};
+
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "limited", .model = {}},
+                     literouter::RouteTarget{.provider = "backup", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = proxy.boundPort();
+    relay_a.setMode(StubRelay::Mode::Normal);
+    relay_b.setMode(StubRelay::Mode::Normal);
+    relay_a.resetCounters();
+    relay_b.resetCounters();
+
+    // The first request spends the limited relay's minute.
+    const Hit first = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+    LR_CHECK_EQ(first.status, 200);
+    LR_CHECK_EQ(relay_a.chatRequests(), 1);
+    LR_CHECK_EQ(relay_b.chatRequests(), 0);
+
+    // The second is refused by the limiter and answered by the next candidate,
+    // with no breaker tripped: the relay is full, not broken.
+    const Hit second = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+    LR_CHECK_EQ(second.status, 200);
+    LR_CHECK_MSG(relay_a.chatRequests() == 1,
+                 std::format("the full relay was tried again ({} times)", relay_a.chatRequests()));
+    LR_CHECK_EQ(relay_b.chatRequests(), 1);
+    const literouter::Snapshot after = proxy.snapshot();
+    const auto *health = healthOf(after, "limited");
+    LR_CHECK(health != nullptr);
+    if (health != nullptr) {
+        LR_CHECK_MSG(health->state != literouter::ProviderHealth::State::Open,
+                     "a full relay must not have its breaker tripped");
+        LR_CHECK_EQ(health->consecutive_failures, 0);
+    }
+    // And the request is recorded as a failover, with the reason in the log.
+    bool saw_skip = false;
+    for (const auto &entry : proxy.logsSince(0, 500)) {
+        if (entry.message.find("skipping a full relay") != std::string::npos) {
+            saw_skip = true;
+        }
+    }
+    LR_CHECK_MSG(saw_skip, "the log must say why the first candidate was passed over");
+
+    // Now take the backup's capacity away too: the chain is full, and the
+    // client gets a 429 with a real Retry-After rather than a 503 that says
+    // nothing about when to come back.
+    literouter::AppConfig both_limited = config;
+    both_limited.providers[1].requests_per_minute = 1;
+    proxy.updateConfig(both_limited);
+    const Hit refused = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+    LR_CHECK_EQ(refused.status, 429);
+    LR_CHECK_MSG(!refused.retry_after.empty(), "a full chain must name a Retry-After");
+    LR_CHECK_MSG(refused.body.find("relay_capacity_exceeded") != std::string::npos,
+                 "the error code must say it was capacity: " + refused.body);
+
+    // A concurrency limit is accepted and a lone request still succeeds; the
+    // limit itself is asserted directly in test_gates, where it can be observed
+    // without racing the relay.
+    literouter::AppConfig concurrent = config;
+    concurrent.providers[0].requests_per_minute = 0;
+    concurrent.providers[0].max_concurrent = 1;
+    concurrent.providers[1].max_concurrent = 1;
+    proxy.updateConfig(concurrent);
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+
+    proxy.stop();
+}
+
+// Liveness and readiness answer different questions, and the second one is
+// allowed to say no.
+void group31HealthProbes(StubRelay &relay_a) {
+    LR_GROUP("31. liveness answers, readiness reports whether a relay can serve");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+
+    literouter::ProviderConfig relay;
+    relay.id = "only";
+    relay.base_url = relay_a.baseUrl();
+    relay.timeout_sec = 10;
+    relay.connect_timeout_sec = 2;
+    config.providers = {relay};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "only", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = proxy.boundPort();
+
+    // Both probes answer without a credential, because the things that run them
+    // hold none.
+    for (const char *path : {"/health", "/health/live", "/health/ready"}) {
+        const Hit hit = getPath(port, path);
+        LR_CHECK_MSG(hit.transport_ok && hit.status == 200,
+                     std::format("{} answered {} (transport {})", path, hit.status,
+                                 hit.transport_ok));
+    }
+    const Hit live = getPath(port, "/health/live");
+    LR_CHECK(live.body.find("ok") != std::string::npos);
+    const Hit ready = getPath(port, "/health/ready");
+    LR_CHECK_MSG(ready.body.find("ready") != std::string::npos, ready.body);
+    LR_CHECK_MSG(ready.body.find("enabled_relays\":true") != std::string::npos, ready.body);
+
+    // With no enabled relay the instance can accept a connection and still
+    // cannot serve anything, which is exactly what readiness is for.
+    literouter::AppConfig disabled = config;
+    disabled.providers[0].enabled = false;
+    proxy.updateConfig(disabled);
+    const Hit live_after = getPath(port, "/health/live");
+    LR_CHECK_MSG(live_after.status == 200, "liveness is about the process, not the config");
+    const Hit not_ready = getPath(port, "/health/ready");
+    LR_CHECK_EQ(not_ready.status, 503);
+    LR_CHECK_MSG(not_ready.body.find("no enabled relay") != std::string::npos, not_ready.body);
+
+    proxy.stop();
+}
+
+// The traffic trend's bucket width and count are the operator's choice, so a
+// relay being debugged right now can be watched at minute resolution.
+void group32TrafficBuckets(StubRelay &relay_a) {
+    LR_GROUP("32. the traffic trend follows server.traffic_bucket_sec and its count");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+    // One minute wide, six of them: the last six minutes rather than the last
+    // day.
+    config.server.traffic_bucket_sec = 60;
+    config.server.traffic_bucket_count = 6;
+    LR_CHECK_MSG(literouter::validate(config).ok(),
+                 "minute buckets must validate: " + literouter::validate(config).summary());
+
+    literouter::ProviderConfig relay;
+    relay.id = "trend";
+    relay.base_url = relay_a.baseUrl();
+    relay.timeout_sec = 10;
+    relay.connect_timeout_sec = 2;
+    config.providers = {relay};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "trend", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = proxy.boundPort();
+    relay_a.setMode(StubRelay::Mode::Normal);
+    for (int i = 0; i < 3; ++i) {
+        LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+    }
+
+    const literouter::Snapshot snapshot = proxy.snapshot();
+    LR_CHECK_EQ(snapshot.traffic_bucket_sec, 60);
+    LR_CHECK_MSG(!snapshot.hourly.empty(), "a request must produce a bucket");
+    if (!snapshot.hourly.empty()) {
+        const auto &bucket = snapshot.hourly.back();
+        // The width travels with the bucket, so a reader that restores a history
+        // recorded at a different width cannot mislabel it.
+        LR_CHECK_EQ(bucket.bucket_sec, 60);
+        LR_CHECK_EQ(bucket.requests, std::uint64_t{3});
+        // Floored to the minute, not to the hour.
+        LR_CHECK_MSG(std::fmod(bucket.hour_unix, 60.0) == 0.0,
+                     std::format("bucket start {} is not on a minute", bucket.hour_unix));
+    }
+    LR_CHECK_MSG(snapshot.hourly.size() <= 6, "the configured count is the cap");
+
+    // Narrowing the window trims what is already held rather than waiting for
+    // the next bucket boundary.
+    literouter::AppConfig narrow = config;
+    narrow.server.traffic_bucket_count = 2;
+    proxy.updateConfig(narrow);
+    LR_CHECK(proxy.snapshot().hourly.size() <= 2);
+
+    proxy.stop();
+}
+
+// The OTLP push: the same numbers the pull endpoint exposes, sent to a
+// collector the operator already runs.
+void group33OtlpExport(StubRelay &relay_a) {
+    LR_GROUP("33. metrics are pushed to an OTLP endpoint as OTLP JSON");
+
+    // A stub collector. It records what it received, which is the only way to
+    // assert the payload's shape rather than the exporter's opinion of it.
+    httplib::Server collector;
+    std::atomic<int> received{0};
+    std::string payload;
+    std::mutex payload_mutex;
+    std::string path_seen;
+    collector.Post("/v1/metrics", [&](const httplib::Request &req, httplib::Response &res) {
+        {
+            std::scoped_lock lock{payload_mutex};
+            payload = req.body;
+            path_seen = req.path;
+        }
+        ++received;
+        res.status = 200;
+        res.set_content("{}", "application/json");
+    });
+    const int collector_port = collector.bind_to_any_port("127.0.0.1");
+    LR_CHECK_MSG(collector_port > 0, "the stub collector did not bind");
+    if (collector_port <= 0) {
+        return;
+    }
+    std::thread collector_thread([&collector] { collector.listen_after_bind(); });
+    collector.wait_until_ready();
+
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.pass_through_unknown = false;
+    config.server.persist_telemetry = false;
+    config.server.otlp_endpoint = std::format("http://127.0.0.1:{}", collector_port);
+    LR_CHECK_MSG(literouter::validate(config).ok(),
+                 "an otlp endpoint must validate: " + literouter::validate(config).summary());
+
+    literouter::ProviderConfig relay;
+    relay.id = "exported";
+    relay.base_url = relay_a.baseUrl();
+    relay.timeout_sec = 10;
+    relay.connect_timeout_sec = 2;
+    config.providers = {relay};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "exported", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        collector.stop();
+        if (collector_thread.joinable()) {
+            collector_thread.join();
+        }
+        return;
+    }
+    const int port = proxy.boundPort();
+    relay_a.setMode(StubRelay::Mode::Normal);
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+
+    // The exporter runs on the flush tick, which is a few seconds.
+    for (int attempt = 0; attempt < 200 && received.load() == 0; ++attempt) {
+        std::this_thread::sleep_for(50ms);
+    }
+    LR_CHECK_MSG(received.load() > 0, "nothing was ever pushed to the collector");
+    {
+        std::scoped_lock lock{payload_mutex};
+        LR_CHECK_EQ(path_seen, "/v1/metrics");
+        const auto document = json::parse(payload, nullptr, false);
+        LR_CHECK_MSG(!document.is_discarded(), "the OTLP body must be JSON: " + payload);
+        if (!document.is_discarded()) {
+            LR_CHECK(document.contains("resourceMetrics"));
+            const auto &scope = document["resourceMetrics"][0]["scopeMetrics"][0];
+            LR_CHECK(scope.contains("metrics"));
+            bool saw_requests = false;
+            bool saw_relay = false;
+            for (const auto &metric : scope["metrics"]) {
+                const std::string name = metric.value("name", std::string{});
+                if (name == "literouter.requests") {
+                    saw_requests = true;
+                    LR_CHECK(metric.contains("sum"));
+                    // CUMULATIVE, and declared monotonic: a collector that reads
+                    // a counter as a gauge charts nonsense.
+                    LR_CHECK_EQ(metric["sum"].value("aggregationTemporality", 0), 2);
+                    LR_CHECK(metric["sum"].value("isMonotonic", false));
+                }
+                if (name == "literouter.relay.requests") {
+                    saw_relay = true;
+                    LR_CHECK(metric["sum"]["dataPoints"][0].contains("attributes"));
+                }
+            }
+            LR_CHECK_MSG(saw_requests, "the headline counter is missing from the export");
+            LR_CHECK_MSG(saw_relay, "the per-relay counter is missing from the export");
+        }
+    }
+
+    // Clearing the endpoint stops the push: an operator who turns it off must
+    // not keep leaking metrics to a collector.
+    literouter::AppConfig off = config;
+    off.server.otlp_endpoint.clear();
+    proxy.updateConfig(off);
+    const int before = received.load();
+    std::this_thread::sleep_for(500ms);
+    LR_CHECK_EQ(received.load(), before);
+
+    proxy.stop();
+    collector.stop();
+    if (collector_thread.joinable()) {
+        collector_thread.join();
+    }
+}
+
+
 int main() {
     // A real server writes its telemetry where LITEROUTER_STATE_DIR points; the
     // guard is what keeps a test run out of the developer's own state dir.
@@ -2972,6 +3462,11 @@ int main() {
         group26SessionAffinity(relay_a, relay_b);
         group27ConfigHotReload(relay_a);
         group28RoutingPolicy(relay_a, relay_b);
+        group29ResponseCache(relay_a);
+        group30RelayLimits(relay_a, relay_b);
+        group31HealthProbes(relay_a);
+        group32TrafficBuckets(relay_a);
+        group33OtlpExport(relay_a);
 #ifndef _WIN32
         group23RequestDeadline(relay_b);
 #endif

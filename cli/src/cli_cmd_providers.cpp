@@ -37,6 +37,19 @@ struct AddOptions {
     std::string embeddingsPath = "/embeddings";
     std::string protocol = "openai";
     std::string note;
+    // Protocol-specific settings. Named rather than generic because each of them
+    // belongs to exactly one protocol, and a `--setting k=v` bag would let an
+    // operator write one that is silently ignored.
+    std::string apiVersion;
+    std::string region;
+    std::string project;
+    std::string credentialsFile;
+    std::string awsAccessKey;
+    std::string awsSecretKey;
+    std::string awsSessionToken;
+    // Relay-side protection, distinct from the per-client limits.
+    int maxConcurrent = 0;
+    int rpm = 0;
 };
 
 struct RemoveOptions {
@@ -177,6 +190,15 @@ void runAdd(Context &ctx, const AddOptions &opts) {
     provider.chat_path = opts.chatPath;
     provider.embeddings_path = opts.embeddingsPath;
     provider.note = opts.note;
+    provider.api_version = opts.apiVersion;
+    provider.region = opts.region;
+    provider.project = opts.project;
+    provider.credentials_file = opts.credentialsFile;
+    provider.aws_access_key = opts.awsAccessKey;
+    provider.aws_secret_key = opts.awsSecretKey;
+    provider.aws_session_token = opts.awsSessionToken;
+    provider.max_concurrent = opts.maxConcurrent;
+    provider.requests_per_minute = opts.rpm;
 
     if (!opts.key.empty()) {
         provider.api_key = opts.key;
@@ -458,7 +480,26 @@ void registerAdd(CLI::App &parent, Context &ctx) {
     sub->add_option("--embeddings-path", opts->embeddingsPath,
                     "Embeddings path (default /embeddings)");
     sub->add_option("--protocol", opts->protocol,
-                    "Upstream API protocol: openai, anthropic, gemini, openai_responses (default openai)");
+                    "Upstream API protocol: openai, anthropic, gemini, openai_responses, "
+                    "azure, vertex, bedrock, ollama (default openai)");
+    sub->add_option("--api-version", opts->apiVersion,
+                    "Azure: the api-version query; Vertex: the API version segment");
+    sub->add_option("--region", opts->region,
+                    "Bedrock region (required there), or the Vertex location");
+    sub->add_option("--project", opts->project, "Vertex project id");
+    sub->add_option("--credentials-file", opts->credentialsFile,
+                    "Vertex service-account JSON key path");
+    sub->add_option("--aws-access-key", opts->awsAccessKey,
+                    "Bedrock SigV4 access key id (a ${VAR} reference is stored as written)");
+    sub->add_option("--aws-secret-key", opts->awsSecretKey, "Bedrock SigV4 secret access key");
+    sub->add_option("--aws-session-token", opts->awsSessionToken,
+                    "Bedrock STS session token, for temporary credentials");
+    sub->add_option("--max-concurrent", opts->maxConcurrent,
+                    "Most requests literouter sends this relay at once; 0 is unlimited")
+        ->check(CLI::NonNegativeNumber);
+    sub->add_option("--rpm", opts->rpm,
+                    "Most requests literouter starts on this relay per minute; 0 is unlimited")
+        ->check(CLI::NonNegativeNumber);
     sub->add_option("--note", opts->note, "Free-form note");
     sub->fallthrough();
     sub->callback([&ctx, opts] { runAdd(ctx, *opts); });

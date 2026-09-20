@@ -73,22 +73,27 @@ private:
     std::vector<std::pair<std::string, std::string>> entries_;
 };
 
-HeaderSet buildHeaders(const ProviderConfig &provider, std::string_view accept) {
+// The real builder. It needs the method, the path and the body because a SigV4
+// signature covers all three — an auth layer that only saw the provider could
+// not sign a Bedrock request at all, and one that signed a different path than
+// the request carries would produce a signature the relay rejects.
+std::expected<HeaderSet, std::string> buildHeaders(const ProviderConfig &provider,
+                                                   std::string_view accept,
+                                                   std::string_view method,
+                                                   std::string_view path,
+                                                   std::string_view body,
+                                                   double now_unix) {
     HeaderSet headers;
     headers.put("Content-Type", "application/json");
     headers.put("Accept", std::string{accept});
     headers.put("User-Agent", std::string{kUserAgent});
 
-    const std::string key = resolveSecret(provider.api_key);
-    if (!key.empty()) {
-        if (ciEqual(provider.protocol, "anthropic")) {
-            headers.put("x-api-key", key);
-            headers.put("anthropic-version", "2023-06-01");
-        } else if (ciEqual(provider.protocol, "gemini")) {
-            headers.put("x-goog-api-key", key);
-        } else {
-            headers.put("Authorization", "Bearer " + key);
-        }
+    auto auth = upstreamAuthHeaders(provider, method, path, body, now_unix);
+    if (!auth) {
+        return std::unexpected(auth.error());
+    }
+    for (const auto &header : *auth) {
+        headers.put(header.name, header.value);
     }
     // Relays with a non-bearer scheme express it here; `put` means their
     // Authorization replaces the default rather than joining it.
@@ -302,7 +307,16 @@ UpstreamResult upstreamPostRaw(const ProviderConfig &provider, std::string_view 
     // pool entirely.
     const bool pooled = timeout_sec_override <= 0;
     const std::string key = poolKey(root, provider);
-    auto header_set = buildHeaders(provider, accept);
+    const std::string target = joinPath(prefix, path);
+    auto built = buildHeaders(provider, accept, "POST", target, body, nowUnix());
+    if (!built) {
+        // A credential that cannot be produced at all (a Vertex token exchange
+        // that failed, a Bedrock relay with no keys) is reported as a transport
+        // error, which is what the caller already knows how to fail over on.
+        out.error = built.error();
+        return out;
+    }
+    auto header_set = std::move(*built);
     // Multipart framing and its boundary belong to the payload, not a relay's
     // default JSON headers. Preserve the exact media type selected by the caller.
     // Empty is used by the legacy JSON wrapper to retain its provider-header
@@ -310,7 +324,6 @@ UpstreamResult upstreamPostRaw(const ProviderConfig &provider, std::string_view 
     if (!content_type.empty()) header_set.put("Content-Type", std::string{content_type});
     const auto headers = header_set.toHttplib();
     const std::string effective_type = content_type.empty() ? "application/json" : std::string{content_type};
-    const std::string target = joinPath(prefix, path);
 
     const auto attempt = [&](h::Client &client) {
         return client.Post(target, headers, std::string{body}, effective_type);
@@ -392,8 +405,13 @@ ProviderProbe probeProvider(const ProviderConfig &provider, int timeout_sec) {
     client.set_write_timeout(timeout_sec, 0);
 
     const std::string models_path = resolveModelsPath(provider);
-    auto result = client.Get(joinPath(prefix, models_path),
-                             buildHeaders(provider, "application/json").toHttplib());
+    const std::string target = joinPath(prefix, models_path);
+    auto built = buildHeaders(provider, "application/json", "GET", target, "", nowUnix());
+    if (!built) {
+        probe.detail = built.error();
+        return probe;
+    }
+    auto result = client.Get(target, built->toHttplib());
 
     probe.latency_ms = (nowUnix() - started) * 1000.0;
     if (!result) {

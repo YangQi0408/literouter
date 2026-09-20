@@ -22,6 +22,17 @@ ClientConfig account() {
     return c;
 }
 
+// The issue at a path, or nullptr. Kept local because the assertion helpers
+// compare values, and a report is a list of them.
+const ValidationIssue *findWarning(const ValidationReport &report, std::string_view path) {
+    for (const auto &issue : report.issues) {
+        if (issue.path == path && issue.level == ValidationIssue::Level::Warning) {
+            return &issue;
+        }
+    }
+    return nullptr;
+}
+
 void authentication() {
     LR_GROUP("client identity, admin separation, references and ambiguous credentials");
     auto generated = generateClientKey();
@@ -91,9 +102,109 @@ void configAndPolicies() {
         R"({"clients":{}})", R"({"clients":[{"models":"public"}]})",
         R"({"clients":[{"provider_groups":[123]}]})", R"({"clients":[{"keys":{}}]})",
         R"({"clients":[{"requests_per_day":-1}]})", R"({"clients":[{"tokens_per_day":1.5}]})",
-        R"({"clients":[{"max_concurrent":4294967296}]})", R"({"clients":[{"keys":[null]}]})"})
+        R"({"clients":[{"max_concurrent":4294967296}]})", R"({"clients":[{"keys":[null]}]})",
+        R"({"clients":[{"budget_usd_per_day":-1}]})",
+        R"({"clients":[{"budget_usd_per_day":"5"}]})"})
         LR_CHECK_MSG(!appConfigFromJson(bad), bad);
     LR_CHECK(appConfigFromJson("{}")->clients.empty());
+    // A budget is a real number and round-trips as one.
+    LR_CHECK_EQ(appConfigFromJson(R"({"clients":[{"budget_usd_per_day":2.5}]})")->clients[0]
+                    .budget_usd_per_day,
+                2.5);
+}
+
+void spendBudget() {
+    LR_GROUP("a daily budget is a ceiling on the next request, not a reservation");
+    Scratch dir;
+    ClientLedger ledger;
+    LR_CHECK(ledger.open(dir.path / "budget.json").has_value());
+    auto c = account();
+    c.budget_usd_per_day = 1.0;
+
+    // Nothing has been spent, so the first request is admitted.
+    auto first = ledger.admit(c);
+    LR_CHECK(first.has_value());
+    LR_CHECK_EQ(ledger.snapshot()[0].cost_today, 0.0);
+    // A second concurrent request is also admitted: the ceiling cannot be
+    // reserved, because the price depends on which relay answers. Saying so here
+    // is the honest half of the feature — the ceiling bounds the NEXT request.
+    auto second = ledger.admit(c);
+    LR_CHECK(second.has_value());
+
+    (*first)->finish(true, 100, 100, 0.4, true);
+    LR_CHECK_EQ(ledger.snapshot()[0].cost_today, 0.4);
+    (*second)->finish(true, 100, 100, 0.7, true);
+    // The day now stands at 1.1 against a ceiling of 1.0: the overshoot is the
+    // request that was already in flight when the ceiling was reached.
+    const double spent = ledger.snapshot()[0].cost_today;
+    LR_CHECK_MSG(std::abs(spent - 1.1) < 1e-9, std::format("cost_today is {}", spent));
+
+    // The next request is refused, and the refusal is a 429 with a retry that
+    // points at the next UTC midnight.
+    auto refused = ledger.admit(c);
+    LR_CHECK_MSG(!refused.has_value(), "a spent budget must refuse the next request");
+    if (!refused) {
+        LR_CHECK_EQ(refused.error().status, 429);
+        LR_CHECK(refused.error().message.find("budget") != std::string::npos);
+        LR_CHECK_MSG(refused.error().retry_after_sec > 0 &&
+                         refused.error().retry_after_sec <= 86400,
+                     std::format("retry_after_sec={}", refused.error().retry_after_sec));
+    }
+
+    // The lifetime total is a separate number from today's, and it is never
+    // reset: it is what the console reports as all-time spend.
+    LR_CHECK_EQ(ledger.snapshot()[0].cost_usd, spent);
+
+    // The spend survives a restart: a budget that resets when the process does
+    // is not a budget.
+    ledger.close();
+    ClientLedger reopened;
+    LR_CHECK(reopened.open(dir.path / "budget.json").has_value());
+    LR_CHECK_EQ(reopened.snapshot()[0].cost_today, spent);
+    LR_CHECK(!reopened.admit(c).has_value());
+    // A free response changes nothing.
+    reopened.close();
+
+    // A zero budget disables the ceiling entirely, which is the default.
+    ClientLedger unbounded;
+    LR_CHECK(unbounded.open(dir.path / "unbounded.json").has_value());
+    auto plain = account();
+    for (int i = 0; i < 5; ++i) {
+        auto admitted = unbounded.admit(plain);
+        LR_CHECK(admitted.has_value());
+        if (admitted) {
+            (*admitted)->finish(true, 1, 1, 1000.0, true);
+        }
+    }
+    LR_CHECK_EQ(unbounded.snapshot()[0].cost_usd, 5000.0);
+    LR_CHECK(unbounded.admit(plain).has_value());
+}
+
+void budgetValidation() {
+    LR_GROUP("a budget with no priced relay is warned about, not silently inert");
+    AppConfig config;
+    config.server.api_key = "admin";
+    ClientConfig client;
+    client.id = "alice";
+    client.keys = {{"k", "client-key", true}};
+    client.budget_usd_per_day = 5.0;
+    config.clients = {client};
+
+    ProviderConfig unpriced;
+    unpriced.id = "p";
+    unpriced.base_url = "https://p.example/v1";
+    config.providers = {unpriced};
+    const auto warned = validate(config);
+    LR_CHECK_MSG(findWarning(warned, "clients[0].budget_usd_per_day") != nullptr,
+                 "an unpriced fleet must warn: a budget measured in dollars cannot move");
+
+    config.providers[0].price_in_per_million = 1.0;
+    const auto clean = validate(config);
+    LR_CHECK(findWarning(clean, "clients[0].budget_usd_per_day") == nullptr);
+    LR_CHECK(clean.ok());
+
+    config.clients[0].budget_usd_per_day = -1.0;
+    LR_CHECK(!validate(config).ok());
 }
 
 void limitsAndPersistence() {
@@ -350,6 +461,6 @@ void ownershipAndIdentity() {
 } // namespace
 
 int main() {
-    authentication(); configAndPolicies(); limitsAndPersistence(); tokensAndFailure(); rateAndThreads(); corruptedStateAndUsage(); ownershipAndIdentity();
+    authentication(); configAndPolicies(); limitsAndPersistence(); tokensAndFailure(); rateAndThreads(); corruptedStateAndUsage(); ownershipAndIdentity(); spendBudget(); budgetValidation();
     return LR_SUMMARY("test_clients");
 }

@@ -540,18 +540,65 @@ void testReasoningMapping() {
         LR_CHECK(text.find("\"content\":\"answer\"") != std::string::npos);
     }
 
-    // ── The direction not taken, stated rather than implied ─────────────────
+    // ── Streaming: an OpenAI relay's reasoning becomes an Anthropic thinking
+    //    block, in the order Anthropic requires ────────────────────────────────
     {
-        // An OpenAI relay's reasoning deltas are NOT turned into an Anthropic
-        // thinking block: that needs a second content block with its own index
-        // and start/stop frames, and a block sequence that is wrong is worse to
-        // a strict client than a missing one. What matters is that the stream
-        // stays valid Anthropic rather than malformed.
         StreamProtocolAdapter adapter("openai", "anthropic", "gpt-4o", "req_reverse");
-        const std::string out = adapter.feed(
+        const std::string reasoning = adapter.feed(
             "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"reasoning_content\":\"hidden\"}}]}\n\n");
-        LR_CHECK(out.find("thinking") == std::string::npos);
-        LR_CHECK(out.find("message_start") != std::string::npos);
+        LR_CHECK_MSG(reasoning.find("event: message_start") != std::string::npos, reasoning);
+        LR_CHECK_MSG(reasoning.find("\"type\":\"thinking\"") != std::string::npos,
+                     "reasoning did not open a thinking block: " + reasoning);
+        LR_CHECK_MSG(reasoning.find("\"type\":\"thinking_delta\"") != std::string::npos,
+                     "reasoning did not arrive as a thinking delta: " + reasoning);
+        LR_CHECK_MSG(reasoning.find("\"index\":0") != std::string::npos,
+                     "the thinking block must be index 0: " + reasoning);
+        // The text block must not open while the thinking block is still open:
+        // Anthropic wants thinking first, and interleaving them is the block
+        // sequence a strict client rejects.
+        LR_CHECK_MSG(reasoning.find("\"type\":\"text\"") == std::string::npos,
+                     "the text block opened before the thinking block closed: " + reasoning);
+
+        const std::string text = adapter.feed(
+            "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n");
+        LR_CHECK_MSG(text.find("\"type\":\"content_block_stop\"") != std::string::npos, text);
+        LR_CHECK_MSG(text.find("\"type\":\"text\"") != std::string::npos, text);
+        LR_CHECK_MSG(text.find("\"index\":1") != std::string::npos,
+                     "the text block must take the next index: " + text);
+        LR_CHECK_MSG(text.find("\"type\":\"text_delta\"") != std::string::npos, text);
+        LR_CHECK_MSG(text.find("answer") != std::string::npos, text);
+
+        const std::string done = adapter.feed(
+            "data: {\"id\":\"c\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+        LR_CHECK_MSG(done.find("message_stop") != std::string::npos, done);
+        LR_CHECK_MSG(done.find("end_turn") != std::string::npos, done);
+        LR_CHECK_EQ(adapter.finish(), "");
+    }
+
+    // No reasoning at all keeps the shape this adapter always produced: one text
+    // block at index 0, opened and closed.
+    {
+        StreamProtocolAdapter adapter("openai", "anthropic", "gpt-4o", "req_plain");
+        const std::string out = adapter.feed(
+            "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n");
+        LR_CHECK_MSG(out.find("\"type\":\"text\"") != std::string::npos, out);
+        LR_CHECK_MSG(out.find("thinking") == std::string::npos,
+                     "no reasoning means no thinking block: " + out);
+        LR_CHECK_MSG(out.find("\"index\":0") != std::string::npos, out);
+        LR_CHECK_MSG(out.find("content_block_stop") != std::string::npos, out);
+        LR_CHECK_MSG(out.find("message_stop") != std::string::npos, out);
+    }
+
+    // A stream cut short before any finish_reason still closes the block it
+    // opened, at the index it actually used — not at a hard-coded zero.
+    {
+        StreamProtocolAdapter adapter("openai", "anthropic", "gpt-4o", "req_cut");
+        adapter.feed("data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"reasoning_content\":\"r\"}}]}\n\n");
+        adapter.feed("data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"content\":\"t\"}}]}\n\n");
+        const std::string fin = adapter.finish();
+        LR_CHECK_MSG(fin.find("\"index\":1") != std::string::npos,
+                     "the open text block is index 1 and must be closed there: " + fin);
+        LR_CHECK_MSG(fin.find("message_stop") != std::string::npos, fin);
     }
 }
 
@@ -846,6 +893,413 @@ void testMultiProtocolStreaming() {
 
 } // namespace
 
+namespace {
+
+// ── the protocols added alongside Azure, Vertex, Bedrock and Ollama ──────────
+
+// A CRC32 of the standard check string, pinned so this file's own framer (used
+// to build Bedrock test frames) is provably the CRC32 the parser expects rather
+// than two implementations of the same mistake.
+std::uint32_t crc32Of(const std::string &data) {
+    std::uint32_t crc = 0xFFFFFFFFu;
+    for (const char ch : data) {
+        crc ^= static_cast<unsigned char>(ch);
+        for (int bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (~((crc & 1) - 1)));
+        }
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+void appendU32(std::string &out, std::uint32_t value) {
+    out += static_cast<char>((value >> 24) & 0xFF);
+    out += static_cast<char>((value >> 16) & 0xFF);
+    out += static_cast<char>((value >> 8) & 0xFF);
+    out += static_cast<char>(value & 0xFF);
+}
+
+// One AWS event-stream frame, built the way the service builds them: a
+// length-prefixed prelude with its own CRC, typed headers, the payload, and a
+// CRC over everything before it.
+std::string bedrockFrame(const std::string &event_type, const std::string &payload) {
+    const auto stringHeader = [](const std::string &name, const std::string &value) {
+        std::string out;
+        out += static_cast<char>(name.size());
+        out += name;
+        out += static_cast<char>(7); // type 7 = string
+        const auto length = static_cast<std::uint16_t>(value.size());
+        out += static_cast<char>((length >> 8) & 0xFF);
+        out += static_cast<char>(length & 0xFF);
+        out += value;
+        return out;
+    };
+    std::string headers = stringHeader(":message-type", "event");
+    headers += stringHeader(":event-type", event_type);
+    headers += stringHeader(":content-type", "application/json");
+
+    const auto total = static_cast<std::uint32_t>(16 + headers.size() + payload.size());
+    std::string prelude;
+    appendU32(prelude, total);
+    appendU32(prelude, static_cast<std::uint32_t>(headers.size()));
+    appendU32(prelude, crc32Of(prelude));
+
+    std::string message = prelude + headers + payload;
+    appendU32(message, crc32Of(message));
+    return message;
+}
+
+void testNewOutboundPaths() {
+    LR_GROUP("azure, vertex, ollama and bedrock resolve their own paths");
+    // A named predicate because the assertion helpers overload on string and
+    // integer only, and an enum would silently pick the integer one.
+    const auto shapeIs = [](std::string_view protocol, literouter::WireShape expected,
+                            std::string_view what) {
+        LR_CHECK_MSG(literouter::wireShapeOf(protocol) == expected, std::string{what});
+    };
+
+    {
+        ProviderConfig azure;
+        azure.protocol = "azure";
+        azure.base_url = "https://demo.openai.azure.com";
+        // The model name is a *deployment* in the path, and the api-version is
+        // mandatory — the two reasons Azure cannot share OpenAI's path.
+        LR_CHECK_EQ(resolveChatPath(azure, "gpt-4o", false),
+                    "/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21");
+        azure.api_version = "2024-08-01-preview";
+        LR_CHECK_EQ(resolveChatPath(azure, "my-deployment", false),
+                    "/openai/deployments/my-deployment/chat/completions?api-version=2024-08-01-preview");
+        // An explicit chat_path still wins, for a gateway in front of Azure.
+        azure.chat_path = "/custom";
+        LR_CHECK_EQ(resolveChatPath(azure, "gpt-4o", false), "/custom");
+        // Azure speaks OpenAI's JSON, so a body needs no conversion.
+        shapeIs("azure", literouter::WireShape::OpenAi, "azure shape");
+    }
+    {
+        ProviderConfig vertex;
+        vertex.protocol = "vertex";
+        vertex.project = "demo";
+        vertex.region = "europe-west4";
+        LR_CHECK_EQ(resolveChatPath(vertex, "gemini-2.0-flash", false),
+                    "/v1/projects/demo/locations/europe-west4/publishers/google/models/"
+                    "gemini-2.0-flash:generateContent");
+        LR_CHECK_EQ(resolveChatPath(vertex, "gemini-2.0-flash", true),
+                    "/v1/projects/demo/locations/europe-west4/publishers/google/models/"
+                    "gemini-2.0-flash:streamGenerateContent?alt=sse");
+        vertex.api_version = "v1beta";
+        LR_CHECK(resolveChatPath(vertex, "m", false).starts_with("/v1beta/projects/demo"));
+        LR_CHECK_EQ(resolveModelsPath(vertex),
+                    "/v1beta/projects/demo/locations/europe-west4/publishers/google/models");
+        // Vertex is Gemini's JSON behind a different path and a bearer token.
+        shapeIs("vertex", literouter::WireShape::Gemini, "vertex shape");
+        const json out = json::parse(
+            adaptChatRequest(vertex, "gemini-2.0-flash",
+                             R"({"messages":[{"role":"user","content":"hi"}],"temperature":0.5})",
+                             false),
+            nullptr, false);
+        LR_CHECK(!out.is_discarded());
+        LR_CHECK(out.contains("contents"));
+        LR_CHECK(out.contains("generationConfig"));
+    }
+    {
+        ProviderConfig ollama;
+        ollama.protocol = "ollama";
+        LR_CHECK_EQ(resolveChatPath(ollama, "llama3", false), "/api/chat");
+        LR_CHECK_EQ(resolveModelsPath(ollama), "/api/tags");
+        shapeIs("ollama", literouter::WireShape::Ollama, "ollama shape");
+    }
+    {
+        ProviderConfig bedrock;
+        bedrock.protocol = "bedrock";
+        // A Bedrock model id contains a colon, which is why the SigV4 path has
+        // to be percent-encoded rather than signed verbatim.
+        LR_CHECK_EQ(resolveChatPath(bedrock, "anthropic.claude-3-5-sonnet-20241022-v2:0", false),
+                    "/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse");
+        LR_CHECK_EQ(resolveChatPath(bedrock, "m", true), "/model/m/converse-stream");
+        shapeIs("bedrock", literouter::WireShape::Bedrock, "bedrock shape");
+    }
+    // Every protocol name maps to a shape, and the aliases still mean OpenAI.
+    shapeIs("openai_compatible", literouter::WireShape::OpenAi, "openai_compatible shape");
+    shapeIs("openai_chat", literouter::WireShape::OpenAi, "openai_chat shape");
+    shapeIs("openai", literouter::WireShape::OpenAi, "openai shape");
+    shapeIs("", literouter::WireShape::OpenAi, " shape");
+    shapeIs("ANTHROPIC", literouter::WireShape::Anthropic, "ANTHROPIC shape");
+    shapeIs("openai_responses", literouter::WireShape::Responses, "openai_responses shape");
+}
+
+void testOllamaAdaptation() {
+    LR_GROUP("Ollama's /api/chat body and reply are translated both ways");
+
+    {
+        ProviderConfig ollama;
+        ollama.protocol = "ollama";
+        const json req = json::parse(
+            adaptChatRequest(ollama, "llama3",
+                             R"({"messages":[{"role":"system","content":"be brief"},
+                                  {"role":"user","content":[{"type":"text","text":"hello"}]}],
+                                 "temperature":0.2,"max_tokens":64,"stop":["x"]})",
+                             false),
+            nullptr, false);
+        LR_CHECK(!req.is_discarded());
+        LR_CHECK_EQ(req["model"].get<std::string>(), "llama3");
+        LR_CHECK_EQ(req["stream"].get<bool>(), false);
+        LR_CHECK_EQ(static_cast<long long>(req["messages"].size()), 2);
+        // An array of parts is folded into the single string Ollama wants.
+        LR_CHECK_EQ(req["messages"][1]["content"].get<std::string>(), "hello");
+        LR_CHECK_EQ(req["options"]["num_predict"], 64);
+        LR_CHECK_MSG(std::abs(req["options"]["temperature"].get<double>() - 0.2) < 1e-9,
+                     "temperature must survive as a double, not be truncated");
+        LR_CHECK(req["options"].contains("stop"));
+        LR_CHECK_MSG(!req["options"].contains("max_tokens"),
+                     "Ollama does not know OpenAI's knob name");
+    }
+    {
+        // A data-URL image becomes the bare base64 string Ollama takes, and a
+        // `developer` message becomes `system` because Ollama has no such role.
+        ProviderConfig ollama;
+        ollama.protocol = "ollama";
+        const json req = json::parse(
+            adaptChatRequest(ollama, "llava",
+                             R"({"messages":[{"role":"developer","content":"d"},
+                                  {"role":"user","content":[{"type":"text","text":"what is this"},
+                                   {"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]}]})",
+                             false),
+            nullptr, false);
+        LR_CHECK(!req.is_discarded());
+        LR_CHECK_EQ(req["messages"][0]["role"].get<std::string>(), "system");
+        LR_CHECK_EQ(req["messages"][1]["images"][0].get<std::string>(), "QUJD");
+    }
+    {
+        ProviderConfig ollama;
+        ollama.protocol = "ollama";
+        const json out = json::parse(
+            adaptChatResponse(ollama,
+                              R"({"model":"llama3","message":{"role":"assistant","content":"hi there","thinking":"hmm"},
+                                  "done":true,"done_reason":"stop","prompt_eval_count":7,"eval_count":3})",
+                              "llama3"),
+            nullptr, false);
+        LR_CHECK(!out.is_discarded());
+        LR_CHECK_EQ(out["choices"][0]["message"]["content"].get<std::string>(), "hi there");
+        LR_CHECK_EQ(out["choices"][0]["message"]["reasoning_content"].get<std::string>(), "hmm");
+        LR_CHECK_EQ(out["choices"][0]["finish_reason"].get<std::string>(), "stop");
+        LR_CHECK_EQ(out["usage"]["prompt_tokens"], 7);
+        LR_CHECK_EQ(out["usage"]["completion_tokens"], 3);
+        LR_CHECK_EQ(out["usage"]["total_tokens"], 10);
+        // The counts are what makes a streamed answer billable rather than free.
+        LR_CHECK(literouter::tokenUsageReported(out.dump()));
+    }
+    {
+        ProviderConfig ollama;
+        ollama.protocol = "ollama";
+        const json out = json::parse(
+            adaptChatResponse(ollama,
+                              R"({"message":{"content":"","tool_calls":[{"function":{"name":"f","arguments":{"a":1}}}]},"done":true})",
+                              "llama3"),
+            nullptr, false);
+        LR_CHECK_EQ(out["choices"][0]["message"]["tool_calls"][0]["function"]["name"].get<std::string>(), "f");
+        LR_CHECK_EQ(out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"].get<std::string>(),
+                    R"({"a":1})");
+        LR_CHECK_EQ(out["choices"][0]["finish_reason"].get<std::string>(), "tool_calls");
+    }
+    {
+        ProviderConfig ollama;
+        ollama.protocol = "ollama";
+        const json out = json::parse(
+            adaptChatResponse(ollama, R"({"message":{"content":"cut"},"done":true,"done_reason":"length"})",
+                              "llama3"),
+            nullptr, false);
+        LR_CHECK_EQ(out["choices"][0]["finish_reason"].get<std::string>(), "length");
+    }
+}
+
+void testBedrockAdaptation() {
+    LR_GROUP("Bedrock's Converse body and reply are translated both ways");
+
+    {
+        ProviderConfig bedrock;
+        bedrock.protocol = "bedrock";
+        const json req = json::parse(
+            adaptChatRequest(bedrock, "m",
+                             R"({"messages":[{"role":"system","content":"sys"},
+                                  {"role":"user","content":"hi"},
+                                  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function",
+                                    "function":{"name":"f","arguments":"{\"a\":1}"}}]},
+                                  {"role":"tool","tool_call_id":"call_1","content":"result"}],
+                                 "max_tokens":128,"temperature":0.1,"stop":["z"],
+                                 "tools":[{"type":"function","function":{"name":"f","description":"d",
+                                   "parameters":{"type":"object"}}}]})",
+                             false),
+            nullptr, false);
+        LR_CHECK(!req.is_discarded());
+        // The system prompt is its own top-level list, not a message.
+        LR_CHECK_EQ(req["system"][0]["text"].get<std::string>(), "sys");
+        LR_CHECK_EQ(static_cast<long long>(req["messages"].size()), 3);
+        LR_CHECK(req["messages"][1]["content"][0].contains("toolUse"));
+        LR_CHECK(req["messages"][1]["content"][0]["toolUse"]["input"].contains("a"));
+        LR_CHECK(req["messages"][2]["content"][0].contains("toolResult"));
+        LR_CHECK_EQ(req["inferenceConfig"]["maxTokens"], 128);
+        LR_CHECK(req["inferenceConfig"].contains("stopSequences"));
+        LR_CHECK_EQ(req["toolConfig"]["tools"][0]["toolSpec"]["name"].get<std::string>(), "f");
+        LR_CHECK(req["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"].contains("json"));
+        // A message with no content at all still gets a block: Converse rejects
+        // an empty content list.
+        const json empty = json::parse(
+            adaptChatRequest(bedrock, "m", R"({"messages":[{"role":"user","content":""}]})", false),
+            nullptr, false);
+        LR_CHECK(!empty.is_discarded());
+        LR_CHECK(empty["messages"][0]["content"].is_array());
+        LR_CHECK(!empty["messages"][0]["content"].empty());
+    }
+    {
+        ProviderConfig bedrock;
+        bedrock.protocol = "bedrock";
+        const json out = json::parse(
+            adaptChatResponse(bedrock,
+                              R"({"output":{"message":{"role":"assistant","content":[
+                                    {"text":"hello"},
+                                    {"reasoningContent":{"reasoningText":{"text":"because"}}},
+                                    {"toolUse":{"toolUseId":"tu_1","name":"f","input":{"a":1}}}]}},
+                                  "stopReason":"tool_use","usage":{"inputTokens":5,"outputTokens":2}})",
+                              "m"),
+            nullptr, false);
+        LR_CHECK(!out.is_discarded());
+        LR_CHECK_EQ(out["choices"][0]["message"]["content"].get<std::string>(), "hello");
+        LR_CHECK_EQ(out["choices"][0]["message"]["reasoning_content"].get<std::string>(), "because");
+        LR_CHECK_EQ(out["choices"][0]["message"]["tool_calls"][0]["function"]["name"].get<std::string>(), "f");
+        LR_CHECK_EQ(out["choices"][0]["message"]["tool_calls"][0]["id"].get<std::string>(), "tu_1");
+        LR_CHECK_EQ(out["choices"][0]["finish_reason"].get<std::string>(), "tool_calls");
+        LR_CHECK_EQ(out["usage"]["prompt_tokens"], 5);
+        LR_CHECK_EQ(out["usage"]["completion_tokens"], 2);
+    }
+    {
+        ProviderConfig bedrock;
+        bedrock.protocol = "bedrock";
+        const json out = json::parse(
+            adaptChatResponse(bedrock,
+                              R"({"output":{"message":{"role":"assistant","content":[{"text":"cut"}]}},
+                                  "stopReason":"max_tokens","usage":{"inputTokens":1,"outputTokens":9}})",
+                              "m"),
+            nullptr, false);
+        LR_CHECK_EQ(out["choices"][0]["finish_reason"].get<std::string>(), "length");
+    }
+}
+
+void testOllamaBedrockStreaming() {
+    LR_GROUP("Ollama NDJSON and Bedrock event streams become OpenAI SSE");
+
+    // Ollama streams newline-delimited JSON: no `data:` prefix, no blank-line
+    // terminator. Reusing the SSE splitter would buffer the whole answer.
+    {
+        StreamProtocolAdapter adapter("ollama", "openai", "llama3", "req_ollama");
+        const std::string out = adapter.feed(
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"Hel\"},\"done\":false}\n"
+            "{\"message\":{\"content\":\"lo\"},\"done\":false}\n");
+        LR_CHECK_MSG(out.find("Hel") != std::string::npos, out);
+        LR_CHECK_MSG(out.find("lo") != std::string::npos, out);
+        LR_CHECK_MSG(out.find("chat.completion.chunk") != std::string::npos, out);
+        const std::string done = adapter.feed(
+            "{\"message\":{\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\","
+            "\"prompt_eval_count\":4,\"eval_count\":2}\n");
+        LR_CHECK_MSG(done.find("[DONE]") != std::string::npos, done);
+        LR_CHECK_MSG(done.find("\"finish_reason\":\"stop\"") != std::string::npos, done);
+        LR_CHECK_EQ(adapter.finish(), "");
+    }
+    // A chunk boundary inside a line must neither emit a partial object nor lose
+    // it.
+    {
+        StreamProtocolAdapter adapter("ollama", "openai", "llama3", "req_split");
+        const std::string first = adapter.feed("{\"message\":{\"content\":\"ab");
+        LR_CHECK_MSG(first.empty(), "a partial line must not be emitted: " + first);
+        const std::string second = adapter.feed("c\"},\"done\":false}\n");
+        LR_CHECK_MSG(second.find("abc") != std::string::npos, second);
+    }
+    // Ollama's own tool calls arrive whole, and become OpenAI's delta shape.
+    {
+        StreamProtocolAdapter adapter("ollama", "openai", "llama3", "req_tools");
+        const std::string out = adapter.feed(
+            "{\"message\":{\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"f\",\"arguments\":{\"a\":1}}}]},\"done\":false}\n");
+        LR_CHECK_MSG(out.find("tool_calls") != std::string::npos, out);
+        LR_CHECK_MSG(out.find("\"name\":\"f\"") != std::string::npos, out);
+    }
+
+    // The CRC32 the framing relies on, pinned to the standard check value.
+    LR_CHECK_MSG(crc32Of("123456789") == 0xCBF43926u,
+                 std::format("crc32 of the check string is {:08x}", crc32Of("123456789")));
+
+    // Bedrock: binary frames, text and reasoning deltas, then the stop event.
+    {
+        StreamProtocolAdapter adapter("bedrock", "openai", "m", "req_bedrock");
+        const std::string out = adapter.feed(bedrockFrame(
+            "contentBlockDelta", R"({"contentBlockIndex":0,"delta":{"text":"Hello"}})"));
+        LR_CHECK_MSG(out.find("Hello") != std::string::npos, out);
+        LR_CHECK_MSG(out.find("chat.completion.chunk") != std::string::npos, out);
+        const std::string reasoning = adapter.feed(bedrockFrame(
+            "contentBlockDelta",
+            R"({"contentBlockIndex":0,"delta":{"reasoningContent":{"text":"why"}}})"));
+        LR_CHECK_MSG(reasoning.find("reasoning_content") != std::string::npos, reasoning);
+        const std::string meta = adapter.feed(bedrockFrame(
+            "metadata", R"({"usage":{"inputTokens":11,"outputTokens":4}})"));
+        // Metadata alone carries no client-visible delta, which is correct: the
+        // counts are read by the usage observer, not shown as content.
+        LR_CHECK_MSG(meta.find("\"content\"") == std::string::npos, meta);
+        const std::string stop =
+            adapter.feed(bedrockFrame("messageStop", R"({"stopReason":"end_turn"})"));
+        LR_CHECK_MSG(stop.find("[DONE]") != std::string::npos, stop);
+        LR_CHECK_MSG(stop.find("\"finish_reason\":\"stop\"") != std::string::npos, stop);
+        LR_CHECK_EQ(adapter.finish(), "");
+    }
+    // Tool use: the start event names the call, and the input arrives as JSON
+    // fragments that are forwarded as OpenAI argument fragments.
+    {
+        StreamProtocolAdapter adapter("bedrock", "openai", "m", "req_bedrock_tools");
+        const std::string start = adapter.feed(bedrockFrame(
+            "contentBlockStart",
+            R"({"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"tu_9","name":"f"}}})"));
+        LR_CHECK_MSG(start.find("tool_calls") != std::string::npos, start);
+        LR_CHECK_MSG(start.find("tu_9") != std::string::npos, start);
+        LR_CHECK_MSG(start.find("\"name\":\"f\"") != std::string::npos, start);
+        const std::string fragment = adapter.feed(bedrockFrame(
+            "contentBlockDelta",
+            R"({"contentBlockIndex":0,"delta":{"toolUse":{"input":"{\"a\":"}}})"));
+        LR_CHECK_MSG(fragment.find("tool_calls") != std::string::npos, fragment);
+        LR_CHECK_MSG(fragment.find("arguments") != std::string::npos, fragment);
+        const std::string stop =
+            adapter.feed(bedrockFrame("messageStop", R"({"stopReason":"tool_use"})"));
+        LR_CHECK_MSG(stop.find("\"finish_reason\":\"tool_calls\"") != std::string::npos, stop);
+    }
+    // Two frames in one chunk are both parsed, and a frame split across two
+    // chunks waits for the rest instead of being misread.
+    {
+        StreamProtocolAdapter adapter("bedrock", "openai", "m", "req_frames");
+        const std::string both = bedrockFrame("contentBlockDelta", R"({"delta":{"text":"a"}})") +
+                                 bedrockFrame("contentBlockDelta", R"({"delta":{"text":"b"}})");
+        const std::string out = adapter.feed(both);
+        LR_CHECK_MSG(out.find("\"content\":\"a\"") != std::string::npos, out);
+        LR_CHECK_MSG(out.find("\"content\":\"b\"") != std::string::npos, out);
+
+        StreamProtocolAdapter split("bedrock", "openai", "m", "req_half");
+        const std::string frame = bedrockFrame("contentBlockDelta", R"({"delta":{"text":"half"}})");
+        const std::string head = split.feed(frame.substr(0, 6));
+        LR_CHECK_MSG(head.empty(), "half a prelude must not be parsed: " + head);
+        const std::string tail = split.feed(frame.substr(6));
+        LR_CHECK_MSG(tail.find("half") != std::string::npos, tail);
+    }
+    // A damaged frame is refused rather than resynchronised on: framing damage
+    // must not become plausible-looking model output.
+    {
+        StreamProtocolAdapter adapter("bedrock", "openai", "m", "req_bad");
+        std::string frame = bedrockFrame("contentBlockDelta", R"({"delta":{"text":"tampered"}})");
+        frame[frame.size() - 6] ^= 0x01; // inside the payload, before the CRC
+        const std::string out = adapter.feed(frame);
+        LR_CHECK_MSG(out.find("tampered") == std::string::npos,
+                     "a frame with a bad checksum was accepted: " + out);
+        // And it stays refused: nothing later is read either.
+        const std::string after = adapter.feed(bedrockFrame("contentBlockDelta", R"({"delta":{"text":"later"}})"));
+        LR_CHECK_MSG(after.find("later") == std::string::npos, after);
+    }
+}
+
+} // namespace
+
 int main() {
     testResolvePaths();
     testAnthropicRequestAdaptation();
@@ -860,5 +1314,9 @@ int main() {
     testAnthropicIngressAdaptation();
     testGeminiIngressAdaptation();
     testMultiProtocolStreaming();
+    testNewOutboundPaths();
+    testOllamaAdaptation();
+    testBedrockAdaptation();
+    testOllamaBedrockStreaming();
     return LR_SUMMARY("test_protocol");
 }

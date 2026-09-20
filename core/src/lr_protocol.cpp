@@ -33,41 +33,195 @@ bool isOpenAiResponses(const ProviderConfig &p) {
     return ciEqual(p.protocol, "openai_responses");
 }
 
+bool isAzure(const ProviderConfig &p) {
+    return ciEqual(p.protocol, "azure");
+}
+
+bool isVertex(const ProviderConfig &p) {
+    return ciEqual(p.protocol, "vertex");
+}
+
+bool isOllama(const ProviderConfig &p) {
+    return ciEqual(p.protocol, "ollama");
+}
+
+bool isBedrock(const ProviderConfig &p) {
+    return ciEqual(p.protocol, "bedrock");
+}
+
+// The Azure api-version a relay gets when it names none. A date rather than a
+// symbolic alias: Azure retires preview versions, and a config that silently
+// follows a moving alias is a config whose behaviour changes without an edit.
+constexpr std::string_view kAzureApiVersion = "2024-10-21";
+
+// The text of a chat message whatever shape its `content` arrived in. Every
+// adapter that has to fold an OpenAI message into a single-string field needs
+// this, and writing it once is what keeps them from disagreeing about what an
+// array of parts means.
+std::string contentAsText(const json &message) {
+    if (!message.is_object() || !message.contains("content")) {
+        return {};
+    }
+    const auto &content = message["content"];
+    if (content.is_string()) {
+        return content.get<std::string>();
+    }
+    if (content.is_array()) {
+        std::string out;
+        for (const auto &part : content) {
+            if (part.is_object() && part.contains("text") && part["text"].is_string()) {
+                out += part["text"].get<std::string>();
+            }
+        }
+        return out;
+    }
+    return {};
+}
+
+// A data URL's media type and payload, for the protocols that want the bytes
+// inline rather than as a URL.
+bool splitDataUrl(std::string_view url, std::string &mime, std::string &base64) {
+    if (!startsWith(url, "data:")) {
+        return false;
+    }
+    const auto comma = url.find(";base64,");
+    if (comma == std::string_view::npos) {
+        return false;
+    }
+    mime = std::string{url.substr(5, comma - 5)};
+    base64 = std::string{url.substr(comma + 8)};
+    return true;
+}
+
+} // namespace
+
+WireShape wireShapeOf(std::string_view protocol) {
+    const std::string proto = toLower(protocol);
+    if (proto == "anthropic") return WireShape::Anthropic;
+    if (proto == "gemini" || proto == "vertex") return WireShape::Gemini;
+    if (proto == "openai_responses") return WireShape::Responses;
+    if (proto == "ollama") return WireShape::Ollama;
+    if (proto == "bedrock") return WireShape::Bedrock;
+    // "openai", the two historical aliases, "azure" and anything unrecognised.
+    // An unknown protocol falls back to OpenAI's shape because that is what the
+    // overwhelming majority of relays speak, and because the alternative —
+    // refusing to send anything — turns a typo into an outage.
+    return WireShape::OpenAi;
+}
+
+std::string_view wireShapeName(WireShape shape) {
+    switch (shape) {
+    case WireShape::OpenAi: return "openai";
+    case WireShape::Anthropic: return "anthropic";
+    case WireShape::Gemini: return "gemini";
+    case WireShape::Responses: return "openai_responses";
+    case WireShape::Ollama: return "ollama";
+    case WireShape::Bedrock: return "bedrock";
+    }
+    return "openai";
+}
+
+namespace {
+
+// The parts of resolveChatPath/resolveModelsPath that are not a protocol's
+// default path: the ones that are computed from the relay's own settings.
+std::string vertexPath(const ProviderConfig &provider, std::string_view upstream_model,
+                       bool stream) {
+    const std::string version = provider.api_version.empty() ? "v1" : provider.api_version;
+    const std::string location = provider.region.empty() ? "us-central1" : provider.region;
+    const std::string base = std::format("/{}/projects/{}/locations/{}/publishers/google/models/{}",
+                                         version, provider.project, location, upstream_model);
+    return stream ? base + ":streamGenerateContent?alt=sse" : base + ":generateContent";
+}
+
+bool hasCustomChatPath(const ProviderConfig &provider) {
+    return !provider.chat_path.empty() && provider.chat_path != "/chat/completions";
+}
+
 } // namespace
 
 std::string resolveChatPath(const ProviderConfig &provider,
                             std::string_view upstream_model,
                             bool stream) {
-    if (isGemini(provider)) {
-        if (!provider.chat_path.empty() && provider.chat_path != "/chat/completions") {
+    const WireShape shape = wireShapeOf(provider.protocol);
+    if (shape == WireShape::Gemini) {
+        if (hasCustomChatPath(provider)) {
             return provider.chat_path;
+        }
+        if (isVertex(provider)) {
+            return vertexPath(provider, upstream_model, stream);
         }
         if (stream) {
             return std::format("/v1beta/models/{}:streamGenerateContent?alt=sse", upstream_model);
         }
         return std::format("/v1beta/models/{}:generateContent", upstream_model);
     }
-    if (isAnthropic(provider)) {
-        if (provider.chat_path == "/chat/completions") {
-            return "/v1/messages";
+    if (shape == WireShape::Anthropic) {
+        return hasCustomChatPath(provider) ? provider.chat_path : std::string{"/v1/messages"};
+    }
+    if (shape == WireShape::Responses) {
+        return hasCustomChatPath(provider) ? provider.chat_path : std::string{"/v1/responses"};
+    }
+    if (shape == WireShape::OpenAi) {
+        if (isAzure(provider)) {
+            if (hasCustomChatPath(provider)) {
+                return provider.chat_path;
+            }
+            // Azure names the model in the path as a *deployment*, not in the
+            // body, and requires an api-version query — the two reasons it
+            // cannot share the plain OpenAI path.
+            const std::string version = provider.api_version.empty()
+                                            ? std::string{kAzureApiVersion}
+                                            : provider.api_version;
+            return std::format("/openai/deployments/{}/chat/completions?api-version={}",
+                               upstream_model, version);
         }
         return provider.chat_path;
     }
-    if (isOpenAiResponses(provider)) {
-        if (provider.chat_path == "/chat/completions") {
-            return "/v1/responses";
+    if (shape == WireShape::Ollama) {
+        return hasCustomChatPath(provider) ? provider.chat_path : std::string{"/api/chat"};
+    }
+    if (shape == WireShape::Bedrock) {
+        if (hasCustomChatPath(provider)) {
+            return provider.chat_path;
         }
-        return provider.chat_path;
+        // The Converse API is one endpoint with its own body, not the OpenAI
+        // schema: /model/{id}/converse is the only shape that exists.
+        return stream ? std::format("/model/{}/converse-stream", upstream_model)
+                      : std::format("/model/{}/converse", upstream_model);
     }
     return provider.chat_path;
 }
 
 std::string resolveModelsPath(const ProviderConfig &provider) {
-    if (isGemini(provider)) {
+    const WireShape shape = wireShapeOf(provider.protocol);
+    if (shape == WireShape::Gemini) {
+        if (isVertex(provider)) {
+            const std::string version = provider.api_version.empty() ? "v1" : provider.api_version;
+            const std::string location = provider.region.empty() ? "us-central1" : provider.region;
+            return std::format("/{}/projects/{}/locations/{}/publishers/google/models", version,
+                               provider.project, location);
+        }
         return "/v1beta/models";
     }
-    if (isAnthropic(provider)) {
+    if (shape == WireShape::Anthropic) {
         return "/v1/models";
+    }
+    if (isAzure(provider)) {
+        const std::string version =
+            provider.api_version.empty() ? std::string{kAzureApiVersion} : provider.api_version;
+        return std::format("/openai/models?api-version={}", version);
+    }
+    if (shape == WireShape::Ollama) {
+        // Ollama lists local models on /api/tags, and the reply is
+        // {"models":[{"name":...}]} — a shape parseModelIds already reads.
+        return "/api/tags";
+    }
+    if (shape == WireShape::Bedrock) {
+        // Bedrock's model catalogue lives on a different host and a different
+        // signing service (bedrock, not bedrock-runtime), so a probe cannot
+        // list it. It still reports reachability, which is the useful half.
+        return "/models";
     }
     return "/models";
 }
@@ -81,7 +235,12 @@ std::string adaptChatRequest(const ProviderConfig &provider,
         return std::string{openai_request_json};
     }
 
-    if (isAnthropic(provider)) {
+    // Dispatched on the wire shape rather than the protocol name: `vertex` is
+    // Gemini's body, and `azure` is OpenAI's. A name comparison here would send
+    // an OpenAI body to Vertex and an unadapted one to a plain OpenAI relay.
+    const WireShape shape = wireShapeOf(provider.protocol);
+
+    if (shape == WireShape::Anthropic) {
         json anthropic = json::object();
         anthropic["model"] = std::string{upstream_model};
         anthropic["stream"] = stream;
@@ -254,7 +413,7 @@ std::string adaptChatRequest(const ProviderConfig &provider,
         return anthropic.dump();
     }
 
-    if (isGemini(provider)) {
+    if (shape == WireShape::Gemini) {
         json gemini = json::object();
         json contents = json::array();
         json system_inst;
@@ -306,7 +465,7 @@ std::string adaptChatRequest(const ProviderConfig &provider,
         return gemini.dump();
     }
 
-    if (isOpenAiResponses(provider)) {
+    if (shape == WireShape::Responses) {
         json resp = json::object();
         resp["model"] = std::string{upstream_model};
         resp["stream"] = stream;
@@ -316,6 +475,165 @@ std::string adaptChatRequest(const ProviderConfig &provider,
         if (req.contains("temperature")) resp["temperature"] = req["temperature"];
         if (req.contains("max_tokens")) resp["max_output_tokens"] = req["max_tokens"];
         return resp.dump();
+    }
+
+    if (shape == WireShape::Ollama) {
+        // Ollama's /api/chat is OpenAI-shaped at the message level but puts its
+        // sampling knobs under `options` with its own names (num_predict for
+        // max_tokens), and it has no `developer` role.
+        json out = json::object();
+        out["model"] = std::string{upstream_model};
+        out["stream"] = stream;
+        json messages = json::array();
+        if (req.contains("messages") && req["messages"].is_array()) {
+            for (const auto &m : req["messages"]) {
+                if (!m.is_object()) continue;
+                json msg = json::object();
+                const std::string role = m.value("role", "user");
+                msg["role"] = role == "developer" ? "system" : role;
+                msg["content"] = contentAsText(m);
+                if (m.contains("tool_calls")) msg["tool_calls"] = m["tool_calls"];
+                if (m.contains("tool_call_id")) msg["tool_call_id"] = m["tool_call_id"];
+                // Ollama takes images as bare base64 strings, not as data URLs.
+                if (m.contains("content") && m["content"].is_array()) {
+                    json images = json::array();
+                    for (const auto &part : m["content"]) {
+                        if (!part.is_object() || part.value("type", "") != "image_url" ||
+                            !part.contains("image_url")) {
+                            continue;
+                        }
+                        std::string mime;
+                        std::string base64;
+                        if (splitDataUrl(part["image_url"].value("url", ""), mime, base64)) {
+                            images.push_back(std::move(base64));
+                        }
+                    }
+                    if (!images.empty()) msg["images"] = std::move(images);
+                }
+                messages.push_back(std::move(msg));
+            }
+        }
+        out["messages"] = std::move(messages);
+        json options = json::object();
+        if (req.contains("temperature")) options["temperature"] = req["temperature"];
+        if (req.contains("top_p")) options["top_p"] = req["top_p"];
+        if (req.contains("max_tokens")) options["num_predict"] = req["max_tokens"];
+        else if (req.contains("max_completion_tokens")) options["num_predict"] = req["max_completion_tokens"];
+        if (req.contains("stop")) options["stop"] = req["stop"];
+        if (req.contains("frequency_penalty")) options["frequency_penalty"] = req["frequency_penalty"];
+        if (req.contains("presence_penalty")) options["presence_penalty"] = req["presence_penalty"];
+        if (!options.empty()) out["options"] = std::move(options);
+        // Ollama's tool schema is already OpenAI's, so this is a pass-through
+        // rather than a translation.
+        if (req.contains("tools")) out["tools"] = req["tools"];
+        return out.dump();
+    }
+
+    if (shape == WireShape::Bedrock) {
+        // The Converse API. Its shape is its own: content is a list of typed
+        // blocks (text / image / toolUse / toolResult), the system prompt is a
+        // separate top-level list rather than a message, and every sampling knob
+        // lives under inferenceConfig.
+        json out = json::object();
+        json messages = json::array();
+        json system_blocks = json::array();
+        if (req.contains("messages") && req["messages"].is_array()) {
+            for (const auto &m : req["messages"]) {
+                if (!m.is_object()) continue;
+                const std::string role = m.value("role", "user");
+                if (role == "system" || role == "developer") {
+                    const std::string text = contentAsText(m);
+                    if (!text.empty()) system_blocks.push_back({{"text", text}});
+                    continue;
+                }
+                json msg = json::object();
+                json blocks = json::array();
+                if (role == "tool" || role == "function") {
+                    // Converse has no tool role: a result is a user turn holding
+                    // a toolResult block.
+                    msg["role"] = "user";
+                    json result = json::object();
+                    result["toolUseId"] = m.value("tool_call_id", m.value("name", "call_0"));
+                    result["content"] = json::array({json{{"text", contentAsText(m)}}});
+                    blocks.push_back({{"toolResult", result}});
+                } else if (role == "assistant" && m.contains("tool_calls") &&
+                           m["tool_calls"].is_array() && !m["tool_calls"].empty()) {
+                    msg["role"] = "assistant";
+                    const std::string text = contentAsText(m);
+                    if (!text.empty()) blocks.push_back({{"text", text}});
+                    for (const auto &tc : m["tool_calls"]) {
+                        if (!tc.is_object()) continue;
+                        json use = json::object();
+                        use["toolUseId"] = tc.value("id", "call_" + hexId(8));
+                        if (tc.contains("function") && tc["function"].is_object()) {
+                            use["name"] = tc["function"].value("name", "");
+                            const json parsed = json::parse(
+                                tc["function"].value("arguments", "{}"), nullptr, false);
+                            use["input"] = parsed.is_discarded() ? json::object() : parsed;
+                        }
+                        blocks.push_back({{"toolUse", use}});
+                    }
+                } else {
+                    msg["role"] = role == "assistant" ? "assistant" : "user";
+                    const std::string text = contentAsText(m);
+                    if (!text.empty()) blocks.push_back({{"text", text}});
+                    if (m.contains("content") && m["content"].is_array()) {
+                        for (const auto &part : m["content"]) {
+                            if (!part.is_object() || part.value("type", "") != "image_url" ||
+                                !part.contains("image_url")) {
+                                continue;
+                            }
+                            std::string mime;
+                            std::string base64;
+                            if (!splitDataUrl(part["image_url"].value("url", ""), mime, base64)) {
+                                continue;
+                            }
+                            const std::string format = mime == "image/png"    ? "png"
+                                                       : mime == "image/gif"  ? "gif"
+                                                       : mime == "image/webp" ? "webp"
+                                                                               : "jpeg";
+                            blocks.push_back({{"image",
+                                               {{"format", format},
+                                                {"source", {{"bytes", std::move(base64)}}}}}});
+                        }
+                    }
+                }
+                if (blocks.empty()) blocks.push_back({{"text", ""}});
+                msg["content"] = std::move(blocks);
+                messages.push_back(std::move(msg));
+            }
+        }
+        if (messages.empty()) {
+            messages.push_back({{"role", "user"}, {"content", json::array({json{{"text", "..."}}})}});
+        }
+        if (!system_blocks.empty()) out["system"] = std::move(system_blocks);
+        out["messages"] = std::move(messages);
+        json config = json::object();
+        if (req.contains("max_tokens")) config["maxTokens"] = req["max_tokens"];
+        else if (req.contains("max_completion_tokens")) config["maxTokens"] = req["max_completion_tokens"];
+        if (req.contains("temperature")) config["temperature"] = req["temperature"];
+        if (req.contains("top_p")) config["topP"] = req["top_p"];
+        if (req.contains("stop")) {
+            config["stopSequences"] =
+                req["stop"].is_string() ? json::array({req["stop"]}) : req["stop"];
+        }
+        if (!config.empty()) out["inferenceConfig"] = std::move(config);
+        if (req.contains("tools") && req["tools"].is_array() && !req["tools"].empty()) {
+            json tools = json::array();
+            for (const auto &t : req["tools"]) {
+                if (!t.is_object() || t.value("type", "") != "function" || !t.contains("function")) {
+                    continue;
+                }
+                const auto &fn = t["function"];
+                tools.push_back({{"toolSpec",
+                                  {{"name", fn.value("name", "")},
+                                   {"description", fn.value("description", "")},
+                                   {"inputSchema",
+                                    {{"json", fn.value("parameters", json::object())}}}}}});
+            }
+            if (!tools.empty()) out["toolConfig"] = {{"tools", std::move(tools)}};
+        }
+        return out.dump();
     }
 
     // Default OpenAI format
@@ -334,7 +652,12 @@ std::string adaptChatRequest(const ProviderConfig &provider,
 std::string adaptChatResponse(const ProviderConfig &provider,
                               std::string_view upstream_response,
                               std::string_view requested_model) {
-    if (!isAnthropic(provider) && !isGemini(provider) && !isOpenAiResponses(provider)) {
+    const WireShape shape = wireShapeOf(provider.protocol);
+    if (shape == WireShape::OpenAi) {
+        // OpenAI's own shape needs no conversion at all. A Responses-shaped
+        // upstream body does: it is a different document (output/usage instead
+        // of choices/usage) that still has to reach a chat client as a chat
+        // completion.
         return std::string{upstream_response};
     }
 
@@ -343,7 +666,130 @@ std::string adaptChatResponse(const ProviderConfig &provider,
         return std::string{upstream_response};
     }
 
-    if (isAnthropic(provider)) {
+    if (shape == WireShape::Ollama) {
+        json choice = json::object();
+        choice["index"] = 0;
+        json message = json::object();
+        message["role"] = "assistant";
+        std::string content;
+        std::string reasoning;
+        json tool_calls = json::array();
+        if (root.contains("message") && root["message"].is_object()) {
+            const auto &m = root["message"];
+            content = m.value("content", "");
+            // Ollama names reasoning `thinking`.
+            reasoning = m.value("thinking", "");
+            if (m.contains("tool_calls") && m["tool_calls"].is_array()) {
+                for (const auto &tc : m["tool_calls"]) {
+                    if (!tc.is_object() || !tc.contains("function")) continue;
+                    const auto &fn = tc["function"];
+                    json call = json::object();
+                    call["id"] = "call_" + hexId(8);
+                    call["type"] = "function";
+                    call["function"] = json::object();
+                    call["function"]["name"] = fn.value("name", "");
+                    call["function"]["arguments"] =
+                        fn.contains("arguments") && fn["arguments"].is_string()
+                            ? fn["arguments"].get<std::string>()
+                            : fn.value("arguments", json::object()).dump();
+                    tool_calls.push_back(std::move(call));
+                }
+            }
+        }
+        message["content"] = content;
+        if (!reasoning.empty()) message["reasoning_content"] = reasoning;
+        if (!tool_calls.empty()) message["tool_calls"] = tool_calls;
+        choice["message"] = std::move(message);
+        if (!tool_calls.empty()) {
+            choice["finish_reason"] = "tool_calls";
+        } else if (root.value("done_reason", "") == "length") {
+            choice["finish_reason"] = "length";
+        } else {
+            choice["finish_reason"] = "stop";
+        }
+        const auto prompt = root.value("prompt_eval_count", std::uint64_t{0});
+        const auto completion = root.value("eval_count", std::uint64_t{0});
+        json out = json::object();
+        out["id"] = "chatcmpl-" + hexId(8);
+        out["object"] = "chat.completion";
+        out["created"] = static_cast<long long>(nowUnix());
+        out["model"] = std::string{requested_model};
+        out["choices"] = json::array({std::move(choice)});
+        out["usage"] = json::object();
+        out["usage"]["prompt_tokens"] = prompt;
+        out["usage"]["completion_tokens"] = completion;
+        out["usage"]["total_tokens"] = prompt + completion;
+        return out.dump();
+    }
+
+    if (shape == WireShape::Bedrock) {
+        json choice = json::object();
+        choice["index"] = 0;
+        json message = json::object();
+        message["role"] = "assistant";
+        std::string content;
+        std::string reasoning;
+        json tool_calls = json::array();
+        if (root.contains("output") && root["output"].is_object() &&
+            root["output"].contains("message") && root["output"]["message"].is_object()) {
+            const auto &m = root["output"]["message"];
+            if (m.contains("content") && m["content"].is_array()) {
+                for (const auto &block : m["content"]) {
+                    if (!block.is_object()) continue;
+                    if (block.contains("text")) {
+                        content += block.value("text", "");
+                    } else if (block.contains("reasoningContent") &&
+                               block["reasoningContent"].is_object()) {
+                        const auto &r = block["reasoningContent"];
+                        if (r.contains("reasoningText") && r["reasoningText"].is_object()) {
+                            reasoning += r["reasoningText"].value("text", "");
+                        }
+                    } else if (block.contains("toolUse") && block["toolUse"].is_object()) {
+                        const auto &use = block["toolUse"];
+                        json call = json::object();
+                        call["id"] = use.value("toolUseId", "call_" + hexId(8));
+                        call["type"] = "function";
+                        call["function"] = json::object();
+                        call["function"]["name"] = use.value("name", "");
+                        call["function"]["arguments"] =
+                            use.contains("input") ? use["input"].dump() : std::string{"{}"};
+                        tool_calls.push_back(std::move(call));
+                    }
+                }
+            }
+        }
+        message["content"] = content;
+        if (!reasoning.empty()) message["reasoning_content"] = reasoning;
+        if (!tool_calls.empty()) message["tool_calls"] = tool_calls;
+        choice["message"] = std::move(message);
+        const std::string stop = root.value("stopReason", "");
+        if (!tool_calls.empty()) {
+            choice["finish_reason"] = "tool_calls";
+        } else if (stop == "max_tokens") {
+            choice["finish_reason"] = "length";
+        } else {
+            choice["finish_reason"] = "stop";
+        }
+        std::uint64_t prompt = 0;
+        std::uint64_t completion = 0;
+        if (root.contains("usage") && root["usage"].is_object()) {
+            prompt = root["usage"].value("inputTokens", std::uint64_t{0});
+            completion = root["usage"].value("outputTokens", std::uint64_t{0});
+        }
+        json out = json::object();
+        out["id"] = "chatcmpl-" + hexId(8);
+        out["object"] = "chat.completion";
+        out["created"] = static_cast<long long>(nowUnix());
+        out["model"] = std::string{requested_model};
+        out["choices"] = json::array({std::move(choice)});
+        out["usage"] = json::object();
+        out["usage"]["prompt_tokens"] = prompt;
+        out["usage"]["completion_tokens"] = completion;
+        out["usage"]["total_tokens"] = prompt + completion;
+        return out.dump();
+    }
+
+    if (shape == WireShape::Anthropic) {
         json choice = json::object();
         choice["index"] = 0;
         json message = json::object();
@@ -412,7 +858,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
         return out.dump();
     }
 
-    if (isGemini(provider)) {
+    if (shape == WireShape::Gemini) {
         json choice = json::object();
         choice["index"] = 0;
         json message = json::object();
@@ -471,7 +917,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
         return out.dump();
     }
 
-    if (isOpenAiResponses(provider)) {
+    if (shape == WireShape::Responses) {
         json choice = json::object();
         choice["index"] = 0;
         json message = json::object();
@@ -1007,43 +1453,66 @@ public:
         if (from_proto_ == to_proto_) {
             return std::string{chunk};
         }
+        if (bedrock_broken_) {
+            return {};
+        }
 
         buffer_.append(chunk);
         std::string out;
 
         for (;;) {
-            std::size_t delim_pos = std::string::npos;
-            std::size_t delim_len = 0;
-            auto pos_crlf = buffer_.find("\r\n\r\n");
-            auto pos_lf = buffer_.find("\n\n");
-            if (pos_crlf != std::string::npos && (pos_lf == std::string::npos || pos_crlf < pos_lf)) {
-                delim_pos = pos_crlf;
-                delim_len = 4;
-            } else if (pos_lf != std::string::npos) {
-                delim_pos = pos_lf;
-                delim_len = 2;
-            }
-            if (delim_pos == std::string::npos) break;
-
-            std::string event_block = buffer_.substr(0, delim_pos);
-            buffer_.erase(0, delim_pos + delim_len);
-
             std::string event_type;
             std::string data_str;
-            std::istringstream stream(event_block);
-            std::string line;
-            while (std::getline(stream, line)) {
-                if (line.ends_with('\r')) line.pop_back();
-                std::string_view line_sv = line;
-                if (startsWith(line_sv, "event:")) {
-                    std::string_view v = line_sv.substr(6);
-                    if (!v.empty() && v[0] == ' ') v.remove_prefix(1);
-                    event_type = trim(v);
-                } else if (startsWith(line_sv, "data:")) {
-                    std::string_view v = line_sv.substr(5);
-                    if (!v.empty() && v[0] == ' ') v.remove_prefix(1);
-                    if (!data_str.empty()) data_str += "\n";
-                    data_str.append(v);
+
+            if (from_proto_ == "ollama") {
+                // Ollama streams newline-delimited JSON, not SSE: one complete
+                // object per line, with no `data:` prefix and no blank-line
+                // terminator. Reusing the SSE splitter here would buffer the
+                // whole answer and emit nothing until the stream ended.
+                const auto newline = buffer_.find('\n');
+                if (newline == std::string::npos) break;
+                std::string line = buffer_.substr(0, newline);
+                buffer_.erase(0, newline + 1);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (trim(line).empty()) continue;
+                data_str = std::move(line);
+            } else if (from_proto_ == "bedrock") {
+                // AWS event stream: a length-prefixed binary protocol with CRC32
+                // checks on both ends of every message.
+                if (bedrock_broken_) break;
+                if (!nextBedrockEvent(data_str, event_type)) break;
+            } else {
+                std::size_t delim_pos = std::string::npos;
+                std::size_t delim_len = 0;
+                auto pos_crlf = buffer_.find("\r\n\r\n");
+                auto pos_lf = buffer_.find("\n\n");
+                if (pos_crlf != std::string::npos && (pos_lf == std::string::npos || pos_crlf < pos_lf)) {
+                    delim_pos = pos_crlf;
+                    delim_len = 4;
+                } else if (pos_lf != std::string::npos) {
+                    delim_pos = pos_lf;
+                    delim_len = 2;
+                }
+                if (delim_pos == std::string::npos) break;
+
+                std::string event_block = buffer_.substr(0, delim_pos);
+                buffer_.erase(0, delim_pos + delim_len);
+
+                std::istringstream stream(event_block);
+                std::string line;
+                while (std::getline(stream, line)) {
+                    if (line.ends_with('\r')) line.pop_back();
+                    std::string_view line_sv = line;
+                    if (startsWith(line_sv, "event:")) {
+                        std::string_view v = line_sv.substr(6);
+                        if (!v.empty() && v[0] == ' ') v.remove_prefix(1);
+                        event_type = trim(v);
+                    } else if (startsWith(line_sv, "data:")) {
+                        std::string_view v = line_sv.substr(5);
+                        if (!v.empty() && v[0] == ' ') v.remove_prefix(1);
+                        if (!data_str.empty()) data_str += "\n";
+                        data_str.append(v);
+                    }
                 }
             }
 
@@ -1052,11 +1521,105 @@ public:
             std::string text_delta;
             std::string reasoning_delta;
             std::string finish_reason;
+            json tool_calls_delta = json::array();
             int out_tokens = 0;
             int in_tokens = 0;
             bool is_done = false;
 
-            if (from_proto_ == "openai_responses") {
+            if (from_proto_ == "ollama") {
+                // Every line is one object: `{"message":{"content":"..."},"done":false}`
+                // per token, and a final `{"done":true,...}` carrying the counts.
+                const json data = json::parse(data_str, nullptr, false);
+                if (!data.is_discarded() && data.is_object()) {
+                    if (data.contains("message") && data["message"].is_object()) {
+                        const auto &m = data["message"];
+                        text_delta = m.value("content", "");
+                        reasoning_delta = m.value("thinking", "");
+                        if (m.contains("tool_calls") && m["tool_calls"].is_array()) {
+                            for (const auto &tc : m["tool_calls"]) {
+                                if (!tc.is_object() || !tc.contains("function")) continue;
+                                const auto &fn = tc["function"];
+                                json call = json::object();
+                                call["index"] = tool_index_++;
+                                call["id"] = "call_" + hexId(8);
+                                call["type"] = "function";
+                                call["function"] = json::object();
+                                call["function"]["name"] = fn.value("name", "");
+                                call["function"]["arguments"] =
+                                    fn.contains("arguments") && fn["arguments"].is_string()
+                                        ? fn["arguments"].get<std::string>()
+                                        : fn.value("arguments", json::object()).dump();
+                                tool_calls_delta.push_back(std::move(call));
+                            }
+                        }
+                    }
+                    if (data.value("done", false)) {
+                        is_done = true;
+                        finish_reason = data.value("done_reason", "") == "length" ? "length" : "stop";
+                        if (!tool_calls_delta.empty()) finish_reason = "tool_calls";
+                        in_tokens = static_cast<int>(data.value("prompt_eval_count", std::uint64_t{0}));
+                        out_tokens = static_cast<int>(data.value("eval_count", std::uint64_t{0}));
+                    }
+                }
+            } else if (from_proto_ == "bedrock") {
+                // Converse stream events. The tool-use input arrives as a stream
+                // of JSON *fragments* (not complete JSON), which is exactly what
+                // OpenAI's tool_calls delta wants, so it is forwarded as-is.
+                const json data = json::parse(data_str, nullptr, false);
+                if (!data.is_discarded() && data.is_object()) {
+                    if (event_type == "contentBlockStart") {
+                        if (data.contains("start") && data["start"].is_object() &&
+                            data["start"].contains("toolUse")) {
+                            const auto &use = data["start"]["toolUse"];
+                            tool_id_ = use.value("toolUseId", "call_" + hexId(8));
+                            tool_name_ = use.value("name", "");
+                            json call = json::object();
+                            call["index"] = tool_index_;
+                            call["id"] = tool_id_;
+                            call["type"] = "function";
+                            call["function"] = json::object();
+                            call["function"]["name"] = tool_name_;
+                            call["function"]["arguments"] = "";
+                            tool_calls_delta.push_back(std::move(call));
+                        }
+                    } else if (event_type == "contentBlockDelta" && data.contains("delta") &&
+                               data["delta"].is_object()) {
+                        const auto &delta = data["delta"];
+                        if (delta.contains("text")) {
+                            text_delta = delta.value("text", "");
+                        } else if (delta.contains("reasoningContent") &&
+                                   delta["reasoningContent"].is_object()) {
+                            reasoning_delta = delta["reasoningContent"].value("text", "");
+                        } else if (delta.contains("toolUse") && delta["toolUse"].is_object()) {
+                            const std::string fragment = delta["toolUse"].value("input", "");
+                            if (!fragment.empty()) {
+                                json call = json::object();
+                                call["index"] = tool_index_;
+                                call["function"] = json::object();
+                                call["function"]["arguments"] = fragment;
+                                tool_calls_delta.push_back(std::move(call));
+                            }
+                        }
+                    } else if (event_type == "contentBlockStop") {
+                        ++tool_index_;
+                    } else if (event_type == "messageStop") {
+                        is_done = true;
+                        const std::string stop = data.value("stopReason", "");
+                        finish_reason = stop == "max_tokens" ? "length" : "stop";
+                        if (stop == "tool_use") finish_reason = "tool_calls";
+                    } else if (event_type == "metadata" && data.contains("usage") &&
+                               data["usage"].is_object()) {
+                        in_tokens = static_cast<int>(
+                            data["usage"].value("inputTokens", std::uint64_t{0}));
+                        out_tokens = static_cast<int>(
+                            data["usage"].value("outputTokens", std::uint64_t{0}));
+                    } else if (startsWith(event_type, "exception") ||
+                               startsWith(event_type, "error")) {
+                        is_done = true;
+                        finish_reason = "stop";
+                    }
+                }
+            } else if (from_proto_ == "openai_responses") {
                 // The Responses API streams named events rather than chat deltas:
                 // the text arrives as `response.output_text.delta`, the reasoning
                 // as `response.reasoning_summary_text.delta`, and the usage with
@@ -1217,6 +1780,21 @@ public:
                     });
                     out += "data: " + chunk_obj.dump() + "\n\n";
                 }
+                if (!tool_calls_delta.empty()) {
+                    json chunk_obj = json::object();
+                    chunk_obj["id"] = "chatcmpl-" + (stream_id_.empty() ? request_id_ : stream_id_);
+                    chunk_obj["object"] = "chat.completion.chunk";
+                    chunk_obj["created"] = static_cast<long long>(nowUnix());
+                    chunk_obj["model"] = model_;
+                    chunk_obj["choices"] = json::array({
+                        {
+                            {"index", 0},
+                            {"delta", {{"tool_calls", tool_calls_delta}}},
+                            {"finish_reason", nullptr}
+                        }
+                    });
+                    out += "data: " + chunk_obj.dump() + "\n\n";
+                }
                 if (!finish_reason.empty()) {
                     json chunk_obj = json::object();
                     chunk_obj["id"] = "chatcmpl-" + (stream_id_.empty() ? request_id_ : stream_id_);
@@ -1241,41 +1819,96 @@ public:
                     sent_anthropic_start_ = true;
                     json msg_start = {
                         {"type", "message_start"},
-                        {"message", {
-                            {"id", "msg_" + (stream_id_.empty() ? request_id_ : stream_id_)},
-                            {"type", "message"},
-                            {"role", "assistant"},
-                            {"content", json::array()},
-                            {"model", model_},
-                            {"stop_reason", nullptr},
-                            {"stop_sequence", nullptr},
-                            {"usage", {{"input_tokens", in_tokens}, {"output_tokens", 1}}}
-                        }}
+                        {"message",
+                         {
+                             {"id", "msg_" + (stream_id_.empty() ? request_id_ : stream_id_)},
+                             {"type", "message"},
+                             {"role", "assistant"},
+                             {"content", json::array()},
+                             {"model", model_},
+                             {"stop_reason", nullptr},
+                             {"stop_sequence", nullptr},
+                             {"usage", {{"input_tokens", in_tokens}, {"output_tokens", 1}}},
+                         }},
                     };
                     out += "event: message_start\ndata: " + msg_start.dump() + "\n\n";
-                    json block_start = {
-                        {"type", "content_block_start"},
-                        {"index", 0},
-                        {"content_block", {{"type", "text"}, {"text", ""}}}
-                    };
-                    out += "event: content_block_start\ndata: " + block_start.dump() + "\n\n";
                 }
-                if (!text_delta.empty()) {
+                // Blocks are opened lazily and closed in order, because a
+                // reasoning delta and a text delta can arrive in either order
+                // and Anthropic wants the thinking block before the text block.
+                // Each transition emits a real content_block_stop for the old
+                // index and a content_block_start for the new one; a client that
+                // tracks block indices sees a well-formed sequence instead of
+                // deltas addressed to a block it never saw opened.
+                const auto close_block = [&out, this] {
+                    json block_stop = {{"type", "content_block_stop"},
+                                       {"index", anthropic_index_}};
+                    out += "event: content_block_stop\ndata: " + block_stop.dump() + "\n\n";
+                    ++anthropic_index_;
+                    anthropic_block_open_ = false;
+                    anthropic_block_is_thinking_ = false;
+                };
+                const auto open_block = [&out, this](const char *type) {
+                    json block_start = json::object();
+                    block_start["type"] = "content_block_start";
+                    block_start["index"] = anthropic_index_;
+                    if (std::string_view{type} == "thinking") {
+                        block_start["content_block"] = {{"type", "thinking"}, {"thinking", ""}};
+                        anthropic_block_is_thinking_ = true;
+                    } else {
+                        block_start["content_block"] = {{"type", "text"}, {"text", ""}};
+                        anthropic_block_is_thinking_ = false;
+                    }
+                    out += "event: content_block_start\ndata: " + block_start.dump() + "\n\n";
+                    anthropic_block_open_ = true;
+                    anthropic_any_block_ = true;
+                };
+                if (!reasoning_delta.empty()) {
+                    if (anthropic_block_open_ && !anthropic_block_is_thinking_) {
+                        // Reasoning that arrives after text starts still gets its
+                        // own block: dropping it would silently discard content
+                        // the client asked to be able to read.
+                        close_block();
+                    }
+                    if (!anthropic_block_open_) {
+                        open_block("thinking");
+                    }
                     json block_delta = {
                         {"type", "content_block_delta"},
-                        {"index", 0},
-                        {"delta", {{"type", "text_delta"}, {"text", text_delta}}}
+                        {"index", anthropic_index_},
+                        {"delta", {{"type", "thinking_delta"}, {"thinking", reasoning_delta}}},
+                    };
+                    out += "event: content_block_delta\ndata: " + block_delta.dump() + "\n\n";
+                }
+                if (!text_delta.empty()) {
+                    if (anthropic_block_open_ && anthropic_block_is_thinking_) {
+                        close_block();
+                    }
+                    if (!anthropic_block_open_) {
+                        open_block("text");
+                    }
+                    json block_delta = {
+                        {"type", "content_block_delta"},
+                        {"index", anthropic_index_},
+                        {"delta", {{"type", "text_delta"}, {"text", text_delta}}},
                     };
                     out += "event: content_block_delta\ndata: " + block_delta.dump() + "\n\n";
                 }
                 if (is_done || !finish_reason.empty()) {
+                    if (!anthropic_any_block_) {
+                        // An answer with no content at all still owes the client
+                        // the block shape it was promised when message_start
+                        // went out.
+                        open_block("text");
+                    }
+                    if (anthropic_block_open_) {
+                        close_block();
+                    }
                     std::string stop = (finish_reason == "length") ? "max_tokens" : "end_turn";
-                    json block_stop = {{"type", "content_block_stop"}, {"index", 0}};
-                    out += "event: content_block_stop\ndata: " + block_stop.dump() + "\n\n";
                     json msg_delta = {
                         {"type", "message_delta"},
                         {"delta", {{"stop_reason", stop}, {"stop_sequence", nullptr}}},
-                        {"usage", {{"output_tokens", out_tokens}}}
+                        {"usage", {{"output_tokens", out_tokens}}},
                     };
                     out += "event: message_delta\ndata: " + msg_delta.dump() + "\n\n";
                     json msg_stop = {{"type", "message_stop"}};
@@ -1388,7 +2021,25 @@ public:
             if (to_proto_ == "openai") {
                 return "data: [DONE]\n\n";
             } else if (to_proto_ == "anthropic") {
-                return "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+                // The same block bookkeeping the streaming branch uses, so a
+                // stream cut short between chunks still closes the index it had
+                // actually opened rather than a hard-coded zero.
+                std::string out;
+                if (!anthropic_any_block_) {
+                    out += "event: content_block_start\ndata: {\"type\":\"content_block_start\","
+                           "\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n";
+                } else if (!anthropic_block_open_) {
+                    // Everything already closed; nothing left to terminate.
+                    return out;
+                }
+                out += std::format(
+                    "event: content_block_stop\ndata: {{\"type\":\"content_block_stop\","
+                    "\"index\":{}}}\n\n",
+                    anthropic_index_);
+                out += "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{"
+                       "\"stop_reason\":\"end_turn\",\"stop_sequence\":null}}\n\n"
+                       "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+                return out;
             } else if (to_proto_ == "gemini") {
                 return "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0}]}\n\n";
             }
@@ -1397,6 +2048,113 @@ public:
     }
 
 private:
+    // ── AWS event stream ─────────────────────────────────────────────────────
+    //
+    // Bedrock's streaming API is not SSE. Each message is
+    //   [total_len:4][headers_len:4][prelude_crc:4][headers][payload][crc:4]
+    // big-endian, with a CRC32 over the prelude and another over everything
+    // before the trailing CRC. A frame whose checksums do not match is a
+    // damaged stream, and guessing at its boundaries would turn framing
+    // damage into plausible-looking model output.
+    static std::uint32_t crc32Of(const char *data, std::size_t length) {
+        static const std::array<std::uint32_t, 256> table = [] {
+            std::array<std::uint32_t, 256> out{};
+            for (std::uint32_t i = 0; i < 256; ++i) {
+                std::uint32_t value = i;
+                for (int bit = 0; bit < 8; ++bit) {
+                    value = (value & 1) != 0 ? (0xEDB88320u ^ (value >> 1)) : (value >> 1);
+                }
+                out[i] = value;
+            }
+            return out;
+        }();
+        std::uint32_t crc = 0xFFFFFFFFu;
+        for (std::size_t i = 0; i < length; ++i) {
+            crc = table[(crc ^ static_cast<unsigned char>(data[i])) & 0xFFu] ^ (crc >> 8);
+        }
+        return crc ^ 0xFFFFFFFFu;
+    }
+
+    std::uint32_t readU32(std::size_t at) const {
+        return (static_cast<std::uint32_t>(static_cast<unsigned char>(buffer_[at])) << 24) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(buffer_[at + 1])) << 16) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(buffer_[at + 2])) << 8) |
+               static_cast<std::uint32_t>(static_cast<unsigned char>(buffer_[at + 3]));
+    }
+
+    // Consumes one frame. Returns false when the buffer does not yet hold a whole
+    // one (the caller waits for more bytes) — or when the frame is corrupt, in
+    // which case `bedrock_broken_` stops the stream instead of resynchronising
+    // on whatever looks like a length.
+    bool nextBedrockEvent(std::string &data_out, std::string &event_type_out) {
+        if (buffer_.size() < 16) return false;
+        const std::uint32_t total = readU32(0);
+        const std::uint32_t header_length = readU32(4);
+        if (total < 16 || header_length > total - 16) {
+            bedrock_broken_ = true;
+            return false;
+        }
+        if (buffer_.size() < total) return false;
+        if (readU32(8) != crc32Of(buffer_.data(), 8) ||
+            readU32(total - 4) != crc32Of(buffer_.data(), total - 4)) {
+            bedrock_broken_ = true;
+            return false;
+        }
+
+        const std::size_t headers_end = 12 + header_length;
+        std::size_t at = 12;
+        std::string message_type = "event";
+        std::string event_type;
+        while (at < headers_end) {
+            const std::size_t name_length = static_cast<unsigned char>(buffer_[at++]);
+            if (at + name_length + 1 > headers_end) break;
+            const std::string name = buffer_.substr(at, name_length);
+            at += name_length;
+            const unsigned char type = static_cast<unsigned char>(buffer_[at++]);
+            const auto read_string = [&]() -> std::string {
+                if (at + 2 > headers_end) return {};
+                const std::size_t length =
+                    (static_cast<std::size_t>(static_cast<unsigned char>(buffer_[at])) << 8) |
+                    static_cast<unsigned char>(buffer_[at + 1]);
+                at += 2;
+                if (at + length > headers_end) return {};
+                std::string value = buffer_.substr(at, length);
+                at += length;
+                return value;
+            };
+            std::string value;
+            switch (type) {
+            case 0: value = "true"; break;
+            case 1: value = "false"; break;
+            case 2: at += 1; break;
+            case 3: at += 2; break;
+            case 4: at += 4; break;
+            case 5: at += 8; break;
+            case 6:
+                if (at + 2 <= headers_end) {
+                    const std::size_t length =
+                        (static_cast<std::size_t>(static_cast<unsigned char>(buffer_[at])) << 8) |
+                        static_cast<unsigned char>(buffer_[at + 1]);
+                    at += 2 + length;
+                }
+                break;
+            case 7: value = read_string(); break;
+            case 8: at += 8; break;
+            case 9: at += 16; break;
+            default: at = headers_end; break;
+            }
+            if (name == ":message-type") message_type = value;
+            else if (name == ":event-type") event_type = value;
+            else if (name == ":exception-type") event_type = value;
+        }
+
+        const std::size_t payload_length = total - 4 - headers_end;
+        data_out = buffer_.substr(headers_end, payload_length);
+        event_type_out = message_type == "event" ? event_type : message_type + ":" + event_type;
+        buffer_.erase(0, total);
+        return true;
+    }
+
     std::string from_proto_;
     std::string to_proto_;
     std::string model_;
@@ -1407,6 +2165,19 @@ private:
     bool sent_role_ = false;
     bool sent_anthropic_start_ = false;
     bool sent_responses_start_ = false;
+    // Anthropic content-block bookkeeping: which index is open, whether it is
+    // the thinking block, and whether any block was opened at all (an answer
+    // with no content still has to be closed properly).
+    int anthropic_index_ = 0;
+    bool anthropic_block_open_ = false;
+    bool anthropic_block_is_thinking_ = false;
+    bool anthropic_any_block_ = false;
+    // Bedrock/OpenAI tool-call bookkeeping. The index is what OpenAI clients use
+    // to stitch streamed argument fragments onto the right call.
+    int tool_index_ = 0;
+    std::string tool_id_;
+    std::string tool_name_;
+    bool bedrock_broken_ = false;
 };
 
 StreamProtocolAdapter::StreamProtocolAdapter(const ProviderConfig &provider,

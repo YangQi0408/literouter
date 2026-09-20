@@ -69,11 +69,22 @@ std::expected<ConfigStore, std::string> ConfigStore::load(const std::filesystem:
     std::string text{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
     input.close();
 
-    if (auto parsed = appConfigFromJson(text); !parsed) {
+    // Walked onto this build's schema before it is used, so an older file keeps
+    // loading and the operator is told what was normalised instead of being
+    // handed a config whose behaviour differs from its text. The file itself is
+    // left alone: loading must not rewrite what someone is editing, and
+    // `literouter config migrate` is the explicit way to write it back.
+    std::string rewritten;
+    auto migration = migrateConfigJson(text, rewritten);
+    if (!migration) {
+        return std::unexpected(std::format("{}: {}", path.string(), migration.error()));
+    }
+    if (auto parsed = appConfigFromJson(rewritten); !parsed) {
         return std::unexpected(std::format("{}: {}", path.string(), parsed.error()));
     } else {
         store.config_ = std::move(*parsed);
     }
+    store.migration_ = std::move(*migration);
 
     store.exists_ = true;
     if (std::filesystem::exists(path, ec)) {
@@ -370,6 +381,38 @@ ValidationReport validate(const AppConfig &config) {
                  std::format("ui_scale `{:.2f}` is outside the recommended range 0.25..4.00",
                              config.server.ui_scale));
     }
+    if (config.server.traffic_bucket_sec < 60) {
+        addIssue(report, ValidationIssue::Level::Warning, "server.traffic_bucket_sec",
+                 std::format("a {}s bucket is finer than the trend chart can label; "
+                             "raised to 60",
+                             config.server.traffic_bucket_sec));
+    }
+    if (config.server.traffic_bucket_count < 2) {
+        addIssue(report, ValidationIssue::Level::Warning, "server.traffic_bucket_count",
+                 "a trend needs at least two buckets to show a shape");
+    } else if (config.server.traffic_bucket_count > 10000) {
+        addIssue(report, ValidationIssue::Level::Warning, "server.traffic_bucket_count",
+                 std::format("{} buckets is a very large trend to persist and render",
+                             config.server.traffic_bucket_count));
+    }
+    if (config.server.response_cache_ttl_sec < 0) {
+        addIssue(report, ValidationIssue::Level::Error, "server.response_cache_ttl_sec",
+                 "a negative TTL would expire entries before they are stored; use 0 to disable the cache");
+    }
+    if (config.server.response_cache_max_entries < 0) {
+        addIssue(report, ValidationIssue::Level::Error, "server.response_cache_max_entries",
+                 "the entry count cannot be negative");
+    } else if (config.server.response_cache_ttl_sec > 0 &&
+               config.server.response_cache_max_entries < 1) {
+        addIssue(report, ValidationIssue::Level::Error, "server.response_cache_max_entries",
+                 "a cache with no entries cannot store anything; raise it or set "
+                 "response_cache_ttl_sec to 0");
+    }
+    if (!config.server.otlp_endpoint.empty() &&
+        !looksLikeUrl(config.server.otlp_endpoint)) {
+        addIssue(report, ValidationIssue::Level::Error, "server.otlp_endpoint",
+                 "otlp_endpoint must start with http:// or https://");
+    }
 
     // ── providers ────────────────────────────────────────────────────────────
     std::set<std::string, std::less<>> seenIds;
@@ -416,6 +459,10 @@ ValidationReport validate(const AppConfig &config) {
             addIssue(report, ValidationIssue::Level::Warning, where + ".timeout_sec",
                      "a timeout below 1s will fail most real completions");
         }
+        if (entry.max_concurrent < 0 || entry.requests_per_minute < 0) {
+            addIssue(report, ValidationIssue::Level::Error, where,
+                     "relay concurrency and rate limits cannot be negative");
+        }
         if (entry.priority < 0) {
             addIssue(report, ValidationIssue::Level::Warning, where + ".priority",
                      "negative priorities sort before every default entry");
@@ -423,10 +470,44 @@ ValidationReport validate(const AppConfig &config) {
         if (!entry.protocol.empty()) {
             const std::string proto = toLower(entry.protocol);
             if (proto != "openai" && proto != "openai_compatible" && proto != "openai_chat" &&
-                proto != "anthropic" && proto != "gemini" && proto != "openai_responses") {
+                proto != "anthropic" && proto != "gemini" && proto != "openai_responses" &&
+                proto != "azure" && proto != "vertex" && proto != "bedrock" &&
+                proto != "ollama") {
                 addIssue(report, ValidationIssue::Level::Warning, where + ".protocol",
-                         std::format("unrecognised protocol `{}`; supported: openai, anthropic, gemini, openai_responses",
+                         std::format("unrecognised protocol `{}`; supported: openai, anthropic, "
+                                     "gemini, openai_responses, azure, vertex, bedrock, ollama",
                                      entry.protocol));
+            } else if (proto == "vertex") {
+                // The path is /v1/projects/{project}/locations/{region}/...; a
+                // missing project cannot be guessed from the key file, and a
+                // wrong one is a 404 the operator would blame on the relay.
+                if (entry.project.empty()) {
+                    addIssue(report, ValidationIssue::Level::Error, where + ".project",
+                             "a Vertex relay needs `project` (and `credentials_file`)");
+                }
+                if (entry.credentials_file.empty()) {
+                    addIssue(report, ValidationIssue::Level::Error, where + ".credentials_file",
+                             "a Vertex relay needs a service-account JSON key to exchange for "
+                             "an access token");
+                } else {
+                    std::error_code ec;
+                    if (!std::filesystem::is_regular_file(entry.credentials_file, ec)) {
+                        addIssue(report, ValidationIssue::Level::Error,
+                                 where + ".credentials_file",
+                                 "credentials_file is not a readable regular file");
+                    }
+                }
+            } else if (proto == "bedrock") {
+                if (entry.region.empty()) {
+                    addIssue(report, ValidationIssue::Level::Error, where + ".region",
+                             "Bedrock signs every request against a region and cannot guess one");
+                }
+                if (entry.aws_access_key.empty() || entry.aws_secret_key.empty()) {
+                    addIssue(report, ValidationIssue::Level::Error, where,
+                             "a Bedrock relay needs aws_access_key and aws_secret_key to sign "
+                             "its requests (SigV4); `${ENV_VAR}` references are resolved at "
+                             "signing time");
+                }
             }
         }
         if (entry.enabled && entry.models.empty()) {
@@ -464,6 +545,23 @@ ValidationReport validate(const AppConfig &config) {
                                           client.token_reservation > client.tokens_per_day))
             addIssue(report, ValidationIssue::Level::Error, where + ".token_reservation",
                      "token reservation must be positive and fit within the daily token quota");
+        if (!std::isfinite(client.budget_usd_per_day) || client.budget_usd_per_day < 0.0)
+            addIssue(report, ValidationIssue::Level::Error, where + ".budget_usd_per_day",
+                     "a daily budget is a nonnegative number of US dollars; use 0 to disable it");
+        if (client.budget_usd_per_day > 0.0) {
+            // The budget is enforced against what relays REPORT, and a relay
+            // with no price written down reports 0. Saying so here is the
+            // difference between a budget that silently does nothing and one an
+            // operator knows to make meaningful by pricing the relays.
+            const bool any_priced = std::ranges::any_of(config.providers, [](const ProviderConfig &p) {
+                return p.enabled && (p.price_in_per_million > 0.0 || p.price_out_per_million > 0.0);
+            });
+            if (!any_priced) {
+                addIssue(report, ValidationIssue::Level::Warning, where + ".budget_usd_per_day",
+                         "no enabled relay has a price written down, so every request costs 0 "
+                         "to this budget and it will never be reached");
+            }
+        }
         std::set<std::string, std::less<>> keyIds;
         for (std::size_t k = 0; k < client.keys.size(); ++k) {
             const auto &key = client.keys[k];

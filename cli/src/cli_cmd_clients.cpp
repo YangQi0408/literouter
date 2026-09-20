@@ -35,6 +35,7 @@ json safeClient(const literouter::ClientConfig& client) {
         {"keys", keys}, {"models", client.models}, {"provider_groups", client.provider_groups},
         {"requests_per_minute", client.requests_per_minute}, {"max_concurrent", client.max_concurrent},
         {"requests_per_day", client.requests_per_day}, {"tokens_per_day", client.tokens_per_day},
+        {"budget_usd_per_day", client.budget_usd_per_day},
         {"token_reservation", client.token_reservation}};
 }
 
@@ -68,14 +69,17 @@ void list(Context& ctx, const std::string& id) {
     if (!id.empty() && !findClient(store->config(),id)) { failure(ctx,"Client not found"); return; }
     json result = json::array();
     Table table;
-    for (const auto* label : {"Client ID","Display name","STATE","Keys","RPM","Concurrency","Requests / day","Tokens / day"})
+    for (const auto* label : {"Client ID","Display name","STATE","Keys","RPM","Concurrency","Requests / day","Tokens / day","Budget / day"})
         table.column(std::string(tr(label)));
     for (const auto& client : store->config().clients) {
         if (!id.empty() && client.id != id) continue;
         result.push_back(safeClient(client));
         table.row({client.id,client.name,std::string(tr(client.enabled ? "enabled" : "disabled")),
             std::to_string(client.keys.size()),std::to_string(client.requests_per_minute),
-            std::to_string(client.max_concurrent),std::to_string(client.requests_per_day),std::to_string(client.tokens_per_day)});
+            std::to_string(client.max_concurrent),std::to_string(client.requests_per_day),
+            std::to_string(client.tokens_per_day),
+            client.budget_usd_per_day > 0.0 ? std::format("${:.2f}", client.budget_usd_per_day)
+                                            : std::string(tr("Unlimited"))});
     }
     if (ctx.json) { std::println("{}", json{{"clients",result}}.dump(2)); return; }
     if (result.empty()) printInfo(std::string(tr("No clients configured; personal access is unchanged.")));
@@ -91,6 +95,9 @@ void list(Context& ctx, const std::string& id) {
         details.add(std::string(tr("Allowed models")),join(c.models));
         details.add(std::string(tr("Provider groups")),join(c.provider_groups));
         details.add(std::string(tr("Token reservation")),std::to_string(c.token_reservation));
+        details.add(std::string(tr("Daily budget")),
+                    c.budget_usd_per_day > 0.0 ? std::format("${:.2f}", c.budget_usd_per_day)
+                                               : std::string(tr("Unlimited")));
         details.print();
         Table keys;
         for (const auto* label : {"Key ID","STATE","API key"}) keys.column(std::string(tr(label)));
@@ -105,6 +112,7 @@ struct ClientOptions {
     std::vector<std::string> models, groups;
     int rpm=0, concurrent=0;
     std::uint64_t dailyRequests=0, dailyTokens=0, reservation=4096;
+    double budgetUsd=0.0;
     bool clearModels=false, clearGroups=false;
 };
 
@@ -123,6 +131,8 @@ void registerEdit(CLI::App& parent, Context& ctx, bool add) {
     auto* dailyRequests = cmd->add_option("--requests-per-day",opts->dailyRequests,std::string(tr("Daily request quota; 0 is unlimited")))->check(CLI::NonNegativeNumber);
     auto* dailyTokens = cmd->add_option("--tokens-per-day",opts->dailyTokens,std::string(tr("Daily token quota; 0 is unlimited")))->check(CLI::NonNegativeNumber);
     auto* reservation = cmd->add_option("--token-reservation",opts->reservation,std::string(tr("Tokens reserved per request when usage is unknown")))->check(CLI::NonNegativeNumber);
+    auto* budget = cmd->add_option("--budget-usd-per-day",opts->budgetUsd,
+        std::string(tr("Daily spend ceiling in US dollars; 0 is unlimited")))->check(CLI::NonNegativeNumber);
     cmd->callback([=,&ctx] {
         auto store = loadStore(ctx);
         if (!store) { ctx.exitCode=kExitConfig; return; }
@@ -139,6 +149,7 @@ void registerEdit(CLI::App& parent, Context& ctx, bool add) {
         if (dailyRequests->count()) client.requests_per_day=opts->dailyRequests;
         if (dailyTokens->count()) client.tokens_per_day=opts->dailyTokens;
         if (reservation->count()) client.token_reservation=opts->reservation;
+        if (budget->count()) client.budget_usd_per_day=opts->budgetUsd;
         if (target) *target=std::move(client); else store->config().clients.push_back(std::move(client));
         if (persist(ctx,*store)) changed(ctx,add ? "client-added" : "client-updated",opts->id);
     });
@@ -195,7 +206,7 @@ void usage(Context& ctx, const std::string& id) {
     if (!status.reachable) {printError(status.error);ctx.exitCode=kExitUnreachable;return;}
     json result=json::array();
     Table table;
-    for (const auto* label : {"Client ID","REQUESTS","SUCCESS","FAILURES","IN FLIGHT","Requests today","Tokens today","Reserved tokens","Prompt / completion tokens","Estimated cost"})
+    for (const auto* label : {"Client ID","REQUESTS","SUCCESS","FAILURES","IN FLIGHT","Requests today","Tokens today","Reserved tokens","Spend today","Prompt / completion tokens","Estimated cost"})
         table.column(std::string(tr(label)));
     for (const auto& client:store->config().clients) {
         if (!id.empty() && id!=client.id) continue;
@@ -203,12 +214,16 @@ void usage(Context& ctx, const std::string& id) {
         u.client=client.id;
         for (const auto& item:status.snapshot.clients) if (item.client==client.id) {u=item;break;}
         result.push_back(json::parse(literouter::toJsonString(u)));
+        const std::string spend = client.budget_usd_per_day > 0.0
+            ? std::format("${:.4f} / ${:.2f}", u.cost_today, client.budget_usd_per_day)
+            : std::format("${:.4f}", u.cost_today);
         table.row({u.client,std::to_string(u.requests),std::to_string(u.successes),std::to_string(u.failures),
             std::to_string(u.active_requests),std::to_string(u.requests_today),std::to_string(u.tokens_today),
-            std::to_string(u.reserved_tokens),literouter::humanCount(u.tokens_prompt)+" / "+literouter::humanCount(u.tokens_completion),std::format("${:.4f}",u.cost_usd)});
+            std::to_string(u.reserved_tokens),spend,
+            literouter::humanCount(u.tokens_prompt)+" / "+literouter::humanCount(u.tokens_completion),std::format("${:.4f}",u.cost_usd)});
     }
     if (ctx.json) std::println("{}",json{{"clients",result}}.dump(2));
-    else {table.print();printNote(std::string(tr("Daily quotas reset at 00:00 UTC. Token totals include reservations.")),ctx.quiet);}
+    else {table.print();printNote(std::string(tr("Daily quotas and budgets reset at 00:00 UTC. Token totals include reservations.")),ctx.quiet);}
 }
 } // namespace
 

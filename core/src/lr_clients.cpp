@@ -37,7 +37,7 @@ json usageJson(const ClientUsage &u) {
                 {"tokens_completion", u.tokens_completion}, {"cost_usd", u.cost_usd},
                 {"active_requests", u.active_requests}, {"day_unix", u.day_unix},
                 {"requests_today", u.requests_today}, {"tokens_today", u.tokens_today},
-                {"reserved_tokens", u.reserved_tokens}};
+                {"reserved_tokens", u.reserved_tokens}, {"cost_today", u.cost_today}};
 }
 
 std::uint64_t counter(const json &j, const char *name) {
@@ -221,6 +221,7 @@ struct ClientLedger::Impl {
             a.usage.requests_today = 0;
             a.usage.tokens_today = 0;
             a.usage.reserved_tokens = 0;
+            a.usage.cost_today = 0.0;
         }
         while (!a.recent.empty() && a.recent.front() <= now - 60.0) a.recent.pop_front();
     }
@@ -309,6 +310,9 @@ std::expected<void, std::string> ClientLedger::Impl::load() {
             u.tokens_prompt = counter(entry, "tokens_prompt");
             u.tokens_completion = counter(entry, "tokens_completion");
             u.cost_usd = entry.at("cost_usd").get<double>();
+            // Absent in a ledger written before budgets existed: an older file
+            // must load, and "no spend recorded today" is the right reading.
+            u.cost_today = entry.contains("cost_today") ? entry.at("cost_today").get<double>() : 0.0;
             u.day_unix = entry.at("day_unix").get<double>();
             u.requests_today = counter(entry, "requests_today");
             u.tokens_today = counter(entry, "tokens_today");
@@ -319,6 +323,7 @@ std::expected<void, std::string> ClientLedger::Impl::load() {
                 throw std::runtime_error("inconsistent quota counters");
             constexpr double max_timestamp = 253402300799.0; // last second of year 9999
             if (u.client.empty() || !std::isfinite(u.cost_usd) || u.cost_usd < 0 ||
+                !std::isfinite(u.cost_today) || u.cost_today < 0 || u.cost_today > u.cost_usd ||
                 !std::isfinite(u.day_unix) || u.day_unix < 0 || u.day_unix > max_timestamp ||
                 std::fmod(u.day_unix, 86400.0) != 0 || accounts.contains(u.client))
                 throw std::runtime_error("invalid quota account");
@@ -366,6 +371,14 @@ std::expected<std::shared_ptr<ClientRequest>, ClientRejection> ClientLedger::adm
     if (client.tokens_per_day > 0 && (u.tokens_today >= client.tokens_per_day ||
         reserve > client.tokens_per_day - u.tokens_today))
         return std::unexpected(ClientRejection{429, "client daily token quota cannot cover this request", tomorrow});
+    // The spend ceiling, checked against what has already settled. A request
+    // cannot reserve money the way it reserves tokens — the price depends on
+    // which relay answers and what it reports — so this is the bound on the
+    // NEXT request: whatever is in flight when the ceiling is reached still
+    // finishes and is still charged. That overshoot is the price of not
+    // refusing an answer the operator has already paid for.
+    if (client.budget_usd_per_day > 0.0 && u.cost_today >= client.budget_usd_per_day)
+        return std::unexpected(ClientRejection{429, "client daily budget exhausted", tomorrow});
     const auto before = a;
     u.requests = plus(u.requests, 1);
     u.requests_today = plus(u.requests_today, 1);
@@ -396,6 +409,8 @@ std::expected<std::shared_ptr<ClientRequest>, ClientRejection> ClientLedger::adm
         // concurrency remains global, while yesterday's reserve cannot subtract
         // from today's account or spend today's allowance.
         if (u.day_unix == admitted_day) {
+            if (std::isfinite(cost) && cost > 0)
+                u.cost_today += std::min(cost, std::numeric_limits<double>::max() - u.cost_today);
             u.reserved_tokens -= std::min(u.reserved_tokens, reserve);
             const auto observed = plus(prompt, completion);
             if (known) {

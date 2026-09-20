@@ -82,7 +82,10 @@ const ValidationIssue *findIssueContaining(const ValidationReport &report,
 // prove the JSON codec is lossless rather than merely loadable.
 AppConfig fullyPopulated() {
     AppConfig config;
-    config.schema = 3;
+    // The current schema, not an arbitrary number: a document claiming a newer
+    // schema is refused outright (see testConfigSchema), so a fixture that wrote
+    // one would only be testing the refusal.
+    config.schema = literouter::kConfigSchema;
     config.server.host = "0.0.0.0";
     config.server.port = 12345;
     config.server.tls_cert_file = "/example/server-chain.pem";
@@ -104,6 +107,11 @@ AppConfig fullyPopulated() {
     config.server.web_ui = false;
     config.server.language = "zh";
     config.server.ui_scale = 1.25;
+    config.server.traffic_bucket_sec = 60;
+    config.server.traffic_bucket_count = 120;
+    config.server.response_cache_ttl_sec = 300;
+    config.server.response_cache_max_entries = 64;
+    config.server.otlp_endpoint = "http://127.0.0.1:4318";
 
     ProviderConfig primary;
     primary.id = "primary";
@@ -124,6 +132,12 @@ AppConfig fullyPopulated() {
     primary.chat_path = "/v1/alternate/chat";
     primary.embeddings_path = "/v1/alternate/embeddings";
     primary.note = "primary hop";
+    // Azure, so the api_version has somewhere legitimate to live, plus the two
+    // relay-side limits.
+    primary.protocol = "azure";
+    primary.api_version = "2024-08-01-preview";
+    primary.max_concurrent = 4;
+    primary.requests_per_minute = 120;
 
     // The key is a reference on purpose: this is the field whose round trip
     // must stay a reference rather than an expanded secret.
@@ -143,6 +157,16 @@ AppConfig fullyPopulated() {
     backup.chat_path = "/chat/completions";
     backup.embeddings_path = "/embeddings";
     backup.note = "disabled placeholder";
+    // Bedrock, which is the protocol that legitimately needs a region and AWS
+    // credentials. `project` and `credentials_file` are Vertex's, and ride along
+    // here because the codec's job is to be lossless for every field.
+    backup.protocol = "bedrock";
+    backup.region = "eu-west-1";
+    backup.project = "demo-project";
+    backup.credentials_file = "/example/service-account.json";
+    backup.aws_access_key = "${LITEROUTER_TEST_AWS_KEY}";
+    backup.aws_secret_key = "aws-secret-literal";
+    backup.aws_session_token = "aws-session-literal";
 
     config.providers = {primary, backup};
 
@@ -160,7 +184,48 @@ AppConfig fullyPopulated() {
     disabledRoute.enabled = false;
 
     config.routes = {route, disabledRoute};
+
+    // One account, so the client half of the codec (including the daily budget)
+    // is exercised by the round trip too.
+    literouter::ClientConfig client;
+    client.id = "team-a";
+    client.name = "Team A";
+    client.keys = {{.id = "k1", .api_key = "sk-client-one", .enabled = true},
+                   {.id = "k2", .api_key = "${LITEROUTER_TEST_ENV_KEY}", .enabled = false}};
+    client.models = {"fast"};
+    client.provider_groups = {"primary-group"};
+    client.requests_per_minute = 60;
+    client.max_concurrent = 3;
+    client.requests_per_day = 5000;
+    client.tokens_per_day = 2000000;
+    client.budget_usd_per_day = 12.5;
+    client.token_reservation = 2048;
+    config.clients = {client};
     return config;
+}
+
+void checkClientEqual(const literouter::ClientConfig &actual,
+                      const literouter::ClientConfig &expected) {
+    LR_CHECK_EQ(actual.id, expected.id);
+    LR_CHECK_EQ(actual.name, expected.name);
+    LR_CHECK_EQ(actual.enabled, expected.enabled);
+    LR_CHECK_EQ(static_cast<long long>(actual.keys.size()), static_cast<long long>(expected.keys.size()));
+    for (std::size_t i = 0; i < actual.keys.size() && i < expected.keys.size(); ++i) {
+        LR_CHECK_EQ(actual.keys[i].id, expected.keys[i].id);
+        LR_CHECK_EQ(actual.keys[i].api_key, expected.keys[i].api_key);
+        LR_CHECK_EQ(actual.keys[i].enabled, expected.keys[i].enabled);
+    }
+    LR_CHECK_MSG(actual.models == expected.models, "client.models");
+    LR_CHECK_MSG(actual.provider_groups == expected.provider_groups, "client.provider_groups");
+    LR_CHECK_EQ(actual.requests_per_minute, expected.requests_per_minute);
+    LR_CHECK_EQ(actual.max_concurrent, expected.max_concurrent);
+    LR_CHECK_EQ(static_cast<long long>(actual.requests_per_day),
+                static_cast<long long>(expected.requests_per_day));
+    LR_CHECK_EQ(static_cast<long long>(actual.tokens_per_day),
+                static_cast<long long>(expected.tokens_per_day));
+    LR_CHECK_EQ(actual.budget_usd_per_day, expected.budget_usd_per_day);
+    LR_CHECK_EQ(static_cast<long long>(actual.token_reservation),
+                static_cast<long long>(expected.token_reservation));
 }
 
 void checkServerEqual(const literouter::ServerConfig &actual,
@@ -186,6 +251,11 @@ void checkServerEqual(const literouter::ServerConfig &actual,
     LR_CHECK_EQ(actual.web_ui, expected.web_ui);
     LR_CHECK_EQ(actual.language, expected.language);
     LR_CHECK_EQ(actual.ui_scale, expected.ui_scale);
+    LR_CHECK_EQ(actual.traffic_bucket_sec, expected.traffic_bucket_sec);
+    LR_CHECK_EQ(actual.traffic_bucket_count, expected.traffic_bucket_count);
+    LR_CHECK_EQ(actual.response_cache_ttl_sec, expected.response_cache_ttl_sec);
+    LR_CHECK_EQ(actual.response_cache_max_entries, expected.response_cache_max_entries);
+    LR_CHECK_EQ(actual.otlp_endpoint, expected.otlp_endpoint);
 }
 
 void checkProviderEqual(const ProviderConfig &actual, const ProviderConfig &expected,
@@ -212,6 +282,20 @@ void checkProviderEqual(const ProviderConfig &actual, const ProviderConfig &expe
                  where("price_in_per_million"));
     LR_CHECK_MSG(actual.price_out_per_million == expected.price_out_per_million,
                  where("price_out_per_million"));
+    LR_CHECK_MSG(actual.protocol == expected.protocol, where("protocol"));
+    LR_CHECK_MSG(actual.api_version == expected.api_version, where("api_version"));
+    LR_CHECK_MSG(actual.region == expected.region, where("region"));
+    LR_CHECK_MSG(actual.project == expected.project, where("project"));
+    LR_CHECK_MSG(actual.credentials_file == expected.credentials_file,
+                 where("credentials_file"));
+    LR_CHECK_MSG(actual.aws_access_key == expected.aws_access_key, where("aws_access_key"));
+    LR_CHECK_MSG(actual.aws_secret_key == expected.aws_secret_key, where("aws_secret_key"));
+    LR_CHECK_MSG(actual.aws_session_token == expected.aws_session_token,
+                 where("aws_session_token"));
+    LR_CHECK_MSG(actual.max_concurrent == expected.max_concurrent, where("max_concurrent"));
+    LR_CHECK_MSG(actual.requests_per_minute == expected.requests_per_minute,
+                 where("requests_per_minute"));
+    LR_CHECK_MSG(actual.groups == expected.groups, where("groups"));
     LR_CHECK_MSG(actual.note == expected.note, where("note"));
 }
 
@@ -220,7 +304,7 @@ void testSeedDefault() {
     const AppConfig seed = ConfigStore::seedDefault();
     const ValidationReport report = literouter::validate(seed);
 
-    LR_CHECK_EQ(seed.schema, 1);
+    LR_CHECK_EQ(seed.schema, literouter::kConfigSchema);
     LR_CHECK_EQ(seed.server.language, "auto");
     LR_CHECK_EQ(static_cast<long long>(seed.providers.size()), 2);
     LR_CHECK_EQ(static_cast<long long>(seed.routes.size()), 1);
@@ -252,6 +336,11 @@ void testJsonRoundTrip() {
 
     LR_CHECK_EQ(back.schema, original.schema);
     checkServerEqual(back.server, original.server);
+    LR_CHECK_EQ(static_cast<long long>(back.clients.size()),
+                static_cast<long long>(original.clients.size()));
+    if (back.clients.size() == 1 && original.clients.size() == 1) {
+        checkClientEqual(back.clients[0], original.clients[0]);
+    }
     LR_CHECK_EQ(static_cast<long long>(back.providers.size()),
                 static_cast<long long>(original.providers.size()));
     LR_CHECK_EQ(static_cast<long long>(back.routes.size()),
@@ -311,7 +400,7 @@ void testMinimalDocuments() {
         auto parsed = literouter::appConfigFromJson("{}");
         LR_CHECK(parsed.has_value());
         if (parsed) {
-            LR_CHECK_EQ(parsed->schema, 1);
+            LR_CHECK_EQ(parsed->schema, literouter::kConfigSchema);
             LR_CHECK_EQ(parsed->server.host, "127.0.0.1");
             LR_CHECK_EQ(parsed->server.port, 8787);
             LR_CHECK_EQ(parsed->server.tls_cert_file, "");
@@ -918,11 +1007,213 @@ void testProviderReaderDefaults() {
     LR_CHECK_EQ(actual.price_in_per_million, fallback.price_in_per_million);
     LR_CHECK_EQ(actual.price_out_per_million, fallback.price_out_per_million);
     LR_CHECK_EQ(actual.note, fallback.note);
+    LR_CHECK_EQ(actual.api_version, fallback.api_version);
+    LR_CHECK_EQ(actual.region, fallback.region);
+    LR_CHECK_EQ(actual.project, fallback.project);
+    LR_CHECK_EQ(actual.credentials_file, fallback.credentials_file);
+    LR_CHECK_EQ(actual.aws_access_key, fallback.aws_access_key);
+    LR_CHECK_EQ(actual.aws_secret_key, fallback.aws_secret_key);
+    LR_CHECK_EQ(actual.aws_session_token, fallback.aws_session_token);
+    LR_CHECK_MSG(actual.max_concurrent == fallback.max_concurrent,
+                 std::format("max_concurrent: reader={} contract={}", actual.max_concurrent,
+                             fallback.max_concurrent));
+    LR_CHECK_MSG(actual.requests_per_minute == fallback.requests_per_minute,
+                 std::format("requests_per_minute: reader={} contract={}",
+                             actual.requests_per_minute, fallback.requests_per_minute));
     LR_CHECK(actual.models.empty());
     LR_CHECK(actual.headers.empty());
+    LR_CHECK(actual.groups.empty());
     // The one field the reader is allowed to fill in: a nameless relay is shown
     // by its id rather than as a blank row.
     LR_CHECK_EQ(actual.name, "bare");
+}
+
+void testConfigSchema() {
+    LR_GROUP("config schema: older documents migrate up, newer ones are refused");
+
+    // An older file keeps loading, and what the proxy will do is what the file
+    // now says rather than what it used to mean.
+    {
+        const std::string legacy = R"({
+            "schema": 1,
+            "server": {"language": "system"},
+            "providers": [
+                {"id": "a", "base_url": "https://a.example/v1", "protocol": "openai_compatible"},
+                {"id": "b", "base_url": "https://b.example/v1", "protocol": "openai_chat"}
+            ]
+        })";
+        std::string rewritten;
+        auto migration = literouter::migrateConfigJson(legacy, rewritten);
+        LR_CHECK_MSG(migration.has_value(),
+                     migration ? "" : "a schema-1 document must migrate: " + migration.error());
+        if (migration) {
+            LR_CHECK_EQ(migration->from_schema, 1);
+            LR_CHECK_EQ(migration->to_schema, literouter::kConfigSchema);
+            LR_CHECK(migration->changed());
+            LR_CHECK_MSG(migration->notes.size() >= 2,
+                         std::format("each normalisation should be reported, got {}",
+                                     migration->notes.size()));
+        }
+        auto parsed = literouter::appConfigFromJson(rewritten);
+        LR_CHECK(parsed.has_value());
+        if (parsed) {
+            LR_CHECK_EQ(parsed->schema, literouter::kConfigSchema);
+            LR_CHECK_EQ(parsed->server.language, "auto");
+            LR_CHECK_EQ(parsed->providers.size(), std::size_t{2});
+            if (parsed->providers.size() == 2) {
+                LR_CHECK_EQ(parsed->providers[0].protocol, "openai");
+                LR_CHECK_EQ(parsed->providers[1].protocol, "openai");
+            }
+            // The migrated document is an ordinary one: it round-trips.
+            LR_CHECK(literouter::appConfigFromJson(literouter::toJsonString(*parsed)).has_value());
+        }
+    }
+
+    // A file from a newer build is refused rather than loaded minus the fields
+    // this build has never heard of. Dropping them on the next save is the quiet
+    // damage a tolerant reader would cause.
+    {
+        auto parsed = literouter::appConfigFromJson(R"({"schema": 999, "server": {"port": 1}})");
+        LR_CHECK_MSG(!parsed.has_value(), "a newer schema must not load");
+        if (!parsed) {
+            LR_CHECK_MSG(parsed.error().find("newer") != std::string::npos,
+                         "the refusal has to say why: " + parsed.error());
+        }
+        std::string rewritten;
+        LR_CHECK(!literouter::migrateConfigJson(R"({"schema": 999})", rewritten).has_value());
+    }
+
+    // A current document is left alone: no notes, nothing to write back.
+    {
+        std::string rewritten;
+        auto migration = literouter::migrateConfigJson(
+            literouter::toJsonString(ConfigStore::seedDefault()), rewritten);
+        LR_CHECK(migration.has_value());
+        if (migration) {
+            LR_CHECK(!migration->changed());
+            LR_CHECK(migration->notes.empty());
+        }
+        LR_CHECK(!rewritten.empty());
+    }
+
+    // ConfigStore::load reports the migration and leaves the file as it found
+    // it: loading must not rewrite what someone is editing.
+    {
+        TempDir dir;
+        const std::string path = dir.file("legacy.json");
+        writeFile(path,
+                  R"({"schema": 1, "providers": [{"id": "a", "base_url": "https://a.example/v1", "protocol": "openai_compatible"}]})");
+        auto store = ConfigStore::load(path);
+        LR_CHECK_MSG(store.has_value(), store ? "" : store.error());
+        if (store) {
+            LR_CHECK(store->needsMigration());
+            LR_CHECK(store->migration().changed());
+            LR_CHECK(!store->migration().notes.empty());
+            LR_CHECK_EQ(store->config().schema, literouter::kConfigSchema);
+            LR_CHECK_EQ(store->config().providers.at(0).protocol, "openai");
+        }
+        LR_CHECK_MSG(readFile(path).find("openai_compatible") != std::string::npos,
+                     "load() must not rewrite the file it read");
+        if (store) {
+            LR_CHECK(store->save().has_value());
+            LR_CHECK_MSG(readFile(path).find("openai_compatible") == std::string::npos,
+                         "an explicit save is what writes the migrated form back");
+            auto again = ConfigStore::load(path);
+            LR_CHECK(again.has_value());
+            if (again) {
+                LR_CHECK_MSG(!again->needsMigration(),
+                             "the saved document must already be current");
+            }
+        }
+    }
+}
+
+void testValidateProtocolCredentials() {
+    LR_GROUP("each protocol is validated against what it actually needs");
+    const auto validateOne = [](const ProviderConfig &provider) {
+        AppConfig config;
+        config.providers = {provider};
+        return literouter::validate(config);
+    };
+
+    {
+        // Vertex cannot guess a project, and cannot mint a token without a key
+        // file. Both are named at the field, so the console can point at it.
+        ProviderConfig vertex;
+        vertex.id = "v";
+        vertex.base_url = "https://us-central1-aiplatform.googleapis.com";
+        vertex.protocol = "vertex";
+        const auto report = validateOne(vertex);
+        LR_CHECK(findIssue(report, "providers[0].project", kError) != nullptr);
+        LR_CHECK(findIssue(report, "providers[0].credentials_file", kError) != nullptr);
+    }
+    {
+        // A named key file that is not there is a different, equally actionable
+        // error than not naming one.
+        ProviderConfig vertex;
+        vertex.id = "v";
+        vertex.base_url = "https://us-central1-aiplatform.googleapis.com";
+        vertex.protocol = "vertex";
+        vertex.project = "demo";
+        vertex.credentials_file = "/nonexistent/service-account.json";
+        const auto report = validateOne(vertex);
+        LR_CHECK(findIssue(report, "providers[0].project", kError) == nullptr);
+        LR_CHECK(findIssue(report, "providers[0].credentials_file", kError) != nullptr);
+    }
+    {
+        // Bedrock signs against a region and cannot guess one, and SigV4 needs
+        // both halves of the credential.
+        ProviderConfig bedrock;
+        bedrock.id = "b";
+        bedrock.base_url = "https://bedrock-runtime.us-east-1.amazonaws.com";
+        bedrock.protocol = "bedrock";
+        const auto report = validateOne(bedrock);
+        LR_CHECK(findIssue(report, "providers[0].region", kError) != nullptr);
+        LR_CHECK(findIssueContaining(report, "aws_access_key", kError) != nullptr);
+    }
+    {
+        // With a region and both keys it validates, and `${VAR}` references are
+        // accepted exactly as they are for api_key.
+        ProviderConfig bedrock;
+        bedrock.id = "b";
+        bedrock.base_url = "https://bedrock-runtime.us-east-1.amazonaws.com";
+        bedrock.protocol = "bedrock";
+        bedrock.region = "us-east-1";
+        bedrock.aws_access_key = "AKIAEXAMPLE";
+        bedrock.aws_secret_key = "${LITEROUTER_TEST_AWS_SECRET}";
+        const auto report = validateOne(bedrock);
+        LR_CHECK_EQ(static_cast<long long>(report.count(kError)), 0);
+    }
+    {
+        // Azure needs nothing beyond a base_url and a key.
+        ProviderConfig azure;
+        azure.id = "az";
+        azure.base_url = "https://demo.openai.azure.com";
+        azure.protocol = "azure";
+        azure.api_key = "literal";
+        const auto report = validateOne(azure);
+        LR_CHECK_EQ(static_cast<long long>(report.count(kError)), 0);
+    }
+    {
+        // A relay-side limit cannot be negative, and the new protocol names are
+        // recognised rather than warned about.
+        ProviderConfig ollama;
+        ollama.id = "o";
+        ollama.base_url = "http://127.0.0.1:11434";
+        ollama.protocol = "ollama";
+        ollama.max_concurrent = -1;
+        const auto report = validateOne(ollama);
+        LR_CHECK(findIssueContaining(report, "cannot be negative", kError) != nullptr);
+        LR_CHECK(findIssue(report, "providers[0].protocol", kWarning) == nullptr);
+    }
+    {
+        ProviderConfig bogus;
+        bogus.id = "x";
+        bogus.base_url = "https://x.example/v1";
+        bogus.protocol = "telepathy";
+        const auto report = validateOne(bogus);
+        LR_CHECK(findIssue(report, "providers[0].protocol", kWarning) != nullptr);
+    }
 }
 
 int main() {
@@ -930,7 +1221,9 @@ int main() {
     testJsonRoundTrip();
     testSecretStaysReferenced();
     testMinimalDocuments();
+    testConfigSchema();
     testProviderReaderDefaults();
+    testValidateProtocolCredentials();
     testStructurallyWrongInput();
     testLoadAndSave();
     testSaveThroughSymlink();

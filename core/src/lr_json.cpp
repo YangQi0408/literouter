@@ -133,6 +133,15 @@ ProviderConfig providerFromJson(const json &node) {
     out.chat_path = readString(node, "chat_path", "/chat/completions");
     out.embeddings_path = readString(node, "embeddings_path", "/embeddings");
     out.protocol = readString(node, "protocol", "openai");
+    out.api_version = readString(node, "api_version");
+    out.region = readString(node, "region");
+    out.project = readString(node, "project");
+    out.credentials_file = readString(node, "credentials_file");
+    out.aws_access_key = readString(node, "aws_access_key");
+    out.aws_secret_key = readString(node, "aws_secret_key");
+    out.aws_session_token = readString(node, "aws_session_token");
+    out.max_concurrent = readInt(node, "max_concurrent", 0);
+    out.requests_per_minute = readInt(node, "requests_per_minute", 0);
     out.price_in_per_million = readDouble(node, "price_in_per_million", 0.0);
     out.price_out_per_million = readDouble(node, "price_out_per_million", 0.0);
     out.note = readString(node, "note");
@@ -165,6 +174,40 @@ json providerToJson(const ProviderConfig &value) {
     node["embeddings_path"] = value.embeddings_path;
     if (!value.protocol.empty() && value.protocol != "openai") {
         node["protocol"] = value.protocol;
+    }
+    // Written only when set, for the same reason the prices are: eight empty
+    // AWS/Vertex/Azure fields on every plain OpenAI relay would be noise that
+    // hides the one field that matters. A reader that needs a default finds it
+    // in the struct, and the console's boundary normaliser supplies it to the
+    // browser.
+    if (!value.api_version.empty()) {
+        node["api_version"] = value.api_version;
+    }
+    if (!value.region.empty()) {
+        node["region"] = value.region;
+    }
+    if (!value.project.empty()) {
+        node["project"] = value.project;
+    }
+    if (!value.credentials_file.empty()) {
+        node["credentials_file"] = value.credentials_file;
+    }
+    // Written exactly as read, so a `${AWS_SECRET_ACCESS_KEY}` reference stays a
+    // reference in the file — the same rule api_key follows.
+    if (!value.aws_access_key.empty()) {
+        node["aws_access_key"] = value.aws_access_key;
+    }
+    if (!value.aws_secret_key.empty()) {
+        node["aws_secret_key"] = value.aws_secret_key;
+    }
+    if (!value.aws_session_token.empty()) {
+        node["aws_session_token"] = value.aws_session_token;
+    }
+    if (value.max_concurrent > 0) {
+        node["max_concurrent"] = value.max_concurrent;
+    }
+    if (value.requests_per_minute > 0) {
+        node["requests_per_minute"] = value.requests_per_minute;
     }
     // Only when written down: an absent price is "unknown", and saying 0.0 in
     // every relay's JSON would make that indistinguishable from a free one.
@@ -243,6 +286,12 @@ ServerConfig serverFromJson(const json &node) {
     out.web_ui = readBool(node, "web_ui", out.web_ui);
     out.language = readString(node, "language", out.language);
     out.ui_scale = readDouble(node, "ui_scale", out.ui_scale);
+    out.traffic_bucket_sec = readInt(node, "traffic_bucket_sec", out.traffic_bucket_sec);
+    out.traffic_bucket_count = readInt(node, "traffic_bucket_count", out.traffic_bucket_count);
+    out.response_cache_ttl_sec = readInt(node, "response_cache_ttl_sec", out.response_cache_ttl_sec);
+    out.response_cache_max_entries =
+        readInt(node, "response_cache_max_entries", out.response_cache_max_entries);
+    out.otlp_endpoint = readString(node, "otlp_endpoint");
     return out;
 }
 
@@ -269,6 +318,11 @@ json serverToJson(const ServerConfig &value) {
     node["web_ui"] = value.web_ui;
     node["language"] = value.language;
     node["ui_scale"] = value.ui_scale;
+    node["traffic_bucket_sec"] = value.traffic_bucket_sec;
+    node["traffic_bucket_count"] = value.traffic_bucket_count;
+    node["response_cache_ttl_sec"] = value.response_cache_ttl_sec;
+    node["response_cache_max_entries"] = value.response_cache_max_entries;
+    node["otlp_endpoint"] = value.otlp_endpoint;
     return node;
 }
 
@@ -424,7 +478,8 @@ std::string toJsonString(const AppConfig &config) {
             {"enabled", client.enabled}, {"keys", keys}, {"models", client.models},
             {"provider_groups", client.provider_groups}, {"requests_per_minute", client.requests_per_minute},
             {"max_concurrent", client.max_concurrent}, {"requests_per_day", client.requests_per_day},
-            {"tokens_per_day", client.tokens_per_day}, {"token_reservation", client.token_reservation}});
+            {"tokens_per_day", client.tokens_per_day}, {"token_reservation", client.token_reservation},
+            {"budget_usd_per_day", client.budget_usd_per_day}});
     }
 
     return root.dump(2);
@@ -441,6 +496,13 @@ std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text) {
 
     AppConfig out;
     out.schema = readInt(root, "schema", out.schema);
+    if (out.schema > kConfigSchema) {
+        return std::unexpected(std::format(
+            "config schema {} is newer than this build understands ({}); upgrade literouter "
+            "rather than editing the file, or the fields it added would be dropped on the "
+            "next save",
+            out.schema, kConfigSchema));
+    }
 
     // Access rules fail closed on malformed types: treating a misspelled
     // allowlist as an empty list would silently grant access to everything.
@@ -463,6 +525,13 @@ std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text) {
                         throw std::runtime_error(std::string{key} + " must be a nonnegative safe integer");
                     return v.get<std::uint64_t>();
                 };
+                const auto nonnegativeReal = [&](const char *key, double fallback) {
+                    if (!entry.contains(key)) return fallback;
+                    const auto &v = entry.at(key);
+                    if (!v.is_number() || !std::isfinite(v.get<double>()) || v.get<double>() < 0.0)
+                        throw std::runtime_error(std::string{key} + " must be a nonnegative number");
+                    return v.get<double>();
+                };
                 const auto rpm = nonnegative("requests_per_minute", 0);
                 const auto concurrent = nonnegative("max_concurrent", 0);
                 if (rpm > 2147483647ULL || concurrent > 2147483647ULL)
@@ -472,6 +541,7 @@ std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text) {
                 c.requests_per_day = nonnegative("requests_per_day", 0);
                 c.tokens_per_day = nonnegative("tokens_per_day", 0);
                 c.token_reservation = nonnegative("token_reservation", 4096);
+                c.budget_usd_per_day = nonnegativeReal("budget_usd_per_day", 0.0);
                 if (entry.contains("keys")) {
                     if (!entry.at("keys").is_array()) throw std::runtime_error("keys must be an array");
                     for (const auto &key : entry.at("keys")) {
@@ -567,6 +637,7 @@ std::string toJsonString(const Snapshot &snapshot) {
     for (const auto &bucket : snapshot.hourly) {
         json entry = json::object();
         entry["hour_unix"] = bucket.hour_unix;
+        entry["bucket_sec"] = bucket.bucket_sec;
         entry["requests"] = bucket.requests;
         entry["successes"] = bucket.successes;
         entry["failures"] = bucket.failures;
@@ -577,6 +648,12 @@ std::string toJsonString(const Snapshot &snapshot) {
         hourly.push_back(std::move(entry));
     }
     node["hourly"] = std::move(hourly);
+    node["traffic_bucket_sec"] = snapshot.traffic_bucket_sec;
+    node["traffic_bucket_count"] = snapshot.traffic_bucket_count;
+    node["cache_enabled"] = snapshot.cache_enabled;
+    node["cache_hits"] = snapshot.cache_hits;
+    node["cache_misses"] = snapshot.cache_misses;
+    node["cache_entries"] = snapshot.cache_entries;
 
     return node.dump(2);
 }
@@ -631,6 +708,65 @@ std::string toJsonString(const ProviderProbe &probe) {
     node["detail"] = probe.detail;
     node["models"] = probe.models;
     return node.dump(2);
+}
+
+// ── config schema migration ─────────────────────────────────────────────────
+
+std::expected<ConfigMigration, std::string> migrateConfigJson(std::string_view text,
+                                                             std::string &rewritten) {
+    const json root = json::parse(text, nullptr, false);
+    if (root.is_discarded() || !root.is_object()) {
+        return std::unexpected(std::string{"config is not a JSON object"});
+    }
+    ConfigMigration migration;
+    migration.from_schema = root.value("schema", 1);
+    migration.to_schema = kConfigSchema;
+    if (migration.from_schema > kConfigSchema) {
+        return std::unexpected(std::format(
+            "config schema {} is newer than this build understands ({})",
+            migration.from_schema, kConfigSchema));
+    }
+
+    // Read first: a document that cannot be turned into a model cannot be
+    // migrated either, and reporting that here is more useful than writing a
+    // half-normalised file.
+    auto parsed = appConfigFromJson(text);
+    if (!parsed) {
+        return std::unexpected(parsed.error());
+    }
+
+    // schema 1 -> 2. Two normalisations, both of which the running proxy used to
+    // apply silently at request time. Doing them in the file means what an
+    // operator reads is what the proxy does.
+    if (migration.from_schema < 2) {
+        for (auto &provider : parsed->providers) {
+            // The two spellings the validator accepted as synonyms for openai
+            // are folded into the canonical one, so the protocol field stops
+            // having three names for one behaviour.
+            const std::string proto = toLower(provider.protocol);
+            if (proto == "openai_compatible" || proto == "openai_chat") {
+                provider.protocol = "openai";
+                migration.notes.push_back(std::format(
+                    "providers[{}].protocol: `{}` -> `openai`", provider.id,
+                    proto));
+            }
+        }
+        // `system` was accepted as a synonym for auto detection; the canonical
+        // value is what the docs and the console both name.
+        if (toLower(parsed->server.language) == "system") {
+            parsed->server.language = "auto";
+            migration.notes.push_back("server.language: `system` -> `auto`");
+        }
+        migration.notes.push_back(std::format("schema {} -> {}", migration.from_schema,
+                                              migration.to_schema));
+    }
+    parsed->schema = kConfigSchema;
+
+    // Re-serialised rather than patched in place: the writer is the one place
+    // that knows the current shape, and a migration that hand-edited JSON would
+    // be a second one.
+    rewritten = toJsonString(*parsed);
+    return migration;
 }
 
 } // namespace literouter
