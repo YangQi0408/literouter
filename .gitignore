@@ -32,5 +32,10 @@ Thumbs.db
 *.pid
 *.tmp*
 
+# Python bytecode from importing scripts/*.py (check_config_docs.py is run as a
+# program by CI, which does not create these, but importing it does).
+__pycache__/
+*.pyc
+
 # Web console frontend dependencies
 web/node_modules/

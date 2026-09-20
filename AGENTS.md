@@ -75,6 +75,8 @@ literouter/
 **出站协议**来自 `ProviderConfig::protocol`。两者一致时走 `same_protocol` 分支——**零 JSON 解析、原样直通**；不一致时才经 `adaptXToChat` / `adaptChatToX` 双向转换，流式交给有状态的 `StreamProtocolAdapter`（同协议时它同样只做透传）。
 
 > ⚠️ Gemini 把模型名嵌在 URL path 而非请求体里。直通分支下做模型重命名时，Gemini 必须改 path，其余协议改 body。
+>
+> ⚠️ **是否转换要按「报文形态」判断，不能按协议名比较**（`wireShapeOf()`，`lr_protocol.cpp`）。有多个协议名共享同一种报文：`azure` 就是 OpenAI 的 JSON（只是路径/鉴权不同），`vertex` 就是 Gemini 的 JSON。用名字比较会把未转换的报文体发给读不懂它的中转站。新增出口协议时，先决定它属于哪种形态，再决定要不要写适配器。
 
 ---
 
@@ -258,6 +260,9 @@ C++ 模块的 `std.pcm` 与编译器构建**严格绑定**，系统 clangd 会�
   - 对于网络通信和状态抓取，返回带有 `bool reachable` 和 `std::string error` 的轻量结构体（如 `AdminStatus`）。
 - 内存与生命周期：
   - 坚持 RAII 原则，严禁裸 `new`/`delete`。使用 `std::unique_ptr` 管理 Pimpl 实现（如 `ProxyServer::Impl`）。
+- 本工具链特有的两条禁用项：
+  - **不要使用 `std::jthread` / `<stop_token>`**：这份 libc++ 把 `stop_token` 的辅助符号导出在链接器匹配不到的 ABI 标签下，会以 `undefined hidden symbol … atomic_unique_lock::__set_locked_bit` 链接失败。统一改用 `std::thread` + `std::atomic<bool>` + `std::condition_variable`。
+  - **`std::regex` 用的是 ECMAScript 语法**，内联标志 `(?i)` 不生效；需要忽略大小写时传构造参数 `std::regex_constants::icase`。
 
 ### 4.2 结构化绑定避坑
 - 遍历 `nlohmann::json` 对象时，不要使用跨模块的结构化绑定（`for (auto [k, v] : obj.items())` 在 clang modules 下会缺少 `std::tuple_size` 特化）。
@@ -278,6 +283,15 @@ C++ 模块的 `std.pcm` 与编译器构建**严格绑定**，系统 clangd 会�
   - `LR_CHECK_EQ(actual, expected)`：相等断言，在失败时会自动打印期望值与实际值；
   - `LR_SUMMARY("测试名")`：返回退出码（0 表示成功，1 表示有失败）。
 - 涉及环境变量修改的测试，必须使用 `lr_test::EnvGuard guard("VAR_NAME");`，确保无论测试成功或失败，环境变量均能被自动还原，不影响其他测试。
+- **流式请求的记账是异步的**：服务端 `finish()` 可能晚于客户端读完 body。断言前必须轮询（参考 `test_proxy.cpp` 里的 `waitForRequests`），不要写完就读。
+- 新增测试分组时用 `LR_CHECK_MSG` 带上失败时的实际值，不要只写裸 `LR_CHECK`。
+- `test_config.cpp` 含一组“逐字段比对 JSON 读取器默认值 vs 契约默认值”的守护测试。新增带默认值的字段后它必须仍然通过——历史上 `connect_timeout_sec` 就因契约写 5、读取器写 15 而漂移过。
+- `test_proxy.cpp` 第 21 组是 **no-field-lies**：跑真实流量后断言控制台展示的每个字段都确实有人写入。**改控制台字段时请扩这一组**（它自己抓出过 `logFailover` 条目缺耗时/上游模型）。
+
+### 4.4 构建陷阱：契约变更后可能拿到陈旧产物
+- 改动 `literouter_core.cppm`（结构体字段、函数签名）后，`mcpp` 的**增量构建偶尔会给出陈旧产物**，症状是莫名其妙的测试失败（例如某个分组计数异常）。
+- 遇到这种情况**先怀疑构建，再怀疑代码**：删掉该 member 的 `target/` 后重编（或 `mcpp build -p <member> --cache=off`，该参数会清空构建目录），再跑一次测试。
+- 编辑器侧的同类问题见 §3.6：clangd 必须用 mcpp 自带那份，否则 `std.pcm` 会以 `ast_file_different_branch` 被拒绝。
 
 ---
 
@@ -336,6 +350,30 @@ C++ 模块的 `std.pcm` 与编译器构建**严格绑定**，系统 clangd 会�
 4. 数据只来自同源的管理 API（`/__literouter/*`）与 `/v1/models`：**不要把明文密钥送进浏览器**。配置视图依赖 `GET /__literouter/config` 的脱敏规则，全量回写配置通过 `PUT /__literouter/config`（空密钥保留服务端原值，`api_key_clear: true` 清空）；新增管理端点时同步更新 `docs/{zh,en}/protocols-api.md`；
 5. 控制台外壳可免密钥加载，但所有数据接口仍受 `server.api_key` 保护；不要给 `/__literouter/*` 或 `/ui/*` 添加 CORS 头（请求日志含提示词）；
 6. 在 `core/tests/test_proxy.cpp` 的 15 号分组补充断言（页面可取、未知资源 404、脱敏、CORS 边界、按 id 探测、PUT 配置回写、`web_ui` 开关），并运行 `mcpp test -p core`。
+
+**两条硬约定（都是踩过的坑）**
+
+- 服务端写入器**对处于默认值的字段不写**（`headers` / `protocol` / `price_*` / `note` 等），前端因此会拿到 `undefined`；曾出现 `Object.entries(undefined)` 抛异常 → React 卸载整棵树 → 页面白屏。约定是：`web/src/lib/api.ts` 的类型**刻意不加可选标记**，由 `web/src/lib/normalize.ts` 在 API 边界把被省略的字段补回默认值。**新增任何可能被省略的字段时，必须同时更新 `normalize.ts` 的 `*_DEFAULTS` 与 `web/src/lib/api.test.ts`**，并在编辑器里用 `?? []` / `?? {}` 防御。
+- 页面区已包**错误边界**（`web/src/components/ErrorBoundary.tsx`）：渲染异常会显示信息而不是整页空白，新页面沿用这个包裹。
+
+**用真实浏览器验证 Web**
+
+排查白屏这类渲染问题时，直接驱动 DOM 比坐标点击可靠。机器上有 `google-chrome-stable`，**不要动用户自己的 Chrome**，另起一个独立 profile 的无头实例：
+
+```bash
+nohup google-chrome-stable --headless=new --remote-debugging-port=9222 \
+  --user-data-dir=/tmp/lr-chrome --no-first-run --no-default-browser-check \
+  --disable-gpu about:blank &
+```
+
+然后用 `browser-use` skill（`~/.agents/skills/browser-use/`）的 `js()` 操作：
+
+```python
+js("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('中转站')).click()")
+print(js("JSON.stringify({rows: document.querySelectorAll('tbody tr').length})"))
+```
+
+React 会处理 `element.click()` 派发的真实事件，不需要模拟坐标。⚠️ 改完前端要先 `npm --prefix web run build` **再** `mcpp build -p cli`——`web/dist` 是在**编译期** `#embed` 进 core 的，只重建前端不会生效。
 
 ### 任务 E：新增或修改一种上游协议
 
