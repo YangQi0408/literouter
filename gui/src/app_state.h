@@ -96,6 +96,21 @@ struct ProviderEditor {
     // dollar, and a stepper of whole units could not express the cheap ones.
     std::string priceInText = "0";
     std::string priceOutText = "0";
+    // Protocol-specific settings. Kept as text like the prices, because they are
+    // typed by hand and an empty string has to survive as "not set" rather than
+    // becoming a 0 the operator never wrote.
+    std::string apiVersion;
+    std::string region;
+    std::string project;
+    std::string credentialsFile;
+    std::string awsAccessKey;
+    std::string awsSecretKey;
+    std::string awsSessionToken;
+    std::string maxConcurrentText = "0";
+    std::string requestsPerMinuteText = "0";
+    /** Which pane the relay editor shows: 0 is the relay itself, 1 is the
+     *  protocol-specific settings and the relay-side limits. */
+    int pane = 0;
     bool enabled = true;
     bool supportsStream = true;
     std::string statusLine;
@@ -111,6 +126,10 @@ struct ClientEditor {
     literouter::ClientConfig draft;
     std::string modelsText, groupsText;
     std::string rpm = "0", concurrent = "0", dailyRequests = "0", dailyTokens = "0", reservation = "4096";
+    // A daily spend ceiling is money, not a count, so it is held as text and
+    // parsed as a real number: routing it through the integer parser would
+    // reject every fractional budget.
+    std::string budget = "0";
     std::string keyId, keyValue;
     int keyIndex = -1;
     std::string error;
@@ -839,9 +858,19 @@ struct AppState {
         editor.modelsText.clear();
         editor.groupsText.clear();
         editor.headersText.clear();
+        editor.pane = 0;
         if (isNew) {
             editor.protocol = "openai";
             editor.protocolChoice = 0;
+            editor.apiVersion.clear();
+            editor.region.clear();
+            editor.project.clear();
+            editor.credentialsFile.clear();
+            editor.awsAccessKey.clear();
+            editor.awsSecretKey.clear();
+            editor.awsSessionToken.clear();
+            editor.maxConcurrentText = "0";
+            editor.requestsPerMinuteText = "0";
         } else if (index >= 0 && index < static_cast<int>(providers.size())) {
             const auto& provider = providers[static_cast<std::size_t>(index)];
             editor.id = provider.id;
@@ -849,10 +878,7 @@ struct AppState {
             editor.baseUrl = provider.base_url;
             editor.apiKey = provider.api_key;
             editor.protocol = provider.protocol;
-            if (provider.protocol == "anthropic") editor.protocolChoice = 1;
-            else if (provider.protocol == "gemini") editor.protocolChoice = 2;
-            else if (provider.protocol == "openai_responses") editor.protocolChoice = 3;
-            else editor.protocolChoice = 0;
+            editor.protocolChoice = protocolChoiceOf(provider.protocol);
             editor.priority = provider.priority;
             editor.weight = provider.weight;
             editor.timeoutSec = provider.timeout_sec;
@@ -862,10 +888,51 @@ struct AppState {
             editor.priceInText = priceText(provider.price_in_per_million);
             editor.priceOutText = priceText(provider.price_out_per_million);
             editor.note = provider.note;
+            editor.apiVersion = provider.api_version;
+            editor.region = provider.region;
+            editor.project = provider.project;
+            editor.credentialsFile = provider.credentials_file;
+            editor.awsAccessKey = provider.aws_access_key;
+            editor.awsSecretKey = provider.aws_secret_key;
+            editor.awsSessionToken = provider.aws_session_token;
+            editor.maxConcurrentText = std::to_string(provider.max_concurrent);
+            editor.requestsPerMinuteText = std::to_string(provider.requests_per_minute);
             editor.modelsText = joinLines(provider.models);
             editor.groupsText = joinLines(provider.groups);
             editor.headersText = headersToText(provider.headers);
         }
+    }
+
+    // Which segmented option a protocol name is. Kept as one function because
+    // the editor and the control have to agree: eight names, eight indices, and
+    // a mismatch would silently rewrite a relay's protocol on the next save.
+    static int protocolChoiceOf(const std::string& protocol) {
+        static constexpr const char* kOrder[] = {"openai", "anthropic", "gemini",
+                                                 "openai_responses", "azure", "vertex",
+                                                 "bedrock", "ollama"};
+        for (int i = 0; i < 8; ++i) {
+            if (protocol == kOrder[i]) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    // A relay-side limit, which is a whole number of requests. Anything that
+    // does not parse is 0 ("unlimited"), so a typo cannot silently throttle a
+    // relay to nothing.
+    static int parseCount(const std::string& text) {
+        const std::string trimmed = literouter::trim(text);
+        if (trimmed.empty()) {
+            return 0;
+        }
+        long long value = 0;
+        const auto result = std::from_chars(trimmed.data(), trimmed.data() + trimmed.size(), value);
+        if (result.ec != std::errc{} || result.ptr != trimmed.data() + trimmed.size() ||
+            value < 0 || value > std::numeric_limits<int>::max()) {
+            return 0;
+        }
+        return static_cast<int>(value);
     }
 
     // "$3.00" in and out of the config's double. Trailing zeroes are trimmed so
@@ -949,6 +1016,18 @@ struct AppState {
         provider.price_in_per_million = parsePrice(editor.priceInText);
         provider.price_out_per_million = parsePrice(editor.priceOutText);
         provider.note = editor.note;
+        provider.api_version = literouter::trim(editor.apiVersion);
+        provider.region = literouter::trim(editor.region);
+        provider.project = literouter::trim(editor.project);
+        provider.credentials_file = literouter::trim(editor.credentialsFile);
+        provider.aws_access_key = literouter::trim(editor.awsAccessKey);
+        provider.aws_secret_key = literouter::trim(editor.awsSecretKey);
+        provider.aws_session_token = literouter::trim(editor.awsSessionToken);
+        // A limit that does not parse is 0, which is "unlimited" — the same
+        // reading the prices get, and the safe direction: a typo cannot
+        // accidentally throttle a relay to nothing.
+        provider.max_concurrent = parseCount(editor.maxConcurrentText);
+        provider.requests_per_minute = parseCount(editor.requestsPerMinuteText);
         provider.models = splitList(editor.modelsText);
         provider.groups = splitList(editor.groupsText);
         provider.headers = parseHeaders(editor.headersText);

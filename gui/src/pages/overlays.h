@@ -166,7 +166,14 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
     }
 
     constexpr float panelWidth = 860.0f;
+    // Two panes rather than one long panel. The protocol-specific settings and
+    // the relay-side limits add five rows, and the dialog component clamps its
+    // own height to the screen — a taller panel on the default 900px window
+    // would put the Save button outside the clamped box, which is a worse
+    // failure than a second pane. Each pane fits; neither scrolls.
     constexpr float panelHeight = 780.0f;
+    constexpr float kStatusY = 664.0f;
+    constexpr float kActionsY = 698.0f;
     const float leftX = 28.0f;
     const float rightX = 448.0f;
     const float columnWidth = 384.0f;
@@ -188,16 +195,22 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                 .fontWeight(760)
                 .color(p.text)
                 .build();
-            ui.text("overlays.editor.sub")
-                .position(leftX, 46.0f)
-                .size(panelWidth - 56.0f, 20.0f)
-                .text(literouter::i18n::tr("A relay is one upstream endpoint. Routes reference it by id, so the id is "
-                      "stable and unique."))
-                .fontSize(12.0f)
-                .lineHeight(16.0f)
-                .color(p.textMuted)
+            ui.stack("overlays.editor.pane.wrap")
+                .position(leftX, 48.0f)
+                .size(panelWidth - 56.0f, 26.0f)
+                .content([&] {
+                    components::segmented(ui, "overlays.editor.pane")
+                        .theme(uiTokens())
+                        .size(panelWidth - 56.0f, 26.0f)
+                        .items({std::string(literouter::i18n::tr("Relay")),
+                                std::string(literouter::i18n::tr("Protocol settings and limits"))})
+                        .selected(editor.pane)
+                        .onChange([&editor](int idx) { editor.pane = idx; })
+                        .build();
+                })
                 .build();
 
+            if (editor.pane == 0) {
             detail::labelledInput(ui, "overlays.editor.id", leftX, 84.0f, columnWidth,
                                   std::string(literouter::i18n::tr("Id")), {},
                                   editor.id, std::string(literouter::i18n::tr("e.g. openai")), [&editor](const std::string& value) {
@@ -261,21 +274,23 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                     components::segmented(ui, "overlays.editor.protocol")
                         .theme(uiTokens())
                         .size(panelWidth - 56.0f, 30.0f)
-                        .items({"OpenAI", "Anthropic Claude", "Google Gemini", "OpenAI Responses"})
+                        .items({"OpenAI", "Claude", "Gemini", "Responses", "Azure", "Vertex",
+                                "Bedrock", "Ollama"})
                         .selected(editor.protocolChoice)
                         .onChange([&editor](int idx) {
+                            static constexpr const char* kOrder[] = {
+                                "openai", "anthropic", "gemini", "openai_responses",
+                                "azure", "vertex", "bedrock", "ollama"};
+                            if (idx < 0 || idx > 7) return;
                             editor.protocolChoice = idx;
-                            if (idx == 1) editor.protocol = "anthropic";
-                            else if (idx == 2) editor.protocol = "gemini";
-                            else if (idx == 3) editor.protocol = "openai_responses";
-                            else editor.protocol = "openai";
+                            editor.protocol = kOrder[idx];
                         })
                         .build();
                 })
                 .build();
 
             detail::labelledInput(ui, "overlays.editor.models", leftX, 404.0f, panelWidth - 56.0f,
-                                  std::string(literouter::i18n::tr("Models")),
+                                  std::string(literouter::i18n::tr("Models list")),
                                   {std::string(literouter::i18n::tr("Comma or newline separated. Used by /v1/models and "
                                              "for pass-through matching."))},
                                   editor.modelsText, "gpt-4o, gpt-4o-mini, text-embedding-3-small",
@@ -340,6 +355,67 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                 })
                 .build();
 
+            } else {
+            // ── protocol-specific settings and relay-side limits ────────────
+            // Every one of these names the protocol that reads it: the pane
+            // shows them all at once rather than reflowing on the protocol
+            // choice, which would move the fields under the operator's cursor.
+            detail::labelledInput(ui, "overlays.editor.apiversion", leftX, 84.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Azure api-version / Vertex API version")),
+                                  {std::string(literouter::i18n::tr("Azure defaults to 2024-10-21; Vertex to v1."))},
+                                  editor.apiVersion, "2024-10-21",
+                                  [&editor](const std::string& value) { editor.apiVersion = value; });
+            detail::labelledInput(ui, "overlays.editor.region", rightX, 84.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Bedrock region / Vertex location")),
+                                  {std::string(literouter::i18n::tr(
+                                      "Bedrock signs against a region and cannot guess one; Vertex "
+                                      "defaults to us-central1."))},
+                                  editor.region, "us-east-1",
+                                  [&editor](const std::string& value) { editor.region = value; });
+
+            detail::labelledInput(ui, "overlays.editor.project", leftX, 150.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Vertex project id")), {},
+                                  editor.project, "my-gcp-project",
+                                  [&editor](const std::string& value) { editor.project = value; });
+            detail::labelledInput(ui, "overlays.editor.credentials", rightX, 150.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Vertex service-account key file")),
+                                  {std::string(literouter::i18n::tr(
+                                      "Absolute path on the machine running literouter. Its private "
+                                      "key is exchanged for an access token, which is cached."))},
+                                  editor.credentialsFile, "/etc/literouter/service-account.json",
+                                  [&editor](const std::string& value) { editor.credentialsFile = value; });
+
+            detail::labelledInput(ui, "overlays.editor.awsaccess", leftX, 216.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Bedrock access key id")),
+                                  {std::string(literouter::i18n::tr("A ${VAR} reference stays a reference in the file."))},
+                                  editor.awsAccessKey, "${AWS_ACCESS_KEY_ID}",
+                                  [&editor](const std::string& value) { editor.awsAccessKey = value; });
+            detail::labelledInput(ui, "overlays.editor.awssecret", rightX, 216.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Bedrock secret access key")),
+                                  {std::string(literouter::i18n::tr("Resolved only when a request is signed."))},
+                                  editor.awsSecretKey, "${AWS_SECRET_ACCESS_KEY}",
+                                  [&editor](const std::string& value) { editor.awsSecretKey = value; });
+
+            detail::labelledInput(ui, "overlays.editor.awssession", leftX, 282.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Bedrock session token (optional)")),
+                                  {std::string(literouter::i18n::tr("Only for temporary credentials."))},
+                                  editor.awsSessionToken, "",
+                                  [&editor](const std::string& value) { editor.awsSessionToken = value; });
+            detail::labelledInput(ui, "overlays.editor.relayconcurrent", rightX, 282.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Relay limit: concurrent requests")),
+                                  {std::string(literouter::i18n::tr(
+                                      "What literouter itself sends this relay at once; 0 is "
+                                      "unlimited. A full relay is skipped, not failed."))},
+                                  editor.maxConcurrentText, "0",
+                                  [&editor](const std::string& value) { editor.maxConcurrentText = value; });
+
+            detail::labelledInput(ui, "overlays.editor.relayrpm", leftX, 348.0f, columnWidth,
+                                  std::string(literouter::i18n::tr("Relay limit: requests per minute")), {},
+                                  editor.requestsPerMinuteText, "0",
+                                  [&editor](const std::string& value) { editor.requestsPerMinuteText = value; });
+
+            }
+
             const ProbeView* probe = state.editorProbe();
             std::string status = editor.statusLine;
             bool statusError = editor.statusError;
@@ -373,7 +449,7 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                 statusError = false;
             }
             ui.text("overlays.editor.status")
-                .position(leftX, 664.0f)
+                .position(leftX, kStatusY)
                 .size(panelWidth - 56.0f, 18.0f)
                 .text(literouter::truncateUtf8(status, 150))
                 .fontSize(11.5f)
@@ -381,11 +457,11 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                 .color(statusError ? p.danger : p.textFaint)
                 .build();
 
-            actionButton(ui, "overlays.editor.test", leftX, 698.0f, 96.0f, 40.0f,
+            actionButton(ui, "overlays.editor.test", leftX, kActionsY, 96.0f, 40.0f,
                          std::string(literouter::i18n::tr("Test")), false,
                          [] { appState().testEditorProvider(); });
             const bool hasModels = probe != nullptr && probe->done && !probe->models.empty();
-            actionButton(ui, "overlays.editor.usemodels", leftX + 106.0f, 698.0f, 188.0f, 40.0f,
+            actionButton(ui, "overlays.editor.usemodels", leftX + 106.0f, kActionsY, 188.0f, 40.0f,
                          std::string(literouter::i18n::tr("Use discovered models")), false, [] {
                              AppState& app = appState();
                              const ProbeView* view = app.editorProbe();
@@ -401,9 +477,9 @@ inline void composeProviderEditor(eui::Ui& ui, const eui::Screen& screen) {
                          !hasModels);
 
             actionButton(ui, "overlays.editor.cancel", panelWidth - 28.0f - 96.0f - 12.0f - 116.0f,
-                         698.0f, 116.0f, 40.0f, std::string(literouter::i18n::tr("Cancel")), false,
+                         kActionsY, 116.0f, 40.0f, std::string(literouter::i18n::tr("Cancel")), false,
                          [&editor] { editor.open = false; });
-            actionButton(ui, "overlays.editor.save", panelWidth - 28.0f - 116.0f, 698.0f, 116.0f,
+            actionButton(ui, "overlays.editor.save", panelWidth - 28.0f - 116.0f, kActionsY, 116.0f,
                          40.0f, std::string(literouter::i18n::tr("Save relay")), true, [] { appState().applyProviderEditor(); });
         })
         .build();

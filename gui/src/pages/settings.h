@@ -75,6 +75,8 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
             constexpr float kListenerHeight = 784.0f;
             constexpr float kBreakerHeight = 96.0f + 34.0f + kCardBottomPadding;
             constexpr float kLoggingHeight = 184.0f + 32.0f + kCardBottomPadding;
+            // Three rows of two steppers plus the endpoint field.
+            constexpr float kPerformanceHeight = 292.0f;
             constexpr float kDisplayHeight = 236.0f + 18.0f + kCardBottomPadding;
             constexpr float kHowHeight = kDisplayHeight;
 
@@ -87,9 +89,15 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
             const float loggingX = breakerX;
             const float loggingY = breakerY + kBreakerHeight + columnGap;
 
+            // The trend window, the response cache and the OTLP push, in their
+            // own card rather than crammed into Display: they are all "how much
+            // does this proxy remember, and for how long", which is one idea.
+            const float performanceX = breakerX;
+            const float performanceY = loggingY + kLoggingHeight + columnGap;
+
             const float row1Bottom = twoColumns
-                ? std::max(listenerY + kListenerHeight, loggingY + kLoggingHeight)
-                : (loggingY + kLoggingHeight);
+                ? std::max(listenerY + kListenerHeight, performanceY + kPerformanceHeight)
+                : (performanceY + kPerformanceHeight);
             const float row2Y = row1Bottom + columnGap;
 
             const float displayX = leftX;
@@ -626,6 +634,113 @@ inline void composeSettings(eui::Ui& ui, float x, float y, float width, float he
                                 .checked(server.persist_telemetry)
                                 .onChange([](bool value) {
                                     appState().store.config().server.persist_telemetry = value;
+                                })
+                                .build();
+                        })
+                        .build();
+
+                    // Performance card: what the proxy keeps in memory and how
+                    // long, plus where it pushes metrics.
+                    detail::settingsCard(contentUi, "settings.performance", performanceX, performanceY,
+                                         columnWidth, kPerformanceHeight,
+                                         std::string(literouter::i18n::tr("Performance and metrics")),
+                                         std::string(literouter::i18n::tr("What the console keeps, and where metrics go")));
+                    fieldLabel(contentUi, "settings.bucketsec.label", performanceX + 18.0f, performanceY + 76.0f,
+                               halfWidth, std::string(literouter::i18n::tr("Trend bucket width (seconds)")),
+                               std::string(literouter::i18n::tr("60 watches the last minutes; 3600 the last day")));
+                    contentUi.stack("settings.bucketsec.wrap")
+                        .position(performanceX + 18.0f, performanceY + 96.0f)
+                        .size(halfWidth, 34.0f)
+                        .content([&] {
+                            components::stepper(contentUi, "settings.bucketsec")
+                                .theme(uiTokens())
+                                .size(halfWidth, 34.0f)
+                                .value(server.traffic_bucket_sec)
+                                .step(60)
+                                .min(60)
+                                .max(86400)
+                                .onChange([](long long value) {
+                                    appState().store.config().server.traffic_bucket_sec = static_cast<int>(value);
+                                })
+                                .build();
+                        })
+                        .build();
+                    fieldLabel(contentUi, "settings.bucketcount.label", performanceX + 18.0f + halfWidth + 14.0f,
+                               performanceY + 76.0f, halfWidth,
+                               std::string(literouter::i18n::tr("Trend buckets kept")));
+                    contentUi.stack("settings.bucketcount.wrap")
+                        .position(performanceX + 18.0f + halfWidth + 14.0f, performanceY + 96.0f)
+                        .size(halfWidth, 34.0f)
+                        .content([&] {
+                            components::stepper(contentUi, "settings.bucketcount")
+                                .theme(uiTokens())
+                                .size(halfWidth, 34.0f)
+                                .value(server.traffic_bucket_count)
+                                .step(4)
+                                .min(2)
+                                .max(10000)
+                                .onChange([](long long value) {
+                                    appState().store.config().server.traffic_bucket_count = static_cast<int>(value);
+                                })
+                                .build();
+                        })
+                        .build();
+
+                    fieldLabel(contentUi, "settings.cachettl.label", performanceX + 18.0f, performanceY + 146.0f,
+                               halfWidth, std::string(literouter::i18n::tr("Response cache TTL (seconds)")),
+                               std::string(literouter::i18n::tr("0 disables it; streaming is never cached")));
+                    contentUi.stack("settings.cachettl.wrap")
+                        .position(performanceX + 18.0f, performanceY + 166.0f)
+                        .size(halfWidth, 34.0f)
+                        .content([&] {
+                            components::stepper(contentUi, "settings.cachettl")
+                                .theme(uiTokens())
+                                .size(halfWidth, 34.0f)
+                                .value(server.response_cache_ttl_sec)
+                                .step(60)
+                                .min(0)
+                                .max(86400)
+                                .onChange([](long long value) {
+                                    appState().store.config().server.response_cache_ttl_sec = static_cast<int>(value);
+                                })
+                                .build();
+                        })
+                        .build();
+                    fieldLabel(contentUi, "settings.cacheentries.label", performanceX + 18.0f + halfWidth + 14.0f,
+                               performanceY + 146.0f, halfWidth,
+                               std::string(literouter::i18n::tr("Cache entries kept")));
+                    contentUi.stack("settings.cacheentries.wrap")
+                        .position(performanceX + 18.0f + halfWidth + 14.0f, performanceY + 166.0f)
+                        .size(halfWidth, 34.0f)
+                        .content([&] {
+                            components::stepper(contentUi, "settings.cacheentries")
+                                .theme(uiTokens())
+                                .size(halfWidth, 34.0f)
+                                .value(server.response_cache_max_entries)
+                                .step(16)
+                                .min(1)
+                                .max(100000)
+                                .onChange([](long long value) {
+                                    appState().store.config().server.response_cache_max_entries = static_cast<int>(value);
+                                })
+                                .build();
+                        })
+                        .build();
+
+                    fieldLabel(contentUi, "settings.otlp.label", performanceX + 18.0f, performanceY + 216.0f,
+                               fieldWidth, std::string(literouter::i18n::tr("OTLP metrics endpoint")),
+                               std::string(literouter::i18n::tr("Empty disables export; metrics go to {endpoint}/v1/metrics")));
+                    contentUi.stack("settings.otlp.wrap")
+                        .position(performanceX + 18.0f, performanceY + 236.0f)
+                        .size(fieldWidth, 38.0f)
+                        .content([&] {
+                            components::input(contentUi, "settings.otlp")
+                                .theme(uiTokens())
+                                .size(fieldWidth, 38.0f)
+                                .value(server.otlp_endpoint)
+                                .placeholder("http://127.0.0.1:4318")
+                                .onChange([](const std::string& value) {
+                                    appState().store.config().server.otlp_endpoint = value;
                                 })
                                 .build();
                         })

@@ -26,43 +26,52 @@ inline float composeMetricRow(eui::Ui& ui, float x, float y, float width) {
     const double successRate = total > 0.0 ? static_cast<double>(snap.total_success) / total : 1.0;
     const std::uint64_t tokens = snap.tokens_prompt + snap.tokens_completion;
 
-    const bool twoRows = (width < 880.0f);
-    const int columns = twoRows ? 3 : 6;
+    // Seven tiles now, so the row count is derived rather than fixed: the
+    // response cache's hit count is the one number that says whether a cache an
+    // operator turned on is doing anything.
+    const bool twoRows = (width < 1010.0f);
+    const int columns = twoRows ? 4 : 7;
     const float gap = 14.0f;
     const float tileWidth = (width - 2.0f * layout::pagePadding - gap * (columns - 1)) / columns;
     const float tileHeight = 96.0f;
     const float startX = x + layout::pagePadding;
 
-    const std::string labels[6] = {
+    const std::string labels[7] = {
         std::string(literouter::i18n::tr("TOTAL REQUESTS")),
         std::string(literouter::i18n::tr("SUCCESS RATE")),
         std::string(literouter::i18n::tr("IN FLIGHT")),
         std::string(literouter::i18n::tr("AVG LATENCY")),
         std::string(literouter::i18n::tr("TOKENS")),
-        std::string(literouter::i18n::tr("BYTES IN / OUT"))
+        std::string(literouter::i18n::tr("BYTES IN / OUT")),
+        std::string(literouter::i18n::tr("CACHE HITS")),
     };
-    const std::string values[6] = {
+    const std::string values[7] = {
         literouter::humanCount(snap.total_requests),
         detail::percentText(successRate),
         std::to_string(snap.active_requests),
         literouter::humanMillis(snap.latency_ms_avg),
         literouter::humanCount(tokens),
         literouter::humanBytes(snap.bytes_out),
+        // A disabled cache shows a dash rather than 0: "off" and "on with no
+        // hits yet" are different facts, and a zero would conflate them.
+        snap.cache_enabled ? literouter::humanCount(snap.cache_hits) : std::string{"—"},
     };
-    const eui::Color colors[6] = {
+    const eui::Color colors[7] = {
         palette().text,
         successBand(successRate),
         snap.active_requests > 0 ? palette().accent : palette().text,
         palette().text,
         palette().text,
         palette().text,
+        snap.cache_enabled ? palette().text : palette().textFaint,
     };
-    const eui::Color underlines[6] = {
+    const eui::Color underlines[7] = {
         palette().accent, successBand(successRate), palette().accent,
         palette().info,   palette().info,           palette().info,
+        palette().accent,
     };
 
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         const int col = twoRows ? (i % 3) : i;
         const int row = twoRows ? (i / 3) : 0;
         const float tileX = startX + static_cast<float>(col) * (tileWidth + gap);

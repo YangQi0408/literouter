@@ -8,24 +8,48 @@ namespace lr_gui {
 
 inline constexpr float kHourlyTrendHeight = 238.0f;
 
+/** A time offset in the unit that makes it readable: minutes under an hour,
+ *  hours under a day, days beyond that. */
+inline std::string trendOffset(double seconds) {
+    if (seconds < 3600.0) {
+        return std::to_string(static_cast<long long>(std::llround(seconds / 60.0))) + "m";
+    }
+    if (seconds < 86400.0) {
+        return std::to_string(static_cast<long long>(std::llround(seconds / 3600.0))) + "h";
+    }
+    return std::to_string(static_cast<long long>(std::llround(seconds / 86400.0))) + "d";
+}
+
 inline void composeHourlyTrend(eui::Ui& ui, float x, float y, float width) {
     const Palette& p = palette();
-    constexpr std::size_t hours = 24;
-    const double currentHour = std::floor(literouter::nowUnix() / 3600.0) * 3600.0;
-    const double firstHour = currentHour - static_cast<double>(hours - 1) * 3600.0;
-    std::array<literouter::TrafficBucket, hours> buckets{};
+    // The window is the operator's, not a constant: server.traffic_bucket_sec and
+    // traffic_bucket_count decide it, so a relay being debugged can be watched
+    // per minute instead of per hour. The bucket width is read from the snapshot
+    // rather than from the config so a chart restored from a telemetry file
+    // recorded at a different width is not relabelled.
+    const literouter::Snapshot& snap = appState().snapshot;
+    const double bucketSec = static_cast<double>(std::max(60, snap.traffic_bucket_sec));
+    const std::size_t hours = static_cast<std::size_t>(
+        std::clamp(snap.traffic_bucket_count > 0 ? snap.traffic_bucket_count : 24, 2, 240));
+    const double currentHour = std::floor(literouter::nowUnix() / bucketSec) * bucketSec;
+    const double firstHour = currentHour - static_cast<double>(hours - 1) * bucketSec;
+    std::vector<literouter::TrafficBucket> buckets(hours);
     for (std::size_t i = 0; i < hours; ++i) {
-        buckets[i].hour_unix = firstHour + static_cast<double>(i) * 3600.0;
+        buckets[i].hour_unix = firstHour + static_cast<double>(i) * bucketSec;
+        buckets[i].bucket_sec = static_cast<int>(bucketSec);
     }
-    // The core retains nonempty hours, which need not be consecutive. Keep
-    // idle slots empty instead of compressing days of sparse traffic into 24h.
-    for (const auto& bucket : appState().snapshot.hourly) {
+    // The core retains nonempty buckets, which need not be consecutive. Keep
+    // idle slots empty instead of compressing days of sparse traffic into the
+    // window.
+    for (const auto& bucket : snap.hourly) {
         if (!std::isfinite(bucket.hour_unix) || bucket.hour_unix < firstHour ||
             bucket.hour_unix > currentHour) {
             continue;
         }
-        const auto index = static_cast<std::size_t>((bucket.hour_unix - firstHour) / 3600.0);
-        buckets[index] = bucket;
+        const auto index = static_cast<std::size_t>((bucket.hour_unix - firstHour) / bucketSec);
+        if (index < buckets.size()) {
+            buckets[index] = bucket;
+        }
     }
     std::uint64_t peak = 0;
     for (const auto& bucket : buckets) {
@@ -61,7 +85,7 @@ inline void composeHourlyTrend(eui::Ui& ui, float x, float y, float width) {
                 .horizontalAlign(eui::HorizontalAlign::Right).build();
             ui.text("overview.hourly.note")
                 .position(18.0f, 39.0f).size(width - 36.0f, 18.0f)
-                .text(literouter::i18n::tr("Last 24 hours · requests per hour"))
+                .text(literouter::i18n::tr("Requests per bucket, over the configured trend window"))
                 .fontSize(12.0f).lineHeight(17.0f).color(p.textMuted).build();
 
             dot(ui, "overview.hourly.legend.requests", 18.0f, 66.0f, 7.0f, p.accent);
@@ -105,17 +129,21 @@ inline void composeHourlyTrend(eui::Ui& ui, float x, float y, float width) {
             if (peak == 0) {
                 ui.text("overview.hourly.empty")
                     .position(26.0f, plotY + 37.0f).size(width - 52.0f, 28.0f)
-                    .text(literouter::i18n::tr("No traffic in the last 24 hours"))
+                    .text(literouter::i18n::tr("No traffic in the configured trend window"))
                     .fontSize(13.0f).lineHeight(22.0f).color(p.textMuted)
                     .horizontalAlign(eui::HorizontalAlign::Center).build();
             }
-            for (std::size_t i : {0u, 5u, 11u, 17u, 23u}) {
-                const std::string label = i == hours - 1 ? std::string(literouter::i18n::tr("Now"))
-                    : "−" + std::to_string(hours - 1 - i) + "h";
+            // Five ticks spread across the window, labelled in the bucket's own
+            // unit: "−3h" for hour-wide buckets, "−30m" for minute-wide ones.
+            for (std::size_t tick = 0; tick < 5; ++tick) {
+                const std::size_t i = std::min(hours - 1, tick * (hours - 1) / 4);
+                const std::string label = i == hours - 1
+                    ? std::string(literouter::i18n::tr("Now"))
+                    : "−" + trendOffset(static_cast<double>(hours - 1 - i) * bucketSec);
                 const float labelWidth = 42.0f;
                 const float labelX = std::clamp(plotX + (static_cast<float>(i) + 0.5f) * slotWidth - labelWidth * 0.5f,
                                                plotX, plotX + plotWidth - labelWidth);
-                ui.text("overview.hourly.label." + std::to_string(i))
+                ui.text("overview.hourly.label." + std::to_string(tick))
                     .position(labelX, 206.0f).size(labelWidth, 18.0f).text(label)
                     .fontSize(11.0f).lineHeight(16.0f).color(p.textFaint)
                     .horizontalAlign(eui::HorizontalAlign::Center).build();

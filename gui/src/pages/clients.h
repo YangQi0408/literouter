@@ -52,6 +52,24 @@ inline void open(const literouter::ClientConfig* client = nullptr) {
     editor.dailyRequests=std::to_string(client->requests_per_day);
     editor.dailyTokens=std::to_string(client->tokens_per_day);
     editor.reservation=std::to_string(client->token_reservation);
+    editor.budget=std::format("{}", client->budget_usd_per_day);
+}
+
+// A nonnegative real number, for the fields measured in dollars. std::stod
+// accepts "1e999" as infinity and "abc" as a throw, so both are rejected
+// explicitly rather than written back as a budget the server would refuse.
+inline bool parseMoney(const std::string& raw, double& out) {
+    const std::string value=literouter::trim(raw);
+    if (value.empty()) { out=0.0; return true; }
+    try {
+        std::size_t consumed=0;
+        const double parsed=std::stod(value,&consumed);
+        if (consumed!=value.size() || !std::isfinite(parsed) || parsed<0.0) return false;
+        out=parsed;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 inline bool parseNumber(const std::string& raw, std::uint64_t& out) {
@@ -74,8 +92,9 @@ inline void save() {
     if (!parseNumber(editor.rpm,rpm) || rpm>static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
         !parseNumber(editor.concurrent,concurrent) || concurrent>static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
         !parseNumber(editor.dailyRequests,client.requests_per_day) ||
-        !parseNumber(editor.dailyTokens,client.tokens_per_day) || !parseNumber(editor.reservation,client.token_reservation)) {
-        editor.error=text("Limits must be nonnegative whole numbers within range.");return;
+        !parseNumber(editor.dailyTokens,client.tokens_per_day) || !parseNumber(editor.reservation,client.token_reservation) ||
+        !parseMoney(editor.budget,client.budget_usd_per_day)) {
+        editor.error=text("Limits must be nonnegative whole numbers within range, and the budget a nonnegative amount.");return;
     }
     client.requests_per_minute=static_cast<int>(rpm);
     client.max_concurrent=static_cast<int>(concurrent);
@@ -133,28 +152,33 @@ inline void editor(eui::Ui& ui,float x,float y,float width,float height) {
             const float inner=cw-padding*2.0f;
             const bool columns=inner>=680.0f;
             const float fieldWidth=columns?(inner-24.0f)*0.5f:inner;
-            const float fieldsHeight=(columns?5.0f:9.0f)*75.0f;
+            // Ten fields: five rows of two when there is room, ten rows when
+            // there is not.
+            const float fieldsHeight=(columns?5.0f:10.0f)*75.0f;
             const float keysY=fieldsHeight+112.0f;
             const float keysHeight=static_cast<float>(draft.draft.keys.size())*54.0f;
             content.stack("clients.editor.canvas").size(cw,keysY+keysHeight+240.0f).content([&] {
                 std::string* values[]={&draft.draft.id,&draft.draft.name,&draft.modelsText,&draft.groupsText,
-                    &draft.rpm,&draft.concurrent,&draft.dailyRequests,&draft.dailyTokens,&draft.reservation};
+                    &draft.rpm,&draft.concurrent,&draft.dailyRequests,&draft.dailyTokens,&draft.reservation,
+                    &draft.budget};
                 const char* labels[]={"Client ID","Display name","Allowed models","Provider groups",
-                    "Requests per minute","Concurrency","Requests / day","Tokens / day","Token reservation"};
-                for (int i=0;i<9;++i) {
+                    "Requests per minute","Concurrency","Requests / day","Tokens / day","Token reservation",
+                    "Daily budget (USD)"};
+                for (int i=0;i<10;++i) {
                     const float fx=padding+(columns?static_cast<float>(i%2)*(fieldWidth+24.0f):0.0f);
                     const float fy=static_cast<float>(columns?i/2:i)*75.0f;
                     if (i==0 && !draft.originalId.empty()) {
                         fieldValue(content,"clients.editor.id",fx,fy,fieldWidth,tr("Client ID"),draft.originalId,p.text);
                     } else {
                         input(content,"clients.editor.field."+std::to_string(i),fx,fy,fieldWidth,labels[i],*values[i],
-                            (i==2||i==3)?"Empty means unrestricted; comma separated":"");
+                            (i==2||i==3)?"Empty means unrestricted; comma separated"
+                                        :(i==9?"0 disables the ceiling":""));
                     }
                 }
                 toggle(content,"clients.editor.enabled",padding,fieldsHeight,inner,"Enabled",draft.draft.enabled,
                     [&draft](bool value){draft.draft.enabled=value;});
                 content.text("clients.editor.explain").position(padding,fieldsHeight+38.0f).size(inner,64.0f)
-                    .text(tr("0 disables a limit. Daily quotas reset at 00:00 UTC; token reservations remain charged when upstream usage is missing."))
+                    .text(tr("0 disables a limit. Daily quotas and budgets reset at 00:00 UTC; a budget is checked when a request arrives, so one already in flight when the ceiling is reached still completes. Token reservations remain charged when upstream usage is missing."))
                     .fontSize(12.0f).lineHeight(18.0f).wrap(true).maxWidth(inner).color(p.textMuted).build();
                 content.text("clients.editor.keys.title").position(padding,keysY).size(inner,24.0f)
                     .text(tr("Client keys")).fontSize(15.0f).fontWeight(700).color(p.text).build();
@@ -261,13 +285,16 @@ inline void composeClients(eui::Ui& ui,float x,float y,float width,float height)
                                 const float noteY=narrow?236.0f:180.0f;
                                 content.text(base+".limits").position(18.0f,noteY).size(cardWidth-36.0f,22.0f)
                                     .text(text("RPM")+": "+(client.requests_per_minute?std::to_string(client.requests_per_minute):unlimited)+" · "+
+                                        text("Daily budget")+": "+(client.budget_usd_per_day>0.0
+                                            ?std::format("${:.4f} / ${:.2f}",usage.cost_today,client.budget_usd_per_day)
+                                            :unlimited)+" · "+
                                         text("Token reservation")+": "+std::to_string(client.token_reservation)+" · "+text("Reserved tokens")+": "+literouter::humanCount(usage.reserved_tokens))
                                     .fontSize(11.5f).color(p.textMuted).build();
                                 content.text(base+".tokens").position(18.0f,noteY+25.0f).size(cardWidth-36.0f,22.0f)
                                     .text(text("Prompt / completion tokens")+": "+literouter::humanCount(usage.tokens_prompt)+" / "+literouter::humanCount(usage.tokens_completion))
                                     .fontSize(11.5f).color(p.textMuted).build();
                                 content.text(base+".day").position(18.0f,noteY+51.0f).size(cardWidth-36.0f,36.0f)
-                                    .text(tr("Daily quotas reset at 00:00 UTC. Token totals include reservations."))
+                                    .text(tr("Daily quotas and budgets reset at 00:00 UTC. A budget is checked when a request arrives, so one already in flight when the ceiling is reached still completes. Token totals include reservations."))
                                     .fontSize(11.0f).lineHeight(16.0f).wrap(true).maxWidth(cardWidth-36.0f).color(p.textFaint).build();
                             }).build();
                     }
