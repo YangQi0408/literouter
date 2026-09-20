@@ -74,15 +74,35 @@ docker run -d --network=host -v <etc>:/etc/literouter -v <state>:/var/lib/litero
 
 字典现状：**GUI 328 条 + CLI 81 条 `tr()` 字面量，缺失 0；`kZhTranslations` 558 键，重复 0，冲突 0**。
 
+### 1.5 `docker compose`：端到端实测
+
+沙盒无法创建 veth 对（`failed to add the host (veth…) <=> sandbox (veth…) pair interfaces: operation not supported`），所以默认 bridge 网络连不上。这挡住的只是**网络接入**，不是 compose 文件里真正需要验证的东西。用 `network_mode: host` + `ports: !reset []` 临时覆盖后，其余承诺全部实测：
+
+```text
+0. 全新命名卷 compose up     → healthy；空配置卷时给出
+                                “config … does not exist; running with the built-in seed” 警告
+                                并使用内置 seed，不崩溃
+1. 以客户端身份发请求         → HTTP 200，requests_today = 1
+2. 状态卷内容                 → clients-config-<sha256>.json + .lock（配额账本）、
+                                 telemetry-*.json、literouter-<port>.pid
+3. down（不加 -v）→ up        → requests_today 仍为 1   ← compose 注释里的承诺
+4. down -v → up               → requests_today 归 0，且 clients-*.json 消失
+5. 安全上下文                 → uid=8787、CapDrop=[ALL]、no-new-privileges:true、
+                                 Restart=unless-stopped
+6. 健康检查                   → healthy
+```
+
+**尚未覆盖的只剩端口发布本身**（`ports: 127.0.0.1:8787:8787` 需要 bridge 网络）。那是标准 Docker 行为，不属于 compose 注释里的任何承诺。
+
 ---
 
 ## 2. 尚未完成的事项
 
-### 2.1 `docker compose up` 的端到端验证（需要真实 Docker 主机）
+### 2.1 在真实 Docker 主机上补测端口发布（唯一未覆盖项）
 
-**已验证**：`docker compose config` 合法；`docker compose build` 成功（`Image literouter:local Built`）；`docker build` + `docker run` 端到端全部通过（§1.3）。
+**已覆盖**：`docker compose config` 合法；`docker compose build` 成功；`docker build` + `docker run` 端到端通过（§1.3）；compose 的命名卷拆分、配额账本持久性、健康检查、重启策略与安全上下文全部实测（§1.5）。
 
-**未验证**：`docker compose up -d`。本沙盒无法创建 bridge 网络：
+**未覆盖**：`ports: 127.0.0.1:8787:8787` 的**端口发布**本身。它需要 bridge 网络，而本沙盒创建 veth 对会失败：
 
 ```text
 Error response from daemon: failed to set up container networking: failed to create endpoint
@@ -90,17 +110,24 @@ literouter on network literouter_default: failed to add the host (veth…) <=> s
 pair interfaces: operation not supported
 ```
 
-**需要在正常 Docker 主机上做**：
+这不是项目缺陷（用 `network_mode: host` 覆盖后同一套 compose 能 healthy 运行），但**要在真机上补一次**：
 
-1. `docker compose up -d`，确认容器 healthy；
-2. 验证命名卷拆分确实生效：`down`（不加 `-v`）后 `up`，确认**客户端配额账本没有重置**——这是 compose 文件注释里承诺的行为，必须实测；再 `down -v` 确认此时才会重置；
-3. 确认 `security_opt: no-new-privileges` + `cap_drop: ALL` 下服务仍能正常发起上游 HTTPS 请求。
+```bash
+docker compose up -d
+curl -sf http://127.0.0.1:8787/health/ready     # 经端口映射可达
+docker compose exec literouter literouter status --json --quiet
+docker compose down -v
+```
 
-**验收**：上述三步的实测输出；结论写回 `docs/{zh,en}/distribution.md`。
+顺带值得确认的一项：在 `cap_drop: ALL` + `no-new-privileges` 下，容器向**真实 HTTPS 上游**发请求仍能成功（本沙盒的上游是本地 HTTP 桩，因此 TLS 路径未经容器验证）。
 
-### 2.2 （可选）把 `docker compose` 的 build 网络写进 CI 或文档
+### 2.2 （可选）镜像构建的网络要求写进 CI
 
-本沙盒的 `docker compose build` 需要临时 override `build.network: host`（否则撞上同一个 veth 限制）。这是**沙盒特性而非项目缺陷**，但如果 CI 里要构建镜像，需要注意同一件事。
+`docker compose build` / `docker build` 在本沙盒需要 `--network=host`（或 compose 的 `build.network: host`），否则撞上同一个 veth 限制。若以后把镜像构建加进 CI，注意同一件事。
+
+### 2.3 （可选）`routes.*` 的 6 个 `[empty]` 散文单元格
+
+`check_config_docs.py` 现在把 12/18 个散文单元格核对为 verified，剩下 6 个是中英各 3 个 `routes.model` / `routes.provider` / `routes.targets` 的**空单元格**。空单元格声称「没有默认值」，而这一点构建产物本身枚举不出来，因此保留为 recognised 并在输出里说明了原因。若要继续收紧，需要给验证器一个「该字段确实无默认值」的机器可读来源。
 
 ---
 

@@ -89,4 +89,12 @@ docker run -p 127.0.0.1:9000:9000 …
 
 `EXPOSE 8787` 只是文档性声明，不决定实际监听端口。健康检查 `literouter status` 读的是同一份配置，因此会自动跟着 `server.port` 走，不需要同步修改。
 
+**首次启动时配置卷是空的**，此时容器会打印一条警告（`config … does not exist; running with the built-in seed`）并使用内置 seed 配置启动，而不是崩溃。内置 seed 指向示例中转站，因此在写入真实配置前不要对外发布端口：
+
+```bash
+docker compose up -d
+docker compose exec literouter literouter config init --force   # 写入 seed 文件
+docker compose restart
+```
+
 健康检查用 `literouter status --json --quiet`：它走的是与客户端同一条管理 API 路径，因此检查的是「监听器 + 配置 + 管理面」这一整条链路，而不只是「进程还在不在」。就绪与存活的区别见[协议与 API](protocols-api.md)。
