@@ -35,6 +35,11 @@ export const SERVER_DEFAULTS: ServerConfig = {
   web_ui: true,
   language: 'auto',
   ui_scale: 1,
+  traffic_bucket_sec: 3600,
+  traffic_bucket_count: 24,
+  response_cache_ttl_sec: 0,
+  response_cache_max_entries: 128,
+  otlp_endpoint: '',
 }
 
 export const PROVIDER_DEFAULTS: ProviderConfig = {
@@ -55,6 +60,17 @@ export const PROVIDER_DEFAULTS: ProviderConfig = {
   chat_path: '/chat/completions',
   embeddings_path: '/embeddings',
   protocol: 'openai',
+  // Written only when set, so every one of these has to be restored here — the
+  // writer omitting a default is right for the file and wrong for the editors.
+  api_version: '',
+  region: '',
+  project: '',
+  credentials_file: '',
+  aws_access_key: '',
+  aws_secret_key: '',
+  aws_session_token: '',
+  max_concurrent: 0,
+  requests_per_minute: 0,
   price_in_per_million: 0,
   price_out_per_million: 0,
   note: '',
@@ -98,6 +114,7 @@ export const normalizeRoute = (raw: Partial<RouteConfig> | null | undefined): Ro
 export const CLIENT_DEFAULTS: ClientConfig = {
   id: '', name: '', enabled: true, keys: [], models: [], provider_groups: [],
   requests_per_minute: 0, max_concurrent: 0, requests_per_day: 0, tokens_per_day: 0,
+  budget_usd_per_day: 0,
   token_reservation: 4096,
 }
 const CLIENT_KEY_DEFAULTS: ClientKeyConfig = { id: '', api_key: '', enabled: true }

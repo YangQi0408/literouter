@@ -1,5 +1,5 @@
-import { Check, Copy } from 'lucide-react'
-import { useState } from 'react'
+import { Check, Copy, Download, Upload } from 'lucide-react'
+import { useRef, useState } from 'react'
 
 import { SecretInput } from '@/components/SecretInput'
 import { stringifyConfig } from '@/lib/client-integers'
@@ -16,12 +16,15 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
+import { normalizeConfig } from '@/lib/normalize'
 import { useStore } from '@/store'
 
 export function Settings() {
   const { working, update, loaded, serverReport, saveIssues } = useStore()
   const { t } = useI18n()
   const [copied, setCopied] = useState(false)
+  const [importError, setImportError] = useState('')
+  const fileInput = useRef<HTMLInputElement>(null)
 
   if (!working) return null
   const server = working.server
@@ -39,6 +42,47 @@ export function Settings() {
       window.setTimeout(() => setCopied(false), 2000)
     } catch {
       /* clipboard needs a secure context; the text is selectable anyway */
+    }
+  }
+
+  /** The whole config as a file. Secrets are written exactly as they are held —
+   *  a `${VAR}` reference stays a reference and a literal stays blanked by the
+   *  server — so the export is safe to keep and to diff. */
+  function download() {
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'literouter-config.json'
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  /** Replaces the whole draft from a file. It is a draft, not a save: the same
+   *  server-side validation that guards the form guards this, and nothing is
+   *  written until Save. */
+  async function importFile(file: File) {
+    setImportError('')
+    try {
+      const text = await file.text()
+      const parsed: unknown = JSON.parse(text)
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        setImportError(t('importNotObject'))
+        return
+      }
+      // Normalised at the boundary for the same reason the server's reply is: a
+      // hand-written or older file omits every field at its default, and the
+      // editors iterate over `headers` and `models`.
+      const incoming = normalizeConfig(parsed)
+      update((draft) => {
+        draft.schema = incoming.schema
+        draft.server = incoming.server
+        draft.providers = incoming.providers
+        draft.routes = incoming.routes
+        draft.clients = incoming.clients
+      })
+    } catch (error) {
+      setImportError(`${t('importFailed')}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -156,6 +200,45 @@ export function Settings() {
             />
           </Field>
 
+          <Field label="traffic_bucket_sec" hint={t('hintBucketSec')}>
+            <NumberField
+              value={server.traffic_bucket_sec}
+              min={60}
+              step={60}
+              onChange={(traffic_bucket_sec) => patch({ traffic_bucket_sec })}
+            />
+          </Field>
+          <Field label="traffic_bucket_count" hint={t('hintBucketCount')}>
+            <NumberField
+              value={server.traffic_bucket_count}
+              min={2}
+              onChange={(traffic_bucket_count) => patch({ traffic_bucket_count })}
+            />
+          </Field>
+
+          <Field label="response_cache_ttl_sec" hint={t('hintCacheTtl')}>
+            <NumberField
+              value={server.response_cache_ttl_sec}
+              min={0}
+              onChange={(response_cache_ttl_sec) => patch({ response_cache_ttl_sec })}
+            />
+          </Field>
+          <Field label="response_cache_max_entries">
+            <NumberField
+              value={server.response_cache_max_entries}
+              min={1}
+              onChange={(response_cache_max_entries) => patch({ response_cache_max_entries })}
+            />
+          </Field>
+
+          <Field label="otlp_endpoint" hint={t('hintOtlp')} wide>
+            <TextField
+              value={server.otlp_endpoint}
+              placeholder="http://127.0.0.1:4318"
+              onChange={(otlp_endpoint) => patch({ otlp_endpoint })}
+            />
+          </Field>
+
           <Field label="circuit_failure_threshold">
             <NumberField
               value={server.circuit_failure_threshold}
@@ -209,16 +292,42 @@ export function Settings() {
         <CardHeader>
           <CardTitle>{t('tabConfig')}</CardTitle>
           <span className="ml-1 text-xs text-muted-foreground">{t('configNote')}</span>
-          <Button size="sm" variant="ghost" className="ml-auto" onClick={() => void copy()}>
-            {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-            {copied ? t('copied') : t('copy')}
-          </Button>
+          <div className="ml-auto flex items-center gap-1">
+            <Button size="sm" variant="ghost" onClick={() => void copy()}>
+              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+              {copied ? t('copied') : t('copy')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={download}>
+              <Download className="size-3.5" />
+              {t('exportConfig')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => fileInput.current?.click()}>
+              <Upload className="size-3.5" />
+              {t('importConfig')}
+            </Button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                // Reset so choosing the same file twice fires again.
+                event.target.value = ''
+                if (file) void importFile(file)
+              }}
+            />
+          </div>
         </CardHeader>
-        {issues.length ? (
+        {issues.length || importError ? (
           <CardContent>
-            <Issues issues={issues} />
+            {importError ? <p className="text-xs text-danger">{importError}</p> : null}
+            {issues.length ? <Issues issues={issues} /> : null}
           </CardContent>
         ) : null}
+        <CardContent className="pb-0 pt-0">
+          <p className="text-xs text-muted-foreground">{t('importHint')}</p>
+        </CardContent>
         <pre className="max-h-[46vh] overflow-auto bg-muted/40 p-4 font-mono text-xs leading-relaxed text-muted-foreground">
           {json}
         </pre>

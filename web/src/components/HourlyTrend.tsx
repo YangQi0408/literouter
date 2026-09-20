@@ -3,6 +3,15 @@ import type { TrafficBucket } from '@/lib/api'
 import { humanBytes, humanCount } from '@/lib/format'
 import { useI18n } from '@/lib/i18n'
 
+/** "24h" for hour-wide buckets, "2h" for minute-wide ones: the count alone
+ *  would read as hours whatever the width is. */
+function trendWindow(count: number, bucketSec: number): string {
+  const seconds = count * Math.max(60, bucketSec)
+  if (seconds % 86400 === 0) return `${seconds / 86400}d`
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`
+  return `${Math.round(seconds / 60)}m`
+}
+
 /** The last day of traffic, one bar per hour.
  *
  *  A single set of totals answers "how much, overall"; this answers "when", which
@@ -10,7 +19,17 @@ import { useI18n } from '@/lib/i18n'
  *  a relay problem or a schedule. Bars are scaled to the busiest hour in the
  *  window rather than to an absolute value, because the interesting shape is
  *  relative. */
-export function HourlyTrend({ buckets }: { buckets: TrafficBucket[] }) {
+/** The trend, with the bucket width the server recorded it at. `bucketSec`
+ *  defaults to an hour because that is what a history written before the width
+ *  was configurable was recorded at; taking it from the snapshot is what keeps a
+ *  minute-resolution chart from being labelled "24h". */
+export function HourlyTrend({
+  buckets,
+  bucketSec = 3600,
+}: {
+  buckets: TrafficBucket[]
+  bucketSec?: number
+}) {
   const { t } = useI18n()
   if (buckets.length === 0) {
     return null
@@ -59,7 +78,7 @@ export function HourlyTrend({ buckets }: { buckets: TrafficBucket[] }) {
           })}
         </div>
         <div className="mt-2 flex justify-between text-[11px] text-muted-foreground">
-          <span>{`${buckets.length}h`}</span>
+          <span>{trendWindow(buckets.length, bucketSec)}</span>
           <span>{t('now')}</span>
         </div>
       </CardContent>

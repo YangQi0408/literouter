@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
 import type { ClientConfig, UInt64 } from '@/lib/api'
-import { quotaPercent, uintValue } from '@/lib/client-integers'
+import { moneyPercent, quotaPercent, uintValue } from '@/lib/client-integers'
 import { hasSecret } from '@/lib/clients'
 import { useI18n } from '@/lib/i18n'
 import { CLIENT_DEFAULTS } from '@/lib/normalize'
@@ -21,13 +21,23 @@ export function Clients() {
   const number = (value: UInt64 = 0) => uintValue(value).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US')
   const groups = [...new Set(working.providers.flatMap((provider) => provider.groups))].sort()
   const models = [...new Set([...working.routes.map((route) => route.model), ...working.providers.flatMap((provider) => provider.models)])].sort()
-  const quota = (label: string, used: UInt64, limit: UInt64) => <div className="space-y-1.5">
-    <div className="flex flex-wrap justify-between gap-2 text-xs"><span className="text-muted-foreground">{label}</span>
-      <span className="font-mono">{number(used)} / {uintValue(limit) > 0n ? number(limit) : t('unlimited')}</span></div>
-    {uintValue(limit) > 0n ? <div className="h-1.5 overflow-hidden rounded-full bg-muted" role="meter"
-      aria-label={label} aria-valuenow={quotaPercent(used, limit)} aria-valuemin={0} aria-valuemax={100}>
-      <div className="h-full bg-primary" style={{ width: `${quotaPercent(used, limit)}%` }} /></div> : null}
-  </div>
+  /** A used/limit meter. `money` switches the two numbers to dollars: the daily
+   *  budget is measured in currency, so rendering it through the integer
+   *  formatter would show every fractional spend as 0. */
+  const quota = (label: string, used: UInt64, limit: UInt64, money = false) => {
+    const shown = (value: UInt64) => (money ? `$${Number(value).toFixed(4)}` : number(value))
+    const bounded = money ? Number(limit) > 0 : uintValue(limit) > 0n
+    // Two percentage paths on purpose: a count is an exact uint64 and a budget is
+    // a real number, and each one's helper rejects the other's input.
+    const percent = money ? moneyPercent(Number(used), Number(limit)) : quotaPercent(used, limit)
+    return <div className="space-y-1.5">
+      <div className="flex flex-wrap justify-between gap-2 text-xs"><span className="text-muted-foreground">{label}</span>
+        <span className="font-mono">{shown(used)} / {bounded ? shown(limit) : t('unlimited')}</span></div>
+      {bounded ? <div className="h-1.5 overflow-hidden rounded-full bg-muted" role="meter"
+        aria-label={label} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
+        <div className="h-full bg-primary" style={{ width: `${percent}%` }} /></div> : null}
+    </div>
+  }
   return <div className="flex flex-col gap-5">
     <Card><CardHeader><CardTitle>{t('tabClients')}</CardTitle>
       <Button size="sm" className="ml-auto" onClick={() => setEditing({ index: working.clients.length,
@@ -65,9 +75,11 @@ export function Clients() {
             <div><span className="text-muted-foreground">{t('providerGroups')}: </span>{client.provider_groups.length ? client.provider_groups.join(', ') : t('allGroups')}</div>
             <div>{t('clientRpm')}: <span className="font-mono">{client.requests_per_minute || t('unlimited')}</span></div>
             <div>{t('clientConcurrency')}: <span className="font-mono">{client.max_concurrent || t('unlimited')}</span></div>
+            <div>{t('dailyBudget')}: <span className="font-mono">{client.budget_usd_per_day > 0 ? `$${client.budget_usd_per_day.toFixed(2)}` : t('unlimited')}</span></div>
           </div>
           {quota(t('requestsToday'), usage?.requests_today ?? 0, client.requests_per_day)}
           {quota(t('tokensToday'), usage?.tokens_today ?? 0, client.tokens_per_day)}
+          {quota(t('spendToday'), usage?.cost_today ?? 0, client.budget_usd_per_day, true)}
           <div className="flex flex-wrap justify-between gap-2 border-t pt-3 text-xs text-muted-foreground">
             <span>{t('clientTotal')}: {number(usage?.requests)} · {t('ok')} {number(usage?.successes)} · {t('failed')} {number(usage?.failures)}</span>
             <span>{t('metricCost')}: ${(usage?.cost_usd ?? 0).toFixed(6)}</span>

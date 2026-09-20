@@ -65,3 +65,12 @@ export function quotaPercent(used: UInt64, limit: UInt64): number {
   const cap = uintValue(limit)
   return cap === 0n ? 0 : Number((uintValue(used) * 100n / cap) > 100n ? 100n : uintValue(used) * 100n / cap)
 }
+
+/** The same meter for a limit measured in money. Separate because a daily budget
+ *  is a real number, not a uint64: routing `7.5` through quotaPercent() throws
+ *  ("unsafe integer"), which took the whole clients view down — the failure mode
+ *  the integer helper exists to prevent, arrived at from the other side. */
+export function moneyPercent(used: number, limit: number): number {
+  if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((used / limit) * 100)))
+}

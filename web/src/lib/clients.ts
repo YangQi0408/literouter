@@ -27,6 +27,10 @@ export function clientProblem(client: ClientConfig, others: ClientConfig[]): str
     if (key.enabled && !hasSecret(key)) return 'enabledKeyRequired'
   }
   if ([client.requests_per_day, client.tokens_per_day, client.token_reservation].some((value) => !Number.isSafeInteger(value) || value < 0)) return 'invalidClientQuota'
+  // The budget is a real number rather than an integer, so it is checked
+  // separately: NaN and Infinity would both be written to the file as `null` by
+  // JSON.stringify and then read back as 0, silently removing the ceiling.
+  if (!Number.isFinite(client.budget_usd_per_day) || client.budget_usd_per_day < 0) return 'invalidClientBudget'
   if (uintValue(client.tokens_per_day) > 0n && (uintValue(client.token_reservation) === 0n ||
       uintValue(client.token_reservation) > uintValue(client.tokens_per_day))) return 'reservationInvalid'
   return null

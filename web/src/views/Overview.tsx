@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Clock,
   Coins,
+  Database,
   Link2,
   ShieldAlert,
   Timer,
@@ -125,9 +126,21 @@ export function Overview() {
           long
           sub={snapshot.config_path}
         />
+        <Metric
+          icon={Database}
+          label={t('cacheHits')}
+          value={snapshot.cache_enabled ? humanCount(Number(snapshot.cache_hits ?? 0)) : '—'}
+          sub={
+            snapshot.cache_enabled
+              ? `${humanCount(Number(snapshot.cache_entries ?? 0))} ${t('cacheEntries')}`
+              : t('cacheOff')
+          }
+        />
       </div>
 
-      <HourlyTrend buckets={snapshot.hourly ?? []} />
+      {/* The width travels with the trend, so a chart recorded at minute
+          resolution is labelled in minutes rather than assumed hourly. */}
+      <HourlyTrend buckets={snapshot.hourly ?? []} bucketSec={snapshot.traffic_bucket_sec ?? 3600} />
 
       <Card>
         <CardHeader>

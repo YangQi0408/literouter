@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { CLIENT_DEFAULTS, normalizeClient, normalizeConfig } from '@/lib/normalize'
 import { administratorKeyAfterSave, clientProblem, generateApiKey, hasSecret } from '@/lib/clients'
-import { parseApiJson, parseUInt64, quotaPercent, stringifyConfig } from '@/lib/client-integers'
+import { moneyPercent, parseApiJson, parseUInt64, quotaPercent, stringifyConfig } from '@/lib/client-integers'
 import { makeConfig } from '@/lib/config-fixture'
 import { countChanges } from '@/lib/diff'
 import { settleSavedDraft } from '@/lib/draft'
@@ -45,6 +45,15 @@ describe('credential preservation and rotation', () => {
     expect(clientProblem(client({ keys: [{ id: 'k', enabled: false, api_key: '' }] }), [])).toBeNull()
     expect(clientProblem(client(), [client()])).toBe('clientIdInvalid')
     expect(clientProblem(client({ tokens_per_day: 1 }), [])).toBe('reservationInvalid')
+    // A daily budget is money, so it is not integer-checked — but it must be a
+    // real, nonnegative number, or the ceiling silently disappears on save.
+    expect(clientProblem(client({ budget_usd_per_day: 12.5 }), [])).toBeNull()
+    expect(clientProblem(client({ budget_usd_per_day: 0 }), [])).toBeNull()
+    expect(clientProblem(client({ budget_usd_per_day: -1 }), [])).toBe('invalidClientBudget')
+    expect(clientProblem(client({ budget_usd_per_day: Number.NaN }), [])).toBe('invalidClientBudget')
+    expect(clientProblem(client({ budget_usd_per_day: Number.POSITIVE_INFINITY }), [])).toBe(
+      'invalidClientBudget',
+    )
   })
   it('uses a changed literal administrator key after a successful save; env keys need reauthentication', () => {
     const stored = { api_key: '', api_key_source: 'literal' as const }
@@ -57,6 +66,24 @@ describe('credential preservation and rotation', () => {
     const keys = new Set(Array.from({ length: 8 }, () => generateApiKey()))
     expect(keys.size).toBe(8)
     for (const key of keys) expect(key).toMatch(/^lr_[a-f0-9]{64}$/)
+  })
+})
+
+describe('a money meter and a count meter are not the same helper', () => {
+  it('measures a fractional budget without going through the integer path', () => {
+    // The bug this covers: passing 7.5 to quotaPercent() throws "Unsafe integer",
+    // and the thrown error took the whole clients view down. The two meters are
+    // separate because each one's input is invalid to the other.
+    expect(() => quotaPercent(0, 7.5 as unknown as number)).toThrow()
+    expect(moneyPercent(0, 7.5)).toBe(0)
+    expect(moneyPercent(3.75, 7.5)).toBe(50)
+    expect(moneyPercent(7.5, 7.5)).toBe(100)
+    expect(moneyPercent(15, 7.5)).toBe(100)
+    // A zero or absent ceiling is unbounded, not 0% of a division by zero.
+    expect(moneyPercent(5, 0)).toBe(0)
+    expect(moneyPercent(5, -1)).toBe(0)
+    expect(moneyPercent(Number.NaN, 10)).toBe(0)
+    expect(moneyPercent(5, Number.POSITIVE_INFINITY)).toBe(0)
   })
 })
 

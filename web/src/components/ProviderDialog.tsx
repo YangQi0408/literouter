@@ -22,7 +22,23 @@ import type { ProviderConfig, Protocol } from '@/lib/api'
 import { PROVIDER_DEFAULTS } from '@/lib/normalize'
 import { useI18n } from '@/lib/i18n'
 
-const PROTOCOLS: Protocol[] = ['openai', 'anthropic', 'gemini', 'openai_responses']
+const PROTOCOLS: Protocol[] = [
+  'openai',
+  'anthropic',
+  'gemini',
+  'openai_responses',
+  'azure',
+  'vertex',
+  'bedrock',
+  'ollama',
+]
+
+/** Which extra fields a protocol actually needs. Showing an AWS secret key on a
+ *  plain OpenAI relay is how an operator comes to believe it does something. */
+const needsApiVersion = (protocol: Protocol) => protocol === 'azure' || protocol === 'vertex'
+const needsRegion = (protocol: Protocol) => protocol === 'bedrock' || protocol === 'vertex'
+const needsVertex = (protocol: Protocol) => protocol === 'vertex'
+const needsAws = (protocol: Protocol) => protocol === 'bedrock'
 
 /** A relay as the server would default it: `PROVIDER_DEFAULTS` is the one place
  *  the defaults live, so a new relay cannot start out different from a relay the
@@ -114,6 +130,78 @@ export function ProviderDialog({
               </SelectContent>
             </Select>
           </Field>
+          {needsApiVersion(provider.protocol) ? (
+            <Field label="api_version" hint={t('hintApiVersion')}>
+              <TextField
+                value={provider.api_version}
+                placeholder={provider.protocol === 'azure' ? '2024-10-21' : 'v1'}
+                onChange={(api_version) => patch({ api_version })}
+              />
+            </Field>
+          ) : null}
+          {needsRegion(provider.protocol) ? (
+            <Field label="region" hint={t('hintRegion')}>
+              <TextField
+                value={provider.region}
+                placeholder={provider.protocol === 'bedrock' ? 'us-east-1' : 'us-central1'}
+                onChange={(region) => patch({ region })}
+              />
+            </Field>
+          ) : null}
+          {needsVertex(provider.protocol) ? (
+            <>
+              <Field label="project" hint={t('hintVertexProject')}>
+                <TextField value={provider.project} onChange={(project) => patch({ project })} />
+              </Field>
+              <Field label="credentials_file" hint={t('hintCredentialsFile')} wide>
+                <TextField
+                  value={provider.credentials_file}
+                  placeholder="/etc/literouter/service-account.json"
+                  onChange={(credentials_file) => patch({ credentials_file })}
+                />
+              </Field>
+            </>
+          ) : null}
+          {needsAws(provider.protocol) ? (
+            <>
+              <Field label="aws_access_key" hint={t('hintAwsKey')}>
+                <TextField
+                  value={provider.aws_access_key}
+                  placeholder="AKIA… or ${AWS_ACCESS_KEY_ID}"
+                  onChange={(aws_access_key) => patch({ aws_access_key })}
+                />
+              </Field>
+              <Field label="aws_secret_key" hint={t('hintAwsSecret')}>
+                <TextField
+                  value={provider.aws_secret_key}
+                  placeholder="${AWS_SECRET_ACCESS_KEY}"
+                  onChange={(aws_secret_key) => patch({ aws_secret_key })}
+                />
+              </Field>
+              <Field label="aws_session_token" hint={t('hintAwsSession')}>
+                <TextField
+                  value={provider.aws_session_token}
+                  onChange={(aws_session_token) => patch({ aws_session_token })}
+                />
+              </Field>
+            </>
+          ) : null}
+
+          <Field label="max_concurrent" hint={t('hintRelayConcurrent')}>
+            <NumberField
+              value={provider.max_concurrent}
+              min={0}
+              onChange={(max_concurrent) => patch({ max_concurrent })}
+            />
+          </Field>
+          <Field label="requests_per_minute" hint={t('hintRelayRpm')}>
+            <NumberField
+              value={provider.requests_per_minute}
+              min={0}
+              onChange={(requests_per_minute) => patch({ requests_per_minute })}
+            />
+          </Field>
+
           <Field label="priority">
             <NumberField value={provider.priority} onChange={(priority) => patch({ priority })} />
           </Field>

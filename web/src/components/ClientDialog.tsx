@@ -1,7 +1,7 @@
 import { Plus, Trash2 } from 'lucide-react'
 import { useId, useState } from 'react'
 
-import { Field, LinesField, SwitchField, TextField } from '@/components/fields'
+import { Field, LinesField, NumberField, SwitchField, TextField } from '@/components/fields'
 import { SecretInput } from '@/components/SecretInput'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -103,7 +103,15 @@ export function ClientDialog({ draft, others, isNew, groups, models, onCancel, o
         <Field label="tokens_per_day" hint={t('dailyQuotaHint')}>
           <IntegerField label="tokens_per_day" value={client.tokens_per_day} onChange={(tokens_per_day) => patch({ tokens_per_day: Number(tokens_per_day) })} />
         </Field>
-        <Field label="token_reservation" hint={t('reservationHint')} wide>
+        <Field label="budget_usd_per_day" hint={t('budgetHint')}>
+          <NumberField
+            value={client.budget_usd_per_day}
+            step={0.5}
+            min={0}
+            onChange={(budget_usd_per_day) => patch({ budget_usd_per_day })}
+          />
+        </Field>
+        <Field label="token_reservation" hint={t('reservationHint')}>
           <IntegerField label="token_reservation" value={client.token_reservation} onChange={(token_reservation) => patch({ token_reservation: Number(token_reservation) })} />
         </Field>
       </form>

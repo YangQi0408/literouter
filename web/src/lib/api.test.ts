@@ -39,13 +39,33 @@ describe('normalizeConfig', () => {
     const config = normalizeConfig(MINIMAL_PAYLOAD)
     const provider = config.providers[0]!
 
-    // The five the writer drops at their default. `headers` is the one that used
-    // to throw while rendering the edit dialog.
+    // Every field the writer drops at its default. `headers` is the one that
+    // used to throw while rendering the edit dialog; the protocol-specific ones
+    // were added with the azure/vertex/bedrock/ollama support, and each of them
+    // has to be restored here or the provider form renders `undefined` into an
+    // input.
     expect(provider.headers).toEqual({})
     expect(provider.protocol).toBe('openai')
     expect(provider.price_in_per_million).toBe(0)
     expect(provider.price_out_per_million).toBe(0)
     expect(provider.note).toBe('')
+    expect(provider.api_version).toBe('')
+    expect(provider.region).toBe('')
+    expect(provider.project).toBe('')
+    expect(provider.credentials_file).toBe('')
+    expect(provider.aws_access_key).toBe('')
+    expect(provider.aws_secret_key).toBe('')
+    expect(provider.aws_session_token).toBe('')
+    expect(provider.max_concurrent).toBe(0)
+    expect(provider.requests_per_minute).toBe(0)
+
+    // The server's five new fields are written unconditionally, so they arrive —
+    // but a payload from an older build would not carry them.
+    expect(config.server.traffic_bucket_sec).toBe(3600)
+    expect(config.server.traffic_bucket_count).toBe(24)
+    expect(config.server.response_cache_ttl_sec).toBe(0)
+    expect(config.server.response_cache_max_entries).toBe(128)
+    expect(config.server.otlp_endpoint).toBe('')
 
     // Nothing at all may be undefined, whatever the writer chose to omit.
     for (const [key, value] of Object.entries(provider)) {

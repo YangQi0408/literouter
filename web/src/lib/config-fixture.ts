@@ -30,6 +30,11 @@ export function makeServer(overrides: Partial<ServerConfig> = {}): ServerConfig 
     web_ui: true,
     language: 'auto',
     ui_scale: 1.0,
+    traffic_bucket_sec: 3600,
+    traffic_bucket_count: 24,
+    response_cache_ttl_sec: 0,
+    response_cache_max_entries: 128,
+    otlp_endpoint: '',
     ...overrides,
   }
 }
@@ -52,6 +57,15 @@ export function makeProvider(overrides: Partial<ProviderConfig> = {}): ProviderC
     chat_path: '/chat/completions',
     embeddings_path: '/embeddings',
     protocol: 'openai',
+    api_version: '',
+    region: '',
+    project: '',
+    credentials_file: '',
+    aws_access_key: '',
+    aws_secret_key: '',
+    aws_session_token: '',
+    max_concurrent: 0,
+    requests_per_minute: 0,
     price_in_per_million: 0,
     price_out_per_million: 0,
     note: '',
@@ -71,7 +85,7 @@ export function makeRoute(overrides: Partial<RouteConfig> = {}): RouteConfig {
 export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
     clients: [],
-    schema: 1,
+    schema: 2,
     server: makeServer(),
     providers: [makeProvider()],
     routes: [makeRoute()],

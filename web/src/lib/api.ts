@@ -10,7 +10,20 @@ import { parseApiJson, stringifyConfig } from '@/lib/client-integers'
 export type LogLevel = 'info' | 'warn' | 'error'
 export type LogKind = 'chat' | 'embeddings' | 'models' | 'admin' | 'system'
 export type HealthState = 'unknown' | 'healthy' | 'degraded' | 'open'
-export type Protocol = 'openai' | 'anthropic' | 'gemini' | 'openai_responses'
+export type Protocol =
+  | 'openai'
+  | 'anthropic'
+  | 'gemini'
+  | 'openai_responses'
+  /** Azure OpenAI: OpenAI's JSON behind a deployment path, an `api-key` header
+   *  and a mandatory `api-version` query. */
+  | 'azure'
+  /** Vertex AI: Gemini's generateContent JSON, OAuth2 bearer, project/location path. */
+  | 'vertex'
+  /** AWS Bedrock's Converse API: its own body, SigV4-signed, region required. */
+  | 'bedrock'
+  /** Ollama's /api/chat: its own body and newline-delimited JSON stream. */
+  | 'ollama'
 
 export interface LogEntry {
   client_id: string
@@ -68,9 +81,13 @@ export interface ProviderHealth {
   cooldown_remaining: number
 }
 
-/** One hour of traffic, for the trend chart. */
+/** One bucket of traffic, for the trend chart. */
 export interface TrafficBucket {
   hour_unix: number
+  /** How wide this bucket is. Carried per bucket because
+   *  `server.traffic_bucket_sec` can change between runs, and a reader that
+   *  assumed 3600 would mislabel a restored history. */
+  bucket_sec: number
   requests: number
   successes: number
   failures: number
@@ -101,8 +118,18 @@ export interface Snapshot {
   cost_usd: number
   log_seq: number
   breakers_open: number
-  /** The most recent hours, oldest first; empty until there has been traffic. */
+  /** The most recent buckets, oldest first; empty until there has been traffic. */
   hourly: TrafficBucket[]
+  /** The bucket width the trend above was recorded at, and how many buckets the
+   *  server keeps. Both travel with the snapshot so a chart cannot mislabel a
+   *  minute-resolution history as hourly. */
+  traffic_bucket_sec: number
+  traffic_bucket_count: number
+  /** Whether the local response cache is storing answers. */
+  cache_enabled: boolean
+  cache_hits: UInt64
+  cache_misses: UInt64
+  cache_entries: UInt64
   providers: ProviderStat[]
   health: ProviderHealth[]
 }
@@ -144,6 +171,22 @@ export interface ProviderConfig {
   chat_path: string
   embeddings_path: string
   protocol: Protocol
+  /** Azure: the api-version query value. Vertex: the API version segment. */
+  api_version: string
+  /** Bedrock: the AWS region. Vertex: the location. */
+  region: string
+  /** Vertex: the project id. */
+  project: string
+  /** Vertex: path to a service-account JSON key. */
+  credentials_file: string
+  /** Bedrock SigV4 credentials; `${VAR}` references are resolved at signing time. */
+  aws_access_key: string
+  aws_secret_key: string
+  aws_session_token: string
+  /** Relay-side in-flight limit; 0 is unlimited. Not a per-client quota. */
+  max_concurrent: number
+  /** Relay-side rolling-minute start limit; 0 is unlimited. */
+  requests_per_minute: number
   /** Dollars per million tokens. 0 means "not written down". */
   price_in_per_million: number
   price_out_per_million: number
@@ -188,6 +231,16 @@ export interface ServerConfig extends SecretConfig {
   web_ui: boolean
   language: string
   ui_scale: number
+  /** Width of one traffic-trend bucket in seconds (below 60 is raised to 60). */
+  traffic_bucket_sec: number
+  /** How many buckets the trend keeps. */
+  traffic_bucket_count: number
+  /** Local response cache TTL in seconds; 0 disables it. */
+  response_cache_ttl_sec: number
+  /** Entries kept before the least recently used is evicted. */
+  response_cache_max_entries: number
+  /** OpenTelemetry OTLP/HTTP metrics endpoint; empty disables export. */
+  otlp_endpoint: string
 }
 
 export type UInt64 = number | string
@@ -214,6 +267,8 @@ export interface ClientConfig {
   max_concurrent: number
   requests_per_day: number
   tokens_per_day: number
+  /** Daily spend ceiling in US dollars; 0 is unlimited. */
+  budget_usd_per_day: number
   token_reservation: number
 }
 
@@ -230,6 +285,8 @@ export interface ClientUsage {
   requests_today: UInt64
   tokens_today: UInt64
   reserved_tokens: UInt64
+  /** Settled spend for the UTC day, which a daily budget is measured against. */
+  cost_today: number
 }
 
 export interface AppConfig {
