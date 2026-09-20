@@ -61,6 +61,196 @@ BULLET_DEFAULT = re.compile(r"(?:默认|default)s?[^`]*`([^`]+)`", re.IGNORECASE
 # are documented inside the routes section, as nested bullets.
 KNOWN_SECTIONS = ("server", "providers", "routes", "clients", "client_keys")
 
+# A default cell that is not a literal has to be one of a closed set of claims
+# this script knows how to check. Counting such cells instead — which is what it
+# used to do — reports them and moves on, so a new prose cell nobody taught the
+# checker about passes silently, and a cell that stops being true keeps passing
+# forever. Anything outside this vocabulary is now an error rather than a note.
+REQUIRED_WORDS = ("required", "必填", "必须")
+BY_PROTOCOL_WORDS = ("by protocol", "by proto", "依协议")
+# "by protocol (openai, anthropic, ...)" — the list is what makes the claim
+# checkable: adding a protocol without extending this list is exactly the drift
+# this catches.
+PROTOCOL_LIST = re.compile(r"[（(]([^）)]*)[）)]")
+# `other_field` — a default that falls back to a sibling field's value.
+FIELD_REFERENCE = re.compile(r"^`([A-Za-z_]+)`$")
+
+
+def classify_prose(cell: str | None) -> tuple[str, object]:
+    """(form, argument) for a non-literal default cell.
+
+    Forms: "empty", "required", "by_protocol", "reference", "unknown".
+    """
+    if cell is None or not cell.strip():
+        return "empty", None
+    text = cell.strip()
+    lowered = text.lower()
+    bare = text.replace("`", "").strip().lower()
+    if bare in REQUIRED_WORDS:
+        return "required", None
+    if (match := FIELD_REFERENCE.match(text)) is not None:
+        return "reference", match.group(1)
+    for word in BY_PROTOCOL_WORDS:
+        if lowered.startswith(word):
+            names = PROTOCOL_LIST.search(text)
+            if names is None:
+                return "by_protocol", None
+            return "by_protocol", [n.strip().strip("`") for n in names.group(1).split(",")
+                                   if n.strip()]
+    return "unknown", None
+
+
+def protocols_documented(body: str) -> set[str]:
+    """Every protocol name the `protocol` row's description enumerates.
+
+    The description is the fourth column, not the third: the third is the
+    default cell, and reading that one would find a single name and report every
+    other protocol as undocumented.
+    """
+    for line in body.splitlines():
+        row = TABLE_ROW.match(line)
+        if row is None or row.group(1) != "protocol":
+            continue
+        columns = line.split("|")
+        if len(columns) < 5:
+            return set()
+        return {name.strip().strip("`")
+                for name in re.findall(r"`([A-Za-z_]+)`", columns[4])}
+    return set()
+
+
+def required_paths(report: dict) -> set[str]:
+    """Field paths `config validate` reported as **errors**, from its --json report.
+
+    The report is a list of issues, each carrying the locatable path the
+    validator built (``providers[0].base_url``) and a level. Only `error` counts
+    as a requirement: `info` and `warning` are advice about a config the
+    validator accepts, so treating them as "this field is required" would flag
+    rows that are correct — `providers.models` is reported as `info` when empty
+    (the relay is still reachable through a route that names it) and is
+    documented as defaulting to `[]`, which is true.
+    """
+    return {issue.get("path", "") for issue in report.get("issues", [])
+            if issue.get("level") == "error"}
+
+
+# How a documented section maps onto the validator's path roots. `client_keys`
+# is documented as its own section but the validator reaches it through its
+# parent, so its paths look like `clients[0].keys[0].id`.
+SECTION_PATH_ROOTS = {
+    "server": "server",
+    "providers": "providers",
+    "routes": "routes",
+    "clients": "clients",
+    "client_keys": "clients[0].keys",
+}
+
+
+def reported_missing(paths: set[str], section: str, name: str) -> bool:
+    """True when some reported error path points at this field of this section.
+
+    Paths carry indices for array sections (``providers[0].id``), and a
+    documented field may sit on the array element rather than on the object, so
+    the match is on the section's path root and the trailing field name rather
+    than on string equality.
+    """
+    root = SECTION_PATH_ROOTS.get(section, section)
+    if f"{root}.{name}" in paths:
+        return True
+    return any(path.startswith(f"{root}[") and path.endswith(f"].{name}") for path in paths)
+
+
+# Fields the validator rejects only *under a condition*, so a literal default in
+# the table is the correct row rather than a mistake — and the reverse check
+# ("a literal for a field validate() rejects") has to skip them or it reports
+# false positives against two rows that are right:
+#
+#   server.api_key             required only once clients exist
+#   clients[0].keys[0].api_key required only while the key is enabled
+#
+# Anything added here should be a condition the validator genuinely makes, not
+# an exemption granted to silence a finding.
+CONDITIONALLY_REQUIRED = {
+    "server.api_key",
+    "clients[0].keys[0].api_key",
+}
+
+
+def unconditionally_required(paths: set[str], section: str, name: str) -> bool:
+    """True when every reported path for this field is an unconditional error."""
+    root = SECTION_PATH_ROOTS.get(section, section)
+    matched = {path for path in paths
+               if path == f"{root}.{name}"
+               or (path.startswith(f"{root}[") and path.endswith(f"].{name}"))}
+    if not matched:
+        return False
+    return not (matched & CONDITIONALLY_REQUIRED)
+
+
+def check_prose(form: str, argument: object, section: str, name: str, cell: str | None,
+                fields: dict, body: str, lang: str, problems: list[str],
+                required_paths_seen: set[str] | None = None) -> str:
+    """Checks a prose cell's claim.
+
+    Returns "checked" when the claim was verified against the build's own output,
+    "recognised" when it is a known claim this checker has no data for, and
+    "unknown" when it is not a claim at all — which is an error, because a prose
+    cell nobody taught the checker about is one that can stop being true without
+    anyone noticing.
+    """
+    if form == "unknown":
+        problems.append(
+            f"{lang}: `{section}.{name}` documents default {cell!r}, which is neither a "
+            f"literal nor one of the forms this checker understands "
+            f"({'/'.join(REQUIRED_WORDS)}, {'/'.join(BY_PROTOCOL_WORDS)}, "
+            f"`field`, or an empty cell) — teach the checker the claim or write a literal")
+        return "unknown"
+    if form in ("empty", "required"):
+        # "Required" and "no default" are the same claim in these tables: there
+        # is nothing to fall back on. Whether the field really is required is
+        # validate()'s answer — so when its report is available the claim is
+        # checked against it, and without the report it stays recognised rather
+        # than being counted silently ("0 unknown cells" must not read as "all
+        # verified").
+        if form == "required" and required_paths_seen is not None:
+            if not reported_missing(required_paths_seen, section, name):
+                problems.append(
+                    f"{lang}: `{section}.{name}` is documented as {cell!r}, but `config "
+                    f"validate` does not report it when the field is omitted — either the "
+                    f"validator stopped requiring it or the row is wrong")
+            return "checked"
+        return "recognised"
+    if form == "reference":
+        target = str(argument)
+        if target not in fields:
+            problems.append(
+                f"{lang}: `{section}.{name}` documents a fallback to `{target}`, "
+                f"which is not a field of `{section}`")
+        return "checked"
+    if form == "by_protocol":
+        if argument is None:
+            problems.append(
+                f"{lang}: `{section}.{name}` says its default is per protocol but names none; "
+                f"write `{'/'.join(BY_PROTOCOL_WORDS[:1])} (openai, anthropic, ...)` so that "
+                f"adding a protocol without updating this row is caught")
+            return "checked"
+        documented = protocols_documented(body)
+        # Every protocol the `protocol` row documents has to be accounted for
+        # here: a protocol added to that row without a mention in this one is
+        # exactly the drift this check exists to catch.
+        unlisted = sorted(documented - set(argument))
+        if unlisted:
+            problems.append(
+                f"{lang}: `{section}.{name}` says its default is per protocol but does not "
+                f"mention {unlisted}, which the `protocol` row lists")
+        unknown = sorted(set(argument) - documented)
+        if unknown:
+            problems.append(
+                f"{lang}: `{section}.{name}` names {unknown}, which the `protocol` row does "
+                f"not list")
+        return "checked"
+    return "unknown"
+
 
 def strip_jsonc(text: str) -> str:
     """Removes // comments, leaving string contents alone (a URL keeps its //)."""
@@ -179,7 +369,8 @@ def check_sample(sample: dict, seed: dict, lang: str, problems: list[str]) -> No
 
 
 def check_coverage_and_defaults(text: str, defaults: dict, lang: str, problems: list[str],
-                                prose: list[str]) -> None:
+                                prose: list[str],
+                                required_paths_seen: set[str] | None = None) -> None:
     sections = split_sections(text)
     objects = {
         "server": defaults["server"],
@@ -201,14 +392,37 @@ def check_coverage_and_defaults(text: str, defaults: dict, lang: str, problems: 
             if name not in shown:
                 problems.append(f"{lang}: `{section}.{name}` is not documented (table row or bullet)")
         for name in sorted(shown):
-            if name not in fields:
-                continue
             cell = shown[name]
+            # `siblings` is what a `` `field` `` reference can point at, so it is
+            # the documented set rather than the emitted one. `fields` is only
+            # used where an emitted value has to be compared, and a field the
+            # minimal fixture does not emit (because the writer omits it at its
+            # default) still gets its prose classified — otherwise a prose cell
+            # for exactly those fields would never be examined at all.
+            siblings = dict.fromkeys(shown)
             if cell is None or literal(cell) is None:
-                prose.append(f"{lang}: `{section}.{name}` default {cell!r}")
+                form, argument = classify_prose(cell)
+                verdict = check_prose(form, argument, section, name, cell, siblings, body, lang,
+                                      problems, required_paths_seen)
+                prose.append((verdict, f"{lang}: `{section}.{name}` default {cell!r} [{form}]"))
+                continue
+            if name not in fields:
                 continue
             value = literal(cell)
             actual = fields[name]
+            # A literal that happens to equal the JSON default can still be the
+            # wrong row: `base_url` defaults to "" *and* is rejected when empty,
+            # so documenting `""` passes the equality test above while telling
+            # the reader the opposite of what the validator enforces. When the
+            # report is available, a field it complains about must be documented
+            # as required rather than given a value.
+            if required_paths_seen is not None and unconditionally_required(
+                    required_paths_seen, section, name):
+                problems.append(
+                    f"{lang}: `{section}.{name}` documents default {cell!r}, but `config "
+                    f"validate` rejects the field when it is empty — the row should say it "
+                    f"is required")
+                continue
             if not isinstance(actual, (dict, list)) and value != actual:
                 problems.append(
                     f"{lang}: `{section}.{name}` documents default {cell!r}, "
@@ -226,6 +440,10 @@ def main() -> int:
     parser.add_argument("--status", type=pathlib.Path,
                         help="a real GET /__literouter/status body; validates the sample in "
                              "protocols-api.md against it")
+    parser.add_argument("--validate-report", type=pathlib.Path,
+                        help="`literouter config validate --json` for a config with a provider "
+                             "that has neither id nor base_url; upgrades the `required` prose "
+                             "cells from recognised to verified")
     args = parser.parse_args()
 
     seed = json.loads(args.seed.read_text(encoding="utf-8"))
@@ -236,11 +454,15 @@ def main() -> int:
         return 2
 
     problems: list[str] = []
-    prose: list[str] = []
+    prose: list[tuple[str, str]] = []
+    required_paths_seen = None
+    if args.validate_report is not None:
+        report = json.loads(args.validate_report.read_text(encoding="utf-8"))
+        required_paths_seen = required_paths(report)
     for lang in ("zh", "en"):
         text = (args.docs / lang / "configuration.md").read_text(encoding="utf-8")
         check_sample(sample_json(text), seed, lang, problems)
-        check_coverage_and_defaults(text, defaults, lang, problems, prose)
+        check_coverage_and_defaults(text, defaults, lang, problems, prose, required_paths_seen)
 
     if args.status is not None:
         real = json.loads(args.status.read_text(encoding="utf-8"))
@@ -256,8 +478,8 @@ def main() -> int:
             # A bucket is only in the reply once there has been traffic, so the
             # sample's shape is checked against the serializer's own keys instead.
             if sample.get("hourly"):
-                bucket_keys = {"hour_unix", "requests", "successes", "failures", "bytes_out",
-                               "tokens_prompt", "tokens_completion", "cost_usd"}
+                bucket_keys = {"hour_unix", "bucket_sec", "requests", "successes", "failures",
+                               "bytes_out", "tokens_prompt", "tokens_completion", "cost_usd"}
                 if set(sample["hourly"][0]) != bucket_keys:
                     problems.append(f"{lang}: the hourly sample's keys are not {sorted(bucket_keys)}")
 
@@ -281,9 +503,15 @@ def main() -> int:
     print("  note: a field the JSON writer only emits when it is not at its default "
           "(protocol, headers) cannot be enumerated from a default config, so its "
           "table row is compared but its presence is not required by this check")
-    print(f"  not verifiable (documented in prose): {len(prose)} cell(s)")
-    for entry in prose:
-        print(f"    - {entry}")
+    verified = [entry for verdict, entry in prose if verdict == "checked"]
+    recognised = [entry for verdict, entry in prose if verdict == "recognised"]
+    print(f"  prose default cells: {len(prose)} "
+          f"({len(verified)} verified against the build, {len(recognised)} recognised)")
+    for entry in verified:
+        print(f"    - verified: {entry}")
+    for entry in recognised:
+        print(f"    - recognised, not verified here (an empty cell is a claim of "
+              f"'no default', which the build's output does not enumerate): {entry}")
     return 0
 
 

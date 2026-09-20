@@ -135,8 +135,14 @@ jobs:
             { echo "the instance never answered /__literouter/status"; cat "$tmp/serve.log"; exit 1; }
           kill "$live_pid" 2>/dev/null || true
           wait "$live_pid" 2>/dev/null || true
+          # A config that omits the fields the tables mark as required, so
+          # validate()'s own report can be used to check those rows instead of
+          # merely recognising them. `config validate` exits non-zero when it
+          # finds errors, which is the point here, so the failure is swallowed.
+          printf '{"providers":[{}],"routes":[{"targets":[{"provider":""}]}]}' > "$tmp/invalid.json"
+          LITEROUTER_CONFIG="$tmp/invalid.json" "$bin" config validate --json > "$tmp/validate.json" || true
           python3 scripts/check_config_docs.py --seed "$tmp/seed.json" --defaults "$tmp/defaults.json" \
-            --status "$tmp/status.json"
+            --status "$tmp/status.json" --validate-report "$tmp/validate.json"
 
       - name: Build gui
         # On macOS, zlib shared linkage currently lacks C++ runtime symbols; keep going if it fails
