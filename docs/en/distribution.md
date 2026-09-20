@@ -63,3 +63,30 @@ Days roll over at midnight UTC. Requests crossing midnight remain charged to the
 CLI, GUI and Web support accounts, keys, model/group permissions and limits. Request logs include `client_id` and `client_key_id`, never authentication credentials. Prometheus adds request, token, cost, active-request and daily-budget metrics labeled by `client`, accessible only to administrators.
 
 Deploy HTTPS using listener TLS or a trusted reverse proxy. Shared deployments use an administrator key and separate client keys; personal use does not require accounts. Payments, public registration and new upstream protocols are outside this feature.
+
+### Deployment
+
+Four ways to land this on a machine, depending on what the machine has:
+
+| Method | File | For |
+|---|---|---|
+| Run the binary | `scripts/install.sh` | A machine that is up long-term; the script verifies the release's SHA-256 and can install the systemd unit |
+| systemd service | `deploy/literouter.service` | Managing it with the distribution's service manager: dedicated account, `ProtectSystem=strict`, graceful `SIGTERM` stop |
+| Docker | `Dockerfile` | Container hosts. Multi-stage: the runtime image carries `ca-certificates` and one binary, running as uid 8787, not root |
+| Docker Compose | `docker-compose.yml` | When the config and the state need separate persistent volumes |
+
+Two operational notes that matter:
+
+- **Mount the config and the state separately.** The config (`/etc/literouter`) holds keys and is what you edit and back up; the state directory (`/var/lib/literouter`) holds the telemetry file and the **client quota ledger**. A ledger on an anonymous volume means every `docker compose down -v` hands every client a fresh day's quota.
+- **The container listens on `0.0.0.0`; publish the port to the host's loopback** (`-p 127.0.0.1:8787:8787`). The `/ui` console can read the request log, which carries prompts; the validator warns when that is exposed on `0.0.0.0` without a `server.api_key`, but that should be a deliberate decision rather than a default inherited from a compose file.
+
+**To change the port, change the config file, not the `docker run` command.** The container's `CMD` pins only `--host 0.0.0.0` (without it the container would listen on its own loopback and the published port would answer nothing) and leaves the port to `server.port`, so the field means the same thing inside the container as it does outside:
+
+```bash
+# config says server.port = 9000, so publish 9000
+docker run -p 127.0.0.1:9000:9000 …
+```
+
+`EXPOSE 8787` is documentation only and does not decide the listening port. The healthcheck runs `literouter status`, which reads the same config, so it follows a changed `server.port` without needing to be updated.
+
+The healthcheck is `literouter status --json --quiet`: it goes through the same admin API a client would, so it checks the whole path — listener, config, admin surface — rather than only whether a process exists. The difference between liveness and readiness is in [Protocols & API](protocols-api.md).

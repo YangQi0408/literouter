@@ -140,7 +140,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
 |---|---|---|
 | `GET` | `/v1/models`, `/models`, `/v1beta/models` | 列出聚合器聚合的所有逻辑模型列表，附加每个模型的候选链路拓扑 |
 | `GET` | `/v1/models/{id}`, `/models/{id}` | 查询单个模型的详细元数据与候选站健康状态 |
-| `GET` | `/health` | 服务存活探测端点，免鉴权，健康时返回 `{"status":"ok"}` |
+| `GET` | `/health`, `/health/live` | **存活探测**：免鉴权，健康时返回 `{"status":"ok"}`。回答的是"这个进程还活着吗"，因此只看监听器是否在跑。 |
+| `GET` | `/health/ready` | **就绪探测**：免鉴权。回答的是"能不能把流量发到这里"，因此配置里没有任何已启用中转站时返回 `503` 与 `{"status":"not_ready","reason":"..."}`——一个能接受连接却答不了任何请求的实例，对负载均衡器来说不是"就绪"。 |
 
 ---
 
@@ -161,6 +162,26 @@ curl http://127.0.0.1:8787/v1/images/generations \
    - 自动注入请求头：`x-goog-api-key: <api_key>`。
 4. **`openai_responses`**：
    - 适用于支持 OpenAI 新一代 Responses 协议的上游端点。
+   - 默认鉴权：`Authorization: Bearer <api_key>`；路径 `/v1/responses`。
+5. **`azure`**（Azure OpenAI）：
+   - 报文与 `openai` **完全同形**，因此同协议直通、零解析；差别只在路径与鉴权：模型名是路径里的 **deployment**，必须带 `api-version` 查询参数，密钥走 `api-key` 请求头（Azure 拒绝 bearer）。
+   - 路径：`/openai/deployments/{model}/chat/completions?api-version={api_version}`，`api_version` 留空时用 `2024-10-21`。
+   - `base_url` 填资源根地址（如 `https://my-resource.openai.azure.com`）。
+6. **`vertex`**（Vertex AI）：
+   - 报文与 `gemini` 同形（同一套 generateContent JSON），因此与 Gemini 共享请求/响应适配。
+   - 路径：`/{api_version}/projects/{project}/locations/{region}/publishers/google/models/{model}:generateContent`（流式为 `:streamGenerateContent?alt=sse`）。
+   - 鉴权：用 `credentials_file` 指向的 service-account JSON 私钥签发 RS256 断言，向 `token_uri` 换取 OAuth2 访问令牌，再以 `Authorization: Bearer` 发出。令牌会被缓存到接近过期才续签——每次请求都换一次令牌等于给每个请求加一次往返。
+   - 必填：`project`、`credentials_file`；`region` 留空时用 `us-central1`。
+7. **`bedrock`**（AWS Bedrock Converse API）：
+   - **自己的报文格式**，不是 OpenAI 的：`system` 是独立的顶层列表而非消息，内容是有类型的块（`text` / `image` / `toolUse` / `toolResult`），采样参数收在 `inferenceConfig` 下。
+   - 路径：`/model/{model}/converse`（流式为 `/model/{model}/converse-stream`）。
+   - 鉴权：**SigV4**，签名覆盖方法、路径、被签头集合与请求体的 SHA-256。必填 `region`、`aws_access_key`、`aws_secret_key`；临时凭据再填 `aws_session_token`。三者都支持 `${VAR}` 引用，且只在签名瞬间解析。
+   - 流式不是 SSE：Bedrock 用二进制 event-stream 分帧（长度前缀 + 双向 CRC32），literouter 校验校验和并转成标准 OpenAI SSE；校验和不符的分帧会被拒绝而不是"按看起来像长度的字节重新对齐"。
+   - 模型目录在另一个主机、另一套签名服务上（控制面 `bedrock` 而非数据面 `bedrock-runtime`），因此一键探测只能报告可达性，无法列出模型。
+8. **`ollama`**（Ollama 原生 `/api/chat`）：
+   - 自己的报文：采样参数在 `options` 下且名字不同（`num_predict` 而不是 `max_tokens`），没有 `developer` 角色，图片是裸 base64 字符串而不是 data URL。
+   - 流式是**按行分隔的 JSON**（NDJSON），不是 SSE——每行一个完整对象，没有 `data:` 前缀也没有空行终止符。
+   - 默认无鉴权（本地 `http://127.0.0.1:11434`）；模型列表在 `/api/tags`。
 
 ### 端点路径自动推导规则
 
@@ -172,6 +193,10 @@ curl http://127.0.0.1:8787/v1/images/generations \
 | `anthropic` | `/v1/messages` |
 | `gemini` | `/v1beta/models/{model}:generateContent` (流式为 `:streamGenerateContent?alt=sse`) |
 | `openai_responses` | `/v1/responses` |
+| `azure` | `/openai/deployments/{model}/chat/completions?api-version={api_version}` |
+| `vertex` | `/{api_version}/projects/{project}/locations/{region}/publishers/google/models/{model}:generateContent` |
+| `bedrock` | `/model/{model}/converse` (流式为 `/model/{model}/converse-stream`) |
+| `ollama` | `/api/chat`（模型列表 `/api/tags`） |
 
 ---
 
@@ -215,7 +240,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
 >
 > **两处刻意的不对称**（都不是遗漏）：
 > 1. **请求方向不合成 `thinking` 块**。Anthropic 只接受带**原始签名**的 thinking 块、Gemini 只接受带 `thoughtSignature` 的思考部分，伪造签名会把本可成功的请求变成 400，因此客户端的 `reasoning_content` 在通往这两家的请求里被丢弃；反向（Anthropic/Gemini/Responses → Chat）则把客户端给的推理内容作为 `reasoning_content` 原样带过去。
-> 2. **流式反向（OpenAI → Anthropic）暂不合成 thinking 块**。那需要第二个内容块及其索引与开始/结束帧，块序列错乱对严格客户端比"没有思考内容"更糟。
+> 2. **流式反向（OpenAI → Anthropic）会合成 `thinking` 块**，但只在**响应方向**：上游的推理增量先开一个 `content_block_start`（`type: thinking`，索引 0），推理结束后关闭该块，再以索引 1 开启文本块。块是**惰性开启**的——先推理就先开 thinking 块，直接出正文就只有文本块，两者都不会让一个块悬着不关。流被中途截断（没有 `finish_reason`）时，`finish()` 关闭的是**实际打开的那个索引**，而不是写死的 0。之所以这里可以合成而请求方向不行，是因为这一侧的块由 literouter 自己生成、没有上游签名需要复现。
 
 ---
 
@@ -230,69 +255,76 @@ curl http://127.0.0.1:8787/v1/images/generations \
 - **请求**：`GET /__literouter/status`
 - **响应**：
   ```json
-  {
-    "running": true,
-    "host": "127.0.0.1",
-    "port": 8787,
-    "base_url": "http://127.0.0.1:8787",
-    "version": "0.1.0",
-    "config_path": "/home/you/.config/literouter/config.json",
-    "started_unix": 1758000000.0,
-    "uptime_sec": 3600.5,
-    "active_requests": 0,
-    "total_requests": 1420,
-    "total_success": 1410,
-    "total_failure": 10,
-    "bytes_out": 12345678,
-    "cost_usd": 0.075,
-    "tokens_prompt": 120000,
-    "tokens_completion": 45000,
-    "latency_ms_avg": 345.2,
-    "log_seq": 1420,
-    "breakers_open": 0,
-    "clients": [],
-    "hourly": [
-      {
-        "hour_unix": 1758000000.0,
-        "requests": 12,
-        "successes": 11,
-        "failures": 1,
-        "bytes_out": 184320,
-        "tokens_prompt": 9000,
-        "tokens_completion": 3200,
-        "cost_usd": 0.075
-      }
-    ],
-    "providers": [
-      {
-        "provider": "openai-official",
-        "requests": 1200,
-        "successes": 1198,
-        "failures": 2,
-        "aborted": 0,
-        "retries_in": 5,
-        "bytes_in": 120000,
-        "bytes_out": 900000,
-        "tokens_prompt": 110000,
-        "tokens_completion": 40000,
-        "latency_ms_last": 310.5,
-        "latency_ms_avg": 345.2,
-        "latency_ms_p95": 0.0,
-        "last_used_unix": 1758003600.5
-      }
-    ],
-    "health": [
-      {
-        "provider": "openai-official",
-        "state": "healthy",
-        "consecutive_failures": 0,
-        "total_failures": 2,
-        "last_error": "",
-        "cooldown_remaining": 0.0
-      }
-    ]
-  }
-  ```
+{
+  "active_requests": 0,
+  "base_url": "http://127.0.0.1:8787",
+  "breakers_open": 0,
+  "bytes_out": 12345678,
+  "cache_enabled": false,
+  "cache_entries": 0,
+  "cache_hits": 0,
+  "cache_misses": 0,
+  "clients": [],
+  "config_path": "/home/you/.config/literouter/config.json",
+  "cost_usd": 0.075,
+  "health": [
+    {
+      "provider": "openai-official",
+      "state": "healthy",
+      "consecutive_failures": 0,
+      "total_failures": 2,
+      "last_error": "",
+      "cooldown_remaining": 0.0
+    }
+  ],
+  "host": "127.0.0.1",
+  "hourly": [
+    {
+      "hour_unix": 1758000000.0,
+      "requests": 12,
+      "successes": 11,
+      "failures": 1,
+      "bytes_out": 184320,
+      "tokens_prompt": 9000,
+      "tokens_completion": 3200,
+      "cost_usd": 0.075,
+      "bucket_sec": 3600
+    }
+  ],
+  "latency_ms_avg": 345.2,
+  "log_seq": 1420,
+  "port": 8787,
+  "providers": [
+    {
+      "provider": "openai-official",
+      "requests": 1200,
+      "successes": 1198,
+      "failures": 2,
+      "aborted": 0,
+      "retries_in": 5,
+      "bytes_in": 120000,
+      "bytes_out": 900000,
+      "tokens_prompt": 110000,
+      "tokens_completion": 40000,
+      "latency_ms_last": 310.5,
+      "latency_ms_avg": 345.2,
+      "latency_ms_p95": 0.0,
+      "last_used_unix": 1758003600.5
+    }
+  ],
+  "running": true,
+  "started_unix": 1758000000.0,
+  "tokens_completion": 45000,
+  "tokens_prompt": 120000,
+  "total_failure": 10,
+  "total_requests": 1420,
+  "total_success": 1410,
+  "traffic_bucket_count": 24,
+  "traffic_bucket_sec": 3600,
+  "uptime_sec": 3600.5,
+  "version": "0.1.0"
+}
+```
 
   `hourly` 是最近 24 个**小时桶**（`hour_unix` 为该小时起点，UTC 整点），旧到新排列：控制台的趋势图就是它，重启后会从遥测文件恢复，因此"今天的样子"不会因为重启而消失。没有流量时该数组为空。
 
@@ -338,7 +370,10 @@ curl http://127.0.0.1:8787/v1/images/generations \
 
 - **请求**：`GET /__literouter/metrics`
 - **响应**：Prometheus 文本格式（`text/plain; version=0.0.4`），内容与 `/__literouter/status` **同源**——控制台给人看，这里给图看，两者读的是同一份快照。
-- **指标**：`literouter_running`、`literouter_uptime_seconds`、`literouter_requests_total`/`successes_total`/`failures_total`、`literouter_active_requests`、`literouter_breakers_open`、`literouter_bytes_out_total`、`literouter_tokens_*_total`、`literouter_latency_ms_avg`、`literouter_cost_usd_total`，以及逐中转站的 `literouter_relay_*{relay="<id>"}`（请求/成功/失败/客户端中断/吸收重试/进出字节/Token/`latency_ms_last|avg|p95`/`last_used_unixtime`/`healthy`/`cooldown_seconds`）。
+- **指标**：`literouter_build_info`、`literouter_running`、`literouter_uptime_seconds`、`literouter_requests_total`/`successes_total`/`failures_total`、`literouter_active_requests`、`literouter_breakers_open`、`literouter_log_entries_total`、`literouter_bytes_out_total`、`literouter_tokens_*_total`、`literouter_latency_ms_avg`、`literouter_cost_usd_total`；
+- **逐中转站**：`literouter_relay_*{relay="<id>"}`（请求/成功/失败/客户端中断/吸收重试/进出字节/Token/`latency_ms_last|avg|p95`/`last_used_unixtime`/`healthy`/`cooldown_seconds`/`cost_usd_total`）；
+- **逐客户端**：`literouter_client_*{client="<id>"}`（请求、`tokens_total{direction="input"|"output"}`、`cost_usd_total`、`cost_today_usd`（`budget_usd_per_day` 就是拿它来比）、`active_requests`、`requests_today`、`tokens_today`）；
+- **应答缓存**：`literouter_cache_enabled`、`literouter_cache_hits_total`、`literouter_cache_misses_total`、`literouter_cache_entries`——「已开启但零命中」与「已关闭」从配置上看是一样的，这四个指标是区分它们的方式。
 - **鉴权**：与其它管理端点一致受 `server.api_key` 保护（Prometheus 侧用 `bearer_token` / `authorization` 配置即可）。
 - **示例**（`prometheus.yml`）：
   ```yaml

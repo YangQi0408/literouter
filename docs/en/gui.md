@@ -16,6 +16,7 @@
   - [4. Logs](#4-logs)
   - [5. Settings](#5-settings)
   - [6. Clients](#6-clients)
+- [Feature Parity with the Web Console](#feature-parity-with-the-web-console)
 - [Multi-language Localization (i18n)](#multi-language-localization-i18n)
 - [Dynamic UI Scaling (UI Scale)](#dynamic-ui-scaling-ui-scale)
 - [High-Definition CJK Font Fallback](#high-definition-cjk-font-fallback)
@@ -56,13 +57,16 @@ mcpp run -p gui
 ```
 
 ### 1. Overview
-- **Global Metric Tiles**: Real-time totals for requests, success rate, in-flight concurrency, average round-trip latency (RTT), and accumulated tokens;
-- **Hourly Traffic Trend**: Request counts for the last 24 hourly buckets, including the current partial hour, scaled to the busiest hour. Idle hours retain empty slots and hours containing failures are amber. Hover for the local hour, requests, successes/failures, tokens, outgoing bytes and estimated cost. An empty state appears when the window has no traffic; persisted telemetry carries the history across restarts;
+- **Global Metric Tiles**: Real-time totals for requests, success rate, in-flight concurrency, average round-trip latency (RTT), accumulated tokens, outgoing bytes, and **response-cache hits**;
+- **Traffic Trend**: Request counts per bucket, drawn over the **configurable bucket width and count** from the Settings page's "Performance and metrics" card rather than a hard-coded 24 hourly buckets — 60-second buckets with a count of 30 means "the last 30 minutes". Scaled to the busiest bucket; idle buckets retain empty slots and buckets containing failures are amber. Hover for the local time, requests, successes/failures, tokens, outgoing bytes and estimated cost. An empty state appears when the window has no traffic; persisted telemetry carries the history across restarts;
 - **Provider Health Matrix**: Status badges for each provider (Healthy green, Degraded yellow, Open red), consecutive failure counters, and request volume;
 - **Alert Banner**: Alerts trigger when a provider trips its circuit breaker, with quick actions to view causes or reset telemetry.
 
 ### 2. Providers
 - **Lifecycle Control**: Toggle providers on/off, adjust priority, weight, and timeouts;
+- **Two-pane editor**: Clicking Edit opens an editor whose top segmented control switches between **Relay** and **Protocol settings and limits**. The split exists because the dialog component clamps its height to the screen: a single pane holding every field would push the Save button outside the visible box. Each pane fits without scrolling;
+- **Protocol and credentials (second pane)**: Pick the outbound protocol (`openai`, `azure`, `anthropic`, `gemini`, `vertex`, `bedrock`, `ollama`, `responses`) and the fields for it appear conditionally — Azure's `api-version`; Vertex's project ID, region and service-account key file; Bedrock's region, access key ID, secret access key and session token; Ollama needs only a base URL. Secret fields accept `${VAR}` references, and **a reference stays a reference in the file** — it is resolved only at the moment a request is signed;
+- **Relay-side limits**: Set concurrent requests and requests per minute in the same pane (0 means unlimited). A relay that is at its limit is **skipped rather than failed** — it does not trip the breaker, and the request moves on to the next target in the chain;
 - **Connectivity Testing**: Test TLS handshakes and upstream latency on demand;
 - **Model Auto-Discovery & Sync**: Click "Probe Models" to scan available physical models from upstream and merge them into your configuration.
 
@@ -79,6 +83,10 @@ mcpp run -p gui
 - **Server Parameters**: Configure listen host, port, and client authentication key;
 - **Circuit Breaker Tuning**: Adjust failure thresholds and cooldown intervals graphically;
 - **Telemetry Persistence**: Choose whether counters, relay stats and the request log are written to the state directory and resumed after a restart;
+- **Performance and metrics card**: What the console keeps, and where metrics go —
+  - **Trend bucket width (seconds)** and **Trend buckets kept** together set the trend chart's time span (width × count);
+  - **Response cache TTL (seconds)** and **Cache entries kept**: a TTL of 0 disables the cache (**streaming responses are never cached**); the entry count bounds the LRU before eviction;
+  - **OTLP metrics endpoint**: empty disables export; when set, metrics are pushed to `{endpoint}/v1/metrics` on a fixed cadence;
 - **Hot Reload & Safe Save**: Save settings to disk while strictly preserving secret placeholders, or reload from disk;
 - **Code Snippet Generator**: Copy ready-to-use curl commands and SDK connection snippets.
 
@@ -86,10 +94,45 @@ mcpp run -p gui
 
 ### 6. Clients
 - **Optional distribution**: Personal access requires no accounts. Set the administrator key in Settings before creating the first client; account keys only call model endpoints.
-- **Account editor**: Configure the display name, enabled state, allowed models and provider groups, requests per minute, concurrency, daily requests/tokens and token reservation. Empty allowlists mean unrestricted and a zero limit means unlimited.
+- **Account editor**: Configure the display name, enabled state, allowed models and provider groups, requests per minute, concurrency, daily requests/tokens, token reservation and a **daily budget in US dollars**. Empty allowlists mean unrestricted and a zero limit means unlimited.
+- **Daily budget**: Caps spending by **money** rather than tokens, so there is no need to guess how an upstream prices things. The budget is checked **when a request arrives**; once the ceiling is reached new requests get a `429`, but a request already in flight still finishes (its actual cost is only settled by the upstream afterwards), so the day's total can overshoot slightly. The account card shows it as "spent / ceiling".
 - **Key management**: Add, replace, enable, disable or delete multiple keys in one account. Existing values remain hidden; a blank replacement preserves the stored secret or environment reference. Key edits stay in the draft until **Save client**; Cancel discards the draft. Validation or disk errors preserve the live config and keep the draft available for correction.
 - **Live usage**: Request outcomes, active requests, token quotas and reservations, and estimated cost use the same ledger as the API. Daily limits reset at UTC midnight. Reservations remain charged when an upstream omits usage; clearing dashboard counters or disabling telemetry does not reset quotas.
 - **Channel groups**: Assign comma-separated group names in the provider editor, then select those names in a client account. Log detail shows client and key IDs; both can be searched in Logs.
+
+---
+
+## Feature Parity with the Web Console
+
+The desktop console (`literouter-gui`) and the built-in web console (`/ui`) are two independent front ends that expose the same management surface. The correspondence below was checked **item by item**, not approximated.
+
+### Page for page
+
+| Desktop console | Web console | Responsibility |
+|---|---|---|
+| Overview | Overview | Metric tiles, traffic trend, provider health matrix |
+| Providers | Providers | Add/edit/remove upstreams, probing, connectivity tests |
+| Routes | Routes | Fallback chains and model mapping |
+| Logs | Logs | Request-log filtering, search and detail |
+| Settings | Settings | Server parameters, breaker policy, performance and metrics, snippets |
+| Clients | Clients | Accounts, keys, quotas and daily budget |
+
+### Field for field
+
+Every configuration field added by this round is **editable in both front ends** (verified field by field): `response_cache_ttl_sec`, `response_cache_max_entries`, `traffic_bucket_sec`, `traffic_bucket_count`, `otlp_endpoint`, `max_concurrent`, `requests_per_minute`, `budget_usd_per_day`, plus the protocol fields `api_version`, `region`, `project`, `credentials_file`, `aws_access_key` and `aws_session_token`.
+
+### Deliberate non-parity
+
+The following are **design choices, not omissions** — do not treat them as gaps to close:
+
+- **`bench` and `replay` are CLI-only.** They really do send requests upstream and really do cost money, which makes them one-shot command-line diagnostics rather than something to put in a long-running console;
+- **The web console has config export/import; the desktop console does not.** The desktop version edits the local config file directly, so "export" has nothing to mean; the web version often runs remotely or in a container, which is what makes moving a config in and out useful;
+- **Prometheus metrics (`/__literouter/metrics`) are not graphed.** It is a text endpoint for scrapers; both front ends render friendly views of the same snapshot;
+- **The log level/kind filter controls look different**, but the set of available filters is the same.
+
+### Two separate string dictionaries
+
+The CLI and the GUI share the C++ side `literouter::i18n::tr()` (the Chinese dictionary is `kZhTranslations` in `core/src/lr_i18n.cpp`); the web console uses a completely independent `web/src/lib/i18n.tsx` (`en` and `zh` maps). **Any new user-visible string must be added to the matching side**; a missing C++ entry silently falls back to English (see `AGENTS.md` rule 9).
 
 ---
 

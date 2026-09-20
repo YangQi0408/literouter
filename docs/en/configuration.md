@@ -49,7 +49,7 @@ You can override the default configuration path at any time via:
 
 ```jsonc
 {
-  "schema": 1,
+  "schema": 2,
 
   "server": {
     "host": "127.0.0.1",          // Listen address (binding to non-loopback without api_key triggers a security warning)
@@ -72,7 +72,12 @@ You can override the default configuration path at any time via:
     "language": "auto",           // UI language: auto / en / zh
     "ui_scale": 1.0,              // GUI display scale: 0.8 ~ 1.5 (0.0 or 1.0 means default)
     "web_ui": true,               // Serve the built-in web console at /ui (a non-loopback host without api_key warns)
-    "reload_on_change": false     // Apply the config file when it changes on disk (off by default)
+    "reload_on_change": false,    // Apply the config file when it changes on disk (off by default)
+    "traffic_bucket_sec": 3600,   // Width of one traffic-trend bucket in seconds; 60 watches the last minutes
+    "traffic_bucket_count": 24,   // Buckets kept; 3600 x 24 is "the last day, hourly"
+    "response_cache_ttl_sec": 0,  // Local response cache TTL in seconds; 0 disables it
+    "response_cache_max_entries": 128, // Cache entries kept; the least recently used is evicted
+    "otlp_endpoint": ""           // OpenTelemetry OTLP/HTTP metrics endpoint, e.g. http://127.0.0.1:4318; empty disables
   },
 
   "clients": [],
@@ -174,6 +179,11 @@ You can override the default configuration path at any time via:
 | `language` | `string` | `"auto"` | UI language: `auto` (follow the system locale) / `en` / `zh`. Shared by the CLI and the GUI. |
 | `ui_scale` | `double` | `1.0` | Initial GUI vector scale, accepted roughly between `0.25` and `4.0` (recommended `0.8` ~ `1.5`); `0.0` and `1.0` both mean default. |
 | `web_ui` | `bool` | `true` | Whether to enable the built-in web console. Takes effect immediately; a non-loopback host without an `api_key` emits a security warning. |
+| `traffic_bucket_sec` | `int` | `3600` | Width of one **traffic-trend bucket**, in seconds; values below 60 are raised to 60. The default `3600 × 24` is the historical "last day, hourly" chart; `60 × 120` is the last two hours at minute resolution, which is what debugging a relay right now wants. Each bucket carries its own `bucket_sec`, so a history restored from an older telemetry file is never relabelled at the new width. |
+| `traffic_bucket_count` | `int` | `24` | How many buckets the trend keeps. Lowering it trims what is already held immediately rather than at the next bucket boundary. |
+| `response_cache_ttl_sec` | `int` | `0` | TTL of the **local response cache**, in seconds; `0` disables it (the default). When on, an identical **non-streaming** request (same account, protocol, model and body) is answered from memory until the TTL expires instead of being sent upstream — the most direct way to stop paying twice for the same question. Streaming requests are never cached: replaying a stored body as an event stream would mean inventing chunk boundaries and timing, and a client that measures time-to-first-token would be lied to. |
+| `response_cache_max_entries` | `int` | `128` | Entries kept before the **least recently used** one is dropped (expired ones first). Each entry is a whole answer, so this is the memory ceiling. |
+| `otlp_endpoint` | `string` | `""` | OpenTelemetry **OTLP/HTTP** metrics endpoint, e.g. `http://127.0.0.1:4318`; empty disables export. When set, OTLP JSON is pushed to `{endpoint}/v1/metrics` every 30 seconds (counters as CUMULATIVE and monotonic), for deployments with nothing scraping Prometheus. An export failure is logged once per failure run rather than on every tick. |
 
 ### HTTPS listener
 
@@ -192,6 +202,30 @@ Public CA certificates use the system trust store. For a private CA, set `LITERO
 - accumulated at the moment of accounting, so correcting a price later does not rewrite history.
 
 That makes it the right tool for "which relay is dearer, and what has today cost me", not a bill to reconcile against.
+
+A client account's settled spend for the day (`cost_today`) comes out of the same arithmetic, and `budget_usd_per_day` is measured against it. Relays with no price written down contribute nothing to it, which is why the validator warns about a budget on a fleet where nothing is priced: a ceiling that can never be reached is more misleading than no ceiling.
+
+### Local Response Cache
+
+With `server.response_cache_ttl_sec` on, an **identical** non-streaming request is answered from memory until the TTL expires instead of being sent upstream. A hit carries `X-Literouter-Cache: hit` (a store carries `miss`), the log records `cache` in the `provider` column, and the request total still goes up — but **no relay statistic moves and no tokens are charged**, which is the point.
+
+The key is the SHA-256 of account + ingress protocol + logical model + the normalised request body, joined with length prefixes so that moving a character across a field boundary is a different key. The account is in the key deliberately: two people asking the same question are still two people, and an answer carrying one account's private context must never reach another's.
+
+**Not** cached: streaming requests (a stored body cannot be replayed as an event stream without inventing timing the client would notice), audio and images (the request is multipart and the answer may be binary), and any non-2xx answer (caching one relay 400 for the whole TTL turns a transient problem into a permanent one). Turning the cache off drops what it held, so re-enabling it cannot serve an answer from before it was switched off.
+
+### Relay-side Protection
+
+Client quotas (`clients[]`) answer "who may ask how much"; `providers[].max_concurrent` and `requests_per_minute` answer "how much is literouter itself sending to this relay". They are different questions with different remedies: **a full relay is not a broken relay**, so a candidate at its limit is skipped and the next one is tried (no breaker failure, no breaker opened) and the log says `skipping a full relay`. When the whole chain is full the client gets `429` with a real `Retry-After` — the seconds until the oldest start in the rolling window leaves it.
+
+Every start is recorded even while no limit is set. Recording only when limited would give an operator a free first minute after turning a limit on, which is exactly when the limit was wanted. The window has a fixed ceiling, so the memory cost of counting is a constant per relay rather than a function of traffic.
+
+### Traffic Trend Window
+
+`traffic_bucket_sec × traffic_bucket_count` sets the console chart's window and resolution. The default `3600 × 24` is "the last day, hourly"; `60 × 120` is "the last two hours, per minute" when a relay is being debugged. Buckets are floored in UTC and each records its own `bucket_sec`, so a history restored from the telemetry file after a restart is never mislabelled at a new width.
+
+### OpenTelemetry Export
+
+Setting `server.otlp_endpoint` (for example `http://127.0.0.1:4318`) makes literouter push **OTLP/HTTP JSON** to `{endpoint}/v1/metrics` every 30 seconds: counters such as `literouter.requests` are reported as CUMULATIVE and monotonic, and the per-relay and per-client metrics carry `relay=` / `client=` attributes. It is for deployments with nothing scraping Prometheus. A failed export is logged once rather than on every tick.
 
 ### Telemetry Persistence
 
@@ -213,7 +247,16 @@ Writes match the config file: a temp file in the same directory followed by an a
 |---|---|---|---|
 | `id` | `string` | Required | Unique identifier (alphanumeric, underscores, dashes) used in routes and telemetry. |
 | `name` | `string` | `id` | Human-friendly display label. |
-| `protocol` | `string` | `"openai"` | Upstream protocol: `openai` (default), `anthropic`, `gemini`, or `openai_responses`. |
+| `protocol` | `string` | `"openai"` | Upstream protocol: `openai` (default), `anthropic`, `gemini`, `openai_responses`, `azure`, `vertex`, `bedrock`, `ollama`. The proxy decides whether a conversion is needed by **wire shape**, not by name, so `azure` shares OpenAI's shape (zero-parse passthrough) and `vertex` shares Gemini's. |
+| `api_version` | `string` | `""` | `azure`: the `api-version` query value (empty uses `2024-10-21`); `vertex`: the API version segment in the path (empty uses `v1`). |
+| `region` | `string` | `""` | `bedrock`: the AWS region (**required** — SigV4 cannot guess one); `vertex`: the location (empty uses `us-central1`). |
+| `project` | `string` | `""` | `vertex`: the project id (**required**). |
+| `credentials_file` | `string` | `""` | `vertex`: path to a service-account JSON key (**required**). Its private key signs the RS256 assertion exchanged for an access token, and the token is cached until it is nearly expired. |
+| `aws_access_key` | `string` | `""` | `bedrock`: SigV4 access key id (**required**). `${VAR}` references work and are resolved only at signing time. |
+| `aws_secret_key` | `string` | `""` | `bedrock`: SigV4 secret access key (**required**), `${VAR}` supported the same way. |
+| `aws_session_token` | `string` | `""` | `bedrock`: STS session token for temporary credentials; it is signed along with the rest. |
+| `max_concurrent` | `int` | `0` | **Relay-side** in-flight limit; `0` is unlimited. Unrelated to the per-client quotas: this bounds what literouter itself sends to this relay. A relay at its limit is skipped like an open breaker and the next candidate is tried (**without** counting a breaker failure); when the whole chain is full the client gets `429` with a `Retry-After`. |
+| `requests_per_minute` | `int` | `0` | **Relay-side** rolling 60-second start limit; `0` is unlimited. Every start is recorded even when no limit is set — otherwise the first minute after an operator turns a limit on would be free, which is exactly when it was wanted. |
 | `price_in_per_million` | `double` | `0` | What this relay charges for **input** tokens, in USD per million. `0` means not written down, and an unpriced relay contributes **nothing** to the cost estimate rather than being counted at zero. |
 | `price_out_per_million` | `double` | `0` | What this relay charges for **output** tokens, in USD per million. |
 | `base_url` | `string` | Required | Root URL of the upstream service (e.g. `https://api.openai.com/v1`). Must be a valid HTTP/HTTPS URL. |
@@ -227,7 +270,7 @@ Writes match the config file: a temp file in the same directory followed by an a
 | `models` | `string[]`| `[]` | List of model names advertised by this provider (used in pass-through mode). |
 | `groups` | `string[]` | `[]` | Distribution groups assigned to this provider; clients select allowed groups through `provider_groups`. |
 | `headers` | `object` | `{}` | Key-value pairs of extra HTTP headers attached to every request. |
-| `chat_path` | `string` | By proto | Custom chat endpoint path; automatically inferred from `protocol` if empty. |
+| `chat_path` | `string` | By protocol (`openai`, `anthropic`, `gemini`, `openai_responses`, `azure`, `vertex`, `bedrock`, `ollama`) | Custom chat endpoint path; automatically inferred from `protocol` if empty (e.g. `anthropic` → `/v1/messages`, `vertex` → `/v1/projects/…/publishers/google/models/{model}:generateContent`, `bedrock` → `/model/{model}/converse`). |
 | `embeddings_path`| `string` | `"/embeddings"`| Custom embeddings endpoint path. |
 | `note` | `string` | `""` | Free-form note or description. |
 
@@ -325,6 +368,7 @@ Defaults to an empty array for personal use. Configuring accounts requires a sep
 | `requests_per_day` | `integer` | `0` | UTC daily request quota; 0 is unlimited. |
 | `tokens_per_day` | `integer` | `0` | UTC daily token budget; 0 is unlimited. |
 | `token_reservation` | `integer` | `4096` | Minimum reservation per budgeted request; retained when usage is unknown. |
+| `budget_usd_per_day` | `double` | `0` | **Daily spend ceiling in US dollars**; `0` is unlimited. Unlike the token quota this cannot be reserved: the price depends on which relay answers and how many tokens it reports, so the check happens at admission and the actual cost is added when the request settles. A request already in flight when the ceiling is reached still completes and is still charged — the ceiling bounds the **next** request rather than promising the day can never exceed it. Only relays that report usage and have a price contribute; when no enabled relay is priced the validator warns, because the budget would then be permanently inert. |
 
 ### Client Keys (`client_keys`)
 

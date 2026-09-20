@@ -31,16 +31,20 @@ Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate
 ## Key Features
 
 - ⚡ **Single Endpoint Aggregation**: Centralizes upstream Base URLs and API Keys into a single local port, eliminating the need to reconfigure client applications.
-- 👥 **Client Distribution**: Separate administrator and client credentials, multiple keys per account, model/provider-group permissions, RPM/concurrency limits, and persistent daily request/token quotas. CLI, GUI and Web manage accounts and display usage and estimated cost; personal use requires no accounts.
+- 👥 **Client Distribution**: Separate administrator and client credentials, multiple keys per account, model/provider-group permissions, RPM/concurrency limits, persistent daily request/token quotas, and a **daily budget in US dollars** (`budget_usd_per_day`). CLI, GUI and Web manage accounts and display usage and estimated cost; personal use requires no accounts.
+- 🧠 **Local Response Cache**: Exact-match caching for **non-streaming** requests (TTL + LRU eviction). A hit is served directly with `X-Literouter-Cache: hit` and never touches the upstream — the saving is real money. The cache is isolated per client, and streaming responses are never cached.
+- 🚦 **Relay-side Protection**: Per-upstream **concurrency** and **requests-per-minute** ceilings. A relay that is at its limit is **skipped rather than failed** — it does not trip the breaker, and the request moves on to the next target in the chain, which avoids driving an upstream into its own rate limiter.
 - 🔒 **HTTPS and Media Endpoints**: Listener TLS plus audio transcription, translation, speech synthesis, image generation, edits and variations through existing OpenAI-compatible providers.
 - 🛡️ **Header Gate & Lossless Streaming Failover**: Novel streaming safety mechanism. Network drops, timeouts, 429 rate limits, or 5xx server errors trigger seamless failover before the first response header reaches the client. Once the first byte is emitted, the connection is locked to **strictly prevent corrupting or interweaving answers**.
 - 🔌 **Circuit Breaker with Auto-Probing**: Consecutive failures trip down relays into cooldown. Once cooldown expires, a single-request probe tests recovery automatically without overwhelming services.
-- 🔄 **Multi-Protocol Gateway & Zero-Overhead Fast Path**: Supports inbound OpenAI, Claude Messages, Google Gemini, and OpenAI Responses requests. Matching protocols enjoy **zero JSON parsing and zero-copy streaming passthrough**, while mismatched protocols are converted bi-directionally on the fly.
+- 🔄 **Multi-Protocol Gateway & Zero-Overhead Fast Path**: **Inbound** OpenAI, Claude Messages, Google Gemini and OpenAI Responses requests; **outbound** `openai`, `azure`, `anthropic`, `gemini`, `vertex`, `bedrock`, `ollama` and `responses` (Azure `api-version`, Vertex OAuth2 service accounts and Bedrock SigV4 signing are all implemented natively). Matching protocols enjoy **zero JSON parsing and zero-copy streaming passthrough**, while mismatched protocols are converted bi-directionally on the fly — including Ollama NDJSON and Bedrock AWS event-stream framing.
+- 📈 **Observability**: Liveness (`/health/live`) and readiness (`/health/ready`) probes are separate, Prometheus `/__literouter/metrics` exports per relay and per client, and **OTLP metric push** to `{endpoint}/v1/metrics` is supported.
 - 🔐 **Zero-Leak Secret Placeholders**: Store `${OPENAI_API_KEY}` or `${VAR:-fallback}` placeholders in your config. Secrets are resolved in memory strictly when dispatching requests and are never written back to disk.
+- 🐳 **Ready-made Deployment**: `Dockerfile`, `docker-compose.yml`, a systemd unit and a one-shot installer (`scripts/install.sh`, which verifies the release SHA-256). The container image carries one binary and a CA bundle, and runs as a non-root user.
 - 💻 **Three Frontends**:
   - **CLI**: Supports foreground server mode, `tail -f` live log streaming, status dashboards, and system diagnostics (`doctor`).
   - **Web Console**: `serve` carries a modern React + Vite + Tailwind + shadcn/ui `/ui` console on the same port, providing telemetry overview, provider/route management, probing, log filtering, and full config editing; assets are embedded in the binary with zero extra deployment (developing the web UI requires Node.js 22+).
-  - **GUI Console**: Native hardware-accelerated OpenGL desktop dashboard featuring real-time telemetry tiles, 24-hour usage trends, provider health matrices, visual route ordering, and one-click model auto-discovery.
+  - **GUI Console**: Native hardware-accelerated OpenGL desktop dashboard featuring real-time telemetry tiles, usage trends over a configurable time window, provider health matrices, visual route ordering, and one-click model auto-discovery.
 - 🌐 **Cross-Platform & Internationalization**: Native support for Linux, macOS, and Windows. Includes English and Simplified Chinese localization, alongside dynamic vector UI scaling (80% ~ 150%).
 
 ---
@@ -144,7 +148,8 @@ Technical details are organized into topic-specific documentation:
 | 🛡️ [**Routing & Failover**](docs/en/routing-failover.md) | Candidate chain resolution, Header Gate streaming logic, circuit breaker state machine |
 | 🔄 [**Protocols & API Reference**](docs/en/protocols-api.md) | Inbound endpoints, upstream protocol adapters, fast-path streaming, and Admin APIs |
 | 💻 [**CLI Manual**](docs/en/cli.md) | Comprehensive reference for all 8 subcommands, live dashboard, and automation scripts |
-| 🖥️ [**Desktop GUI Guide**](docs/en/gui.md) | Walkthrough of 5 core panels, model scanning, zoom shortcuts, and CJK font fallback |
+| 📦 [**Distribution, Quotas & Deployment**](docs/en/distribution.md) | Client accounts and quota semantics, plus Docker / systemd / installer deployment |
+| 🖥️ [**Desktop GUI Guide**](docs/en/gui.md) | Walkthrough of the six core panels, model scanning, zoom shortcuts, and CJK font fallback |
 | ⚙️ [**Environment Variables**](docs/en/environment.md) | Full environment variable reference and cross-platform path resolution |
 
 ---

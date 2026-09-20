@@ -139,7 +139,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
 |---|---|---|
 | `GET` | `/v1/models`, `/models`, `/v1beta/models` | Lists all logical models aggregated by literouter, with routing topology metadata |
 | `GET` | `/v1/models/{id}`, `/models/{id}` | Inspect a single model's candidate providers and health status |
-| `GET` | `/health` | Unauthenticated liveness probe, returns `{"status":"ok"}` |
+| `GET` | `/health`, `/health/live` | Unauthenticated **liveness** probe, returns `{"status":"ok"}`. It answers "is this process alive", so it only looks at the listener. |
+| `GET` | `/health/ready` | Unauthenticated **readiness** probe. It answers "should traffic be sent here", so a config with no enabled relay returns `503` with `{"status":"not_ready","reason":"..."}` — an instance that can accept a connection and still cannot answer a single request is not ready for a load balancer. |
 
 ---
 
@@ -160,6 +161,26 @@ Configure `providers[].protocol` to specify how to talk to each upstream service
    - Automatically injects: `x-goog-api-key: <api_key>`.
 4. **`openai_responses`**:
    - For: Upstream endpoints implementing the OpenAI Responses protocol.
+   - Default header: `Authorization: Bearer <api_key>`; path `/v1/responses`.
+5. **`azure`** (Azure OpenAI):
+   - The body is **exactly OpenAI's**, so it takes the same-protocol fast path with zero parsing. Only the path and the credential differ: the model name is a **deployment** in the path, an `api-version` query is mandatory, and the key goes in an `api-key` header (Azure rejects a bearer).
+   - Path: `/openai/deployments/{model}/chat/completions?api-version={api_version}`; an empty `api_version` uses `2024-10-21`.
+   - `base_url` is the resource root, e.g. `https://my-resource.openai.azure.com`.
+6. **`vertex`** (Vertex AI):
+   - The body is **Gemini's** generateContent JSON, so it shares that request/response adaptation.
+   - Path: `/{api_version}/projects/{project}/locations/{region}/publishers/google/models/{model}:generateContent` (or `:streamGenerateContent?alt=sse`).
+   - Authentication mints an OAuth2 access token: the private key in the file `credentials_file` names signs an RS256 assertion, which is exchanged at `token_uri` for a token sent as `Authorization: Bearer`. The token is cached until it is nearly expired — exchanging one per request would add a round trip to every call.
+   - Required: `project` and `credentials_file`; `region` defaults to `us-central1`.
+7. **`bedrock`** (AWS Bedrock Converse API):
+   - **Its own body**, not OpenAI's: `system` is a separate top-level list rather than a message, content is a list of typed blocks (`text` / `image` / `toolUse` / `toolResult`), and the sampling knobs live under `inferenceConfig`.
+   - Path: `/model/{model}/converse` (streaming: `/model/{model}/converse-stream`).
+   - Authentication is **SigV4**, covering the method, the path, the signed header set and the SHA-256 of the body. Required: `region`, `aws_access_key`, `aws_secret_key`; temporary credentials also need `aws_session_token`. All three accept `${VAR}` references, resolved only at signing time.
+   - Its stream is not SSE: Bedrock frames a binary event stream (length prefix plus CRC32s at both ends). literouter verifies the checksums and converts to standard OpenAI SSE; a frame that fails its checksum is refused rather than resynchronised on whatever bytes look like a length.
+   - The model catalogue lives on a different host behind a different signing service (the `bedrock` control plane, not `bedrock-runtime`), so a probe can report reachability but cannot list models.
+8. **`ollama`** (Ollama's native `/api/chat`):
+   - Its own body: sampling knobs sit under `options` with different names (`num_predict`, not `max_tokens`), there is no `developer` role, and images are bare base64 strings rather than data URLs.
+   - Its stream is **newline-delimited JSON**, not SSE: one complete object per line, with no `data:` prefix and no blank-line terminator.
+   - Unauthenticated by default (local `http://127.0.0.1:11434`); the model list is at `/api/tags`.
 
 ### Automatic Path Deduction
 
@@ -171,6 +192,10 @@ When `chat_path` is left empty in provider configuration, `literouter` resolves 
 | `anthropic` | `/v1/messages` |
 | `gemini` | `/v1beta/models/{model}:generateContent` (or `:streamGenerateContent?alt=sse`) |
 | `openai_responses` | `/v1/responses` |
+| `azure` | `/openai/deployments/{model}/chat/completions?api-version={api_version}` |
+| `vertex` | `/{api_version}/projects/{project}/locations/{region}/publishers/google/models/{model}:generateContent` |
+| `bedrock` | `/model/{model}/converse` (streaming: `/model/{model}/converse-stream`) |
+| `ollama` | `/api/chat` (model list at `/api/tags`) |
 
 ---
 
@@ -214,7 +239,7 @@ Key features supported across transformations:
 >
 > **Two deliberate asymmetries**, neither of them an oversight:
 > 1. **The request direction does not synthesize a `thinking` block.** Anthropic only accepts a thinking block back with the signature the provider issued for it, and Gemini only accepts a thinking part back with its `thoughtSignature`; a fabricated one turns a request that would have succeeded into a 400 — so a client's `reasoning_content` is dropped on those two paths. Going the other way (Anthropic / Gemini / Responses → Chat) the client's reasoning is carried over as `reasoning_content`.
-> 2. **The reverse stream (OpenAI → Anthropic) does not synthesize a thinking block yet.** That needs a second content block with its own index and start/stop frames, and a block sequence that is wrong is worse for a strict client than thinking content that is simply absent.
+> 2. **The reverse stream (OpenAI → Anthropic) does synthesize a `thinking` block**, in the response direction: an upstream reasoning delta opens a `content_block_start` (`type: thinking`, index 0), and when the text starts that block is closed and a text block opens at index 1. Blocks are opened **lazily** — reasoning first means a thinking block first, text with no reasoning means a single text block — and neither leaves a block unclosed. When a stream is cut short without a `finish_reason`, `finish()` closes the index it actually opened rather than a hard-coded 0. Synthesizing is acceptable here and not in the request direction because these blocks are literouter's own: there is no upstream signature to reproduce.
 
 ---
 
@@ -229,69 +254,76 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 - **Request**: `GET /__literouter/status`
 - **Response**:
   ```json
-  {
-    "running": true,
-    "host": "127.0.0.1",
-    "port": 8787,
-    "base_url": "http://127.0.0.1:8787",
-    "version": "0.1.0",
-    "config_path": "/home/you/.config/literouter/config.json",
-    "started_unix": 1758000000.0,
-    "uptime_sec": 3600.5,
-    "active_requests": 0,
-    "total_requests": 1420,
-    "total_success": 1410,
-    "total_failure": 10,
-    "bytes_out": 12345678,
-    "cost_usd": 0.075,
-    "tokens_prompt": 120000,
-    "tokens_completion": 45000,
-    "latency_ms_avg": 345.2,
-    "log_seq": 1420,
-    "breakers_open": 0,
-    "clients": [],
-    "hourly": [
-      {
-        "hour_unix": 1758000000.0,
-        "requests": 12,
-        "successes": 11,
-        "failures": 1,
-        "bytes_out": 184320,
-        "tokens_prompt": 9000,
-        "tokens_completion": 3200,
-        "cost_usd": 0.075
-      }
-    ],
-    "providers": [
-      {
-        "provider": "openai-official",
-        "requests": 1200,
-        "successes": 1198,
-        "failures": 2,
-        "aborted": 0,
-        "retries_in": 5,
-        "bytes_in": 120000,
-        "bytes_out": 900000,
-        "tokens_prompt": 110000,
-        "tokens_completion": 40000,
-        "latency_ms_last": 310.5,
-        "latency_ms_avg": 345.2,
-        "latency_ms_p95": 0.0,
-        "last_used_unix": 1758003600.5
-      }
-    ],
-    "health": [
-      {
-        "provider": "openai-official",
-        "state": "healthy",
-        "consecutive_failures": 0,
-        "total_failures": 2,
-        "last_error": "",
-        "cooldown_remaining": 0.0
-      }
-    ]
-  }
-  ```
+{
+  "active_requests": 0,
+  "base_url": "http://127.0.0.1:8787",
+  "breakers_open": 0,
+  "bytes_out": 12345678,
+  "cache_enabled": false,
+  "cache_entries": 0,
+  "cache_hits": 0,
+  "cache_misses": 0,
+  "clients": [],
+  "config_path": "/home/you/.config/literouter/config.json",
+  "cost_usd": 0.075,
+  "health": [
+    {
+      "provider": "openai-official",
+      "state": "healthy",
+      "consecutive_failures": 0,
+      "total_failures": 2,
+      "last_error": "",
+      "cooldown_remaining": 0.0
+    }
+  ],
+  "host": "127.0.0.1",
+  "hourly": [
+    {
+      "hour_unix": 1758000000.0,
+      "requests": 12,
+      "successes": 11,
+      "failures": 1,
+      "bytes_out": 184320,
+      "tokens_prompt": 9000,
+      "tokens_completion": 3200,
+      "cost_usd": 0.075,
+      "bucket_sec": 3600
+    }
+  ],
+  "latency_ms_avg": 345.2,
+  "log_seq": 1420,
+  "port": 8787,
+  "providers": [
+    {
+      "provider": "openai-official",
+      "requests": 1200,
+      "successes": 1198,
+      "failures": 2,
+      "aborted": 0,
+      "retries_in": 5,
+      "bytes_in": 120000,
+      "bytes_out": 900000,
+      "tokens_prompt": 110000,
+      "tokens_completion": 40000,
+      "latency_ms_last": 310.5,
+      "latency_ms_avg": 345.2,
+      "latency_ms_p95": 0.0,
+      "last_used_unix": 1758003600.5
+    }
+  ],
+  "running": true,
+  "started_unix": 1758000000.0,
+  "tokens_completion": 45000,
+  "tokens_prompt": 120000,
+  "total_failure": 10,
+  "total_requests": 1420,
+  "total_success": 1410,
+  "traffic_bucket_count": 24,
+  "traffic_bucket_sec": 3600,
+  "uptime_sec": 3600.5,
+  "version": "0.1.0"
+}
+```
 
   `hourly` holds the last 24 **hour buckets** (`hour_unix` is the start of the hour, on the UTC hour), oldest first: it is what the console's trend chart draws, and it is restored from the telemetry file on restart so the shape of the day does not vanish with the process. The array is empty until there has been traffic.
 
@@ -336,7 +368,10 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 
 - **Request**: `GET /__literouter/metrics`
 - **Response**: Prometheus text format (`text/plain; version=0.0.4`), carrying the *same* numbers as `/__literouter/status` — the console is for a person, this is for a graph, and both read one snapshot.
-- **Metrics**: `literouter_running`, `literouter_uptime_seconds`, `literouter_requests_total` / `successes_total` / `failures_total`, `literouter_active_requests`, `literouter_breakers_open`, `literouter_bytes_out_total`, `literouter_tokens_*_total`, `literouter_latency_ms_avg`, `literouter_cost_usd_total`, plus per-relay `literouter_relay_*{relay="<id>"}` (requests, successes, failures, client aborts, absorbed retries, bytes in and out, tokens, `latency_ms_last|avg|p95`, `last_used_unixtime`, `healthy`, `cooldown_seconds`).
+- **Metrics**: `literouter_build_info`, `literouter_running`, `literouter_uptime_seconds`, `literouter_requests_total` / `successes_total` / `failures_total`, `literouter_active_requests`, `literouter_breakers_open`, `literouter_log_entries_total`, `literouter_bytes_out_total`, `literouter_tokens_*_total`, `literouter_latency_ms_avg`, `literouter_cost_usd_total`;
+- **Per relay**: `literouter_relay_*{relay="<id>"}` (requests / successes / failures / client-aborted / absorbed retries / bytes in and out / tokens / `latency_ms_last|avg|p95` / `last_used_unixtime` / `healthy` / `cooldown_seconds` / `cost_usd_total`);
+- **Per client**: `literouter_client_*{client="<id>"}` (requests, `tokens_total{direction="input"|"output"}`, `cost_usd_total`, `cost_today_usd` — which is what `budget_usd_per_day` is measured against — `active_requests`, `requests_today`, `tokens_today`);
+- **Response cache**: `literouter_cache_enabled`, `literouter_cache_hits_total`, `literouter_cache_misses_total`, `literouter_cache_entries`. "Enabled with no hits" and "disabled" look identical in the config; these four are how they are told apart.
 - **Auth**: the same `server.api_key` gate as every other management endpoint, which a scraper satisfies with `bearer_token` / `authorization`.
 - **Example** (`prometheus.yml`):
   ```yaml

@@ -232,3 +232,29 @@ Validation warns below 5 seconds, where a second candidate never gets its turn.
 Configured via `server.max_attempts`:
 - `0` (default): Try every candidate in the chain until one succeeds or all fail.
 - `N` (e.g. `2` or `3`): Limit attempts to at most `N` providers per request, preventing excessive wait times when multiple upstreams are unavailable.
+
+
+---
+
+## Relay-side Limits
+
+Client quotas (`clients[].requests_per_minute` / `max_concurrent`) answer "who may ask how much". `providers[].max_concurrent` / `requests_per_minute` answer "how much is literouter itself sending to this relay". They are different questions with different remedies.
+
+**A full relay is not a broken relay.** A candidate at its limit is therefore **skipped and the next one tried**, with no breaker failure counted and no breaker opened — a relay serving at full capacity with no headroom left should not be judged as failing. The log says `skipping a full relay` and names the reason ("already has N request(s) in flight" or "has taken N request(s) in the last minute").
+
+When the whole chain is full the client gets **`429` with a real `Retry-After`** (the seconds until the oldest start in the rolling window leaves it) and the error code `relay_capacity_exceeded`. A 429 rather than a 503 because it carries an actionable "come back then", which is exactly what a client needs.
+
+Two implementation details worth knowing:
+
+- **Every start is recorded in the window**, even while no limit is set. Recording only when limited would give an operator a free first minute after turning a limit on — precisely when the limit was wanted.
+- The window has a fixed ceiling, so the memory cost of counting is a **constant per relay**, unrelated to traffic.
+
+## Local Response Cache
+
+With `server.response_cache_ttl_sec` on (`0`, the default, disables it), an **identical** non-streaming request is answered from memory until the TTL expires instead of being sent upstream. A hit carries `X-Literouter-Cache: hit` (a store carries `miss`), the log records `cache` in the `provider` column, and the request total still goes up — but **no relay statistic moves and no tokens are charged**.
+
+The key is the SHA-256 of account + ingress protocol + logical model + the normalised request body, joined with length prefixes so that moving a character across a field boundary is a different key. **The account is in the key deliberately**: two people asking the same question are still two people, and an answer carrying one account's private context must never reach another's.
+
+**Not** cached: streaming requests (replaying a stored body as an event stream would mean inventing chunk boundaries and timing, and a client that measures time-to-first-token would be lied to), audio and images (the request is multipart and the answer may be binary), and any non-2xx answer (caching one 400 for the whole TTL turns a transient problem into a permanent one). Turning the cache off drops what it held, so re-enabling it cannot serve an answer from before it was switched off.
+
+It **complements** session affinity rather than replacing it: affinity makes the **upstream's** prompt cache likelier to hit, and the local cache stops an exactly repeated request from going out at all. The first saves the price of that input prefix; the second saves the whole call.

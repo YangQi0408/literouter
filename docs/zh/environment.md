@@ -15,6 +15,8 @@
 | `LITEROUTER_CA_BUNDLE` | 指定用于上游与管理客户端 HTTPS 校验的自定义 CA 根证书包绝对路径 | 自动探测系统 CA 信任库 | 核心 |
 | `LITEROUTER_GUI_FONT` | 覆盖桌面控制台渲染所使用的字体文件绝对路径 | 自动探测系统清晰中文字体 | GUI |
 | `LITEROUTER_GUI_SMOKE` | 设为 `1` 时进入全自动冒烟测试模式，各页面渲染指定帧数后退出 | `0` (关闭) | GUI |
+| `LITEROUTER_GUI_PAGE` | 配合 `LITEROUTER_GUI_SMOKE` 把冒烟模式钉在单个页面上，避免定时轮播导致抓帧抓错页面 | 未设置 (轮播全部页面) | GUI |
+| `LITEROUTER_WEB_DIR` | 指定内置 Web 控制台的产物目录，改为运行时按请求读取而不是编译期 `#embed` | 未设置 (使用编译期内嵌产物) | 核心 |
 | `NO_COLOR` | 遵循 no-color.org 规范，设为非空值时禁用终端彩色输出 | 未设置 (开启彩色) | CLI |
 
 ---
@@ -79,7 +81,30 @@
   export LITEROUTER_GUI_FONT="/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
   ```
 
-### 7. 上游密钥环境变量
+### 7. `LITEROUTER_GUI_PAGE`
+把冒烟模式钉在单个页面上。
+
+`LITEROUTER_GUI_SMOKE=1` 默认会按固定帧数轮播全部 6 个页面，因此"在第 N 帧截图"会随机器速度不同而截到不同页面。钉住页面后，脚本抓到的帧是确定的：
+
+```bash
+# 只看设置页（页面索引 4）
+LITEROUTER_GUI_SMOKE=1 LITEROUTER_GUI_PAGE=4 literouter-gui
+```
+
+页面索引：`0=概览 1=中转站 2=路由 3=日志 4=设置 5=客户端`。取值超出范围时回退到轮播全部页面。这个变量只在冒烟模式下有意义，正常启动会被忽略。
+
+### 8. `LITEROUTER_WEB_DIR`
+指定内置 Web 控制台的产物目录。
+
+正常构建下 `web/dist`（`index.html` / `app.css` / `app.js` / `favicon.svg`）会在**编译期**通过 `#embed` 嵌进 `core`，运行时不需要任何外部文件。当 `#embed` 不可用时（例如 ISO 严格模式的 GCC 尚未实现该特性），构建会跳过内嵌，此时用这个变量指向磁盘上的产物目录，服务端改为按请求读取：
+
+```bash
+export LITEROUTER_WEB_DIR=/opt/literouter/web-dist
+```
+
+目录必须包含 `index.html`，否则控制台页面无法加载。改前端后仍需 `npm --prefix web run build` 重新生成产物。
+
+### 9. 上游密钥环境变量
 任何在配置文件中以 `${VAR_NAME}` 或 `${VAR:-fallback}` 声明的环境变量，均应在运行 `literouter` 之前在系统或 Shell 中导出：
 
 ```bash

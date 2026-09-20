@@ -52,7 +52,7 @@ literouter [OPTIONS] <SUBCOMMAND>
 | [`providers`](#provider-management-providers) | List, add, remove, test, enable, or disable upstream providers |
 | [`clients`](#client-distribution-clients) | Manage client accounts, keys, access rules, request/token quotas and usage |
 | [`routes`](#route-management-routes) | List, add, remove, enable, or disable model routing rules |
-| [`config`](#configuration-utility-config) | Show path, display file contents, initialize seed config, or validate |
+| [`config`](#configuration-utility-config) | Show path, display file contents, initialize seed config, validate, migrate, or export/import the whole config |
 | [`bench`](#benchmark-bench) | The same question to every relay that serves a model, compared |
 | [`replay`](#replay-replay) | Send a saved request body to one relay, or to the policy's first choice |
 
@@ -192,7 +192,14 @@ literouter providers add <id> \
 - `--key <literal>`: Store literal plaintext key;
 - `--key-env <VAR>`: Store secure placeholder `${VAR}`;
 - `--key-stdin`: Interactively prompt for the key from terminal stdin;
-- `--protocol <openai|anthropic|gemini|openai_responses>`: Upstream protocol dialect.
+- `--protocol <openai|anthropic|gemini|openai_responses|azure|vertex|bedrock|ollama>`: Upstream protocol dialect;
+- `--api-version <v>`: Azure's `api-version` query value, or Vertex's API version segment;
+- `--region <r>`: Bedrock's AWS region (**required**), or Vertex's location;
+- `--project <p>` / `--credentials-file <path>`: Vertex's project id and service-account JSON path (**both required**);
+- `--aws-access-key <k>` / `--aws-secret-key <k>` / `--aws-session-token <t>`: Bedrock's SigV4 credentials (the first two are **required**). `${VAR}` references work and are resolved only at signing time;
+- `--max-concurrent <n>` / `--rpm <n>`: **relay-side** protection, bounding what literouter itself sends to this relay (0 is unlimited). A full relay is skipped for this request and the next candidate tried, rather than being judged as failing.
+
+> The protocol-specific fields are not optional decoration: the validator checks Vertex's `project`/`credentials_file` and Bedrock's `region`/AWS credentials and refuses the config without them. A request that cannot be signed reaches the relay as a 401, and that message points the operator in the wrong direction.
 
 ### 4. Enable / Disable a Provider
 ```bash
@@ -255,6 +262,21 @@ literouter config init --force
 
 # Validate configuration and print all errors/warnings
 literouter config validate
+
+# Rewrite an older config onto this build's schema. Loading already migrates in
+# memory; this is what writes the migrated form back to disk.
+literouter config migrate
+
+# Export the whole config (secrets stay as the references they are, never
+# expanded). Omit the file, or use `-`, to write to standard output.
+literouter config export backup.json
+literouter config export - > backup.json
+
+# Load a whole config, or merge only the relays, routes and accounts it names
+literouter config load backup.json
+literouter config load new-relays.json --merge
+# Validate and report without writing anything
+literouter config load backup.json --dry-run
 ```
 
 ---
@@ -320,7 +342,7 @@ Personal use needs no client accounts. For distribution, first set `server.api_k
 literouter providers groups relay-primary --group team
 literouter clients add team-a --name "Team A" --model gpt-4o --group team \
   --rpm 60 --concurrent 4 --requests-per-day 2000 --tokens-per-day 1000000 \
-  --token-reservation 4096
+  --budget-usd-per-day 5 --token-reservation 4096
 
 # Store the placeholder without expanding it, or read a literal key from stdin.
 literouter clients keys add team-a desktop --key-env TEAM_A_DESKTOP_KEY
@@ -347,5 +369,7 @@ literouter providers groups relay-primary --clear
 `providers add` also accepts repeatable `--group`. Keys have stable IDs within their account; lists and JSON output never reveal stored key values. `clients keys add` and `replace` require either `--key-env` or `--key-stdin`; secret values are not accepted as command-line arguments.
 
 Empty model/group lists allow all models/groups. `--rpm`, `--concurrent`, `--requests-per-day` and `--tokens-per-day` default to `0` (unlimited). Daily quotas reset at **00:00 UTC**. `--token-reservation` defaults to `4096`; with a daily token quota it must be positive and fit within that quota. Requests reserve tokens before dispatch, reconcile against reported usage, and retain the reservation if upstream omits usage. `tokens_today` includes reservations; `reserved_tokens` reports the outstanding amount. The quota ledger persists independently of telemetry logging and is not reset by resetting dashboard counters.
+
+`--budget-usd-per-day` is a daily ceiling **in money** (USD, `0` — the default — is unlimited), alongside the token quota. A token quota is not equivalent across models whose prices differ by orders of magnitude — a million tokens of `gpt-4o` and of a cheap model are not the same cost — so "five dollars a day for this person" is the natural dimension for distribution. It **cannot be reserved**: the price depends on which relay answers and how many tokens it reports, so the check happens at admission and the actual cost is added when the request settles; a request already in flight when the ceiling is reached still completes and is still charged. Only relays that **report usage and have a price** contribute to the day's spend, and `config validate` warns when nothing is priced, because the ceiling would then be permanently unreachable and therefore inert. `literouter clients usage` shows the day's spend next to the ceiling.
 
 Commands editing accounts, keys or groups write the config file; reload the running proxy or enable `server.reload_on_change`. `clients usage` queries the running proxy with the configured administrator key. Missing accounts and invalid edits leave the file unchanged and return a nonzero exit code.

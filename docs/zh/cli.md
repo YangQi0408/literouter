@@ -50,7 +50,7 @@ literouter [OPTIONS] <SUBCOMMAND>
 | [`models`](#模型列表-models) | 查看当前支持的逻辑模型及各自的候选上游链路 |
 | [`providers`](#中转站管理-providers) | 列出、添加、测试、启用或禁用上游中转站 |
 | [`routes`](#路由管理-routes) | 列出、添加、删除、启用或禁用模型路由规则 |
-| [`config`](#配置工具-config) | 查看路径、打印内容、生成模板或校验配置文件 |
+| [`config`](#配置工具-config) | 查看路径、打印内容、生成模板、校验、迁移或整体导入导出配置文件 |
 | [`bench`](#基准对比-bench) | 同一个问题发给所有可服务该模型的中转站，对比延迟与花费 |
 | [`replay`](#请求重放-replay) | 把保存的请求体发给指定中转站或策略首选站重放 |
 
@@ -196,7 +196,14 @@ literouter providers add <id> \
 - `--key <literal>`：直接存入明文静态密钥；
 - `--key-env <VAR>`：以安全占位符 `${VAR}` 格式写入配置文件；
 - `--key-stdin`：从终端标准输入安全交互式读取密钥；
-- `--protocol <openai|anthropic|gemini|openai_responses>`：指定上游协议规范。
+- `--protocol <openai|anthropic|gemini|openai_responses|azure|vertex|bedrock|ollama>`：指定上游协议规范；
+- `--api-version <v>`：Azure 的 `api-version` 查询值，或 Vertex 的 API 版本段；
+- `--region <r>`：Bedrock 的 AWS 区域（**必填**），或 Vertex 的位置；
+- `--project <p>` / `--credentials-file <path>`：Vertex 的项目 ID 与 service-account JSON 路径（都**必填**）；
+- `--aws-access-key <k>` / `--aws-secret-key <k>` / `--aws-session-token <t>`：Bedrock 的 SigV4 凭据（前两项**必填**），支持 `${VAR}` 引用且只在签名瞬间解析；
+- `--max-concurrent <n>` / `--rpm <n>`：**中转站侧**保护上限，约束的是 literouter 自己往这个站发多少（0 表示不限）。满站会被跳过并尝试下一个候选，而不是判定为故障。
+
+> 协议专属字段不是"填了也无所谓"：校验器会检查 Vertex 的 `project`/`credentials_file` 与 Bedrock 的 `region`/AWS 凭据，缺失时直接报错——一个签不出名的请求到上游只会变成 401，而那时的报错信息指向错误的方向。
 
 ### 4. 启用 / 禁用中转站
 ```bash
@@ -259,7 +266,24 @@ literouter config init --force
 
 # 校验当前配置文件合法性并输出诊断清单
 literouter config validate
+
+# 把旧版 schema 的配置改写到当前 schema（加载时已在内存中迁移，这条命令是把它写回磁盘）
+literouter config migrate
+
+# 导出整份配置（含引用形式的密钥，绝不解引用），省略文件或写 `-` 输出到标准输出
+literouter config export backup.json
+literouter config export - > backup.json
+
+# 加载整份配置，或只把文件里点名的中转站/路由/账户合并进当前配置
+literouter config load backup.json
+literouter config load new-relays.json --merge
+# 只校验并报告，不写入
+literouter config load backup.json --dry-run
 ```
+
+**关于 schema 迁移**：`schema` 字段记录配置结构版本。加载时会把旧版文档迁移到当前版本（例如把 `openai_compatible` / `openai_chat` 归一为 `openai`，把 `language: "system"` 归一为 `auto`），并在 `config migrate` 里逐条报告改了什么。反过来，**来自更新版本 literouter 的配置会被拒绝加载**，而不是"读进来、丢掉不认识的字段、下次保存时写没"——后者才是真正的静默损坏。
+
+**关于 `--merge`**：按 id 合并。文件里点名的中转站、路由和账户会替换同名的既有条目，其余保持不动。这正是"把我手上这份配置里再加三个中转站"这种操作，整文件替换表达不了。
 
 ---
 
@@ -316,7 +340,7 @@ literouter replay --file request.json --provider openai-official --show
 literouter providers groups relay-primary --group team
 literouter clients add team-a --name "Team A" --model gpt-4o --group team \
   --rpm 60 --concurrent 4 --requests-per-day 2000 --tokens-per-day 1000000 \
-  --token-reservation 4096
+  --budget-usd-per-day 5 --token-reservation 4096
 
 # 原样保存环境变量引用，或从标准输入读取密钥。
 literouter clients keys add team-a desktop --key-env TEAM_A_DESKTOP_KEY
@@ -343,5 +367,7 @@ literouter providers groups relay-primary --clear
 `providers add` 也支持可重复的 `--group`。每把密钥在所属账户内使用唯一 ID；列表和 JSON 输出均不显示密钥值。添加和替换密钥必须指定 `--key-env` 或 `--key-stdin`，不接受命令行明文密钥参数。
 
 模型和中转站组列表留空表示不限。`--rpm`、`--concurrent`、`--requests-per-day`、`--tokens-per-day` 默认为 `0`（不限）。每日配额在 **UTC 00:00** 重置。`--token-reservation` 默认为 `4096`；启用每日 Token 配额时，预留值必须大于 0 且不超过该配额。请求发送前预留 Token，收到上游用量后按实际值结算；缺失用量时保留预留扣费。`tokens_today` 包含预留用量，`reserved_tokens` 表示尚未结算的预留量。配额账本独立持久化，关闭遥测或重置图表计数不会清零配额。
+
+`--budget-usd-per-day` 是**按金额**的日上限（美元，默认 `0` 不限），与 Token 配额并列。Token 配额在价格相差数量级的模型之间并不等价——同样一百万 token，`gpt-4o` 与便宜模型的成本差两个数量级——所以"每天给某人 5 美元"才是分发场景下自然的维度。它**无法预留**：单价取决于哪个中转站应答、报告了多少 token，因此检查发生在准入时、实际花费在请求结算时累加；触顶时已经在飞行的请求仍会完成并照常计费。只有**报告了用量且填了价格**的中转站会贡献当日花费，全部未填价时 `config validate` 会告警（否则这个上限永远不会被触发，形同虚设）。`literouter clients usage` 会把当日花费与该上限并排显示。
 
 账户、密钥和组管理命令写入配置文件后，需要重新加载运行中的代理，或启用 `server.reload_on_change`。`clients usage` 使用已配置的管理员密钥查询正在运行的代理。不存在的账户或无效修改返回非零退出码，并保持配置文件不变。

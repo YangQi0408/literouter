@@ -49,7 +49,7 @@
 
 ```jsonc
 {
-  "schema": 1,
+  "schema": 2,
 
   "server": {
     "host": "127.0.0.1",          // 监听地址（绑定到公网非回环地址且未设 api_key 时将触发安全告警）
@@ -72,7 +72,12 @@
     "language": "auto",           // 界面语言：auto / en / zh
     "ui_scale": 1.0,              // GUI 界面缩放：0.8 ~ 1.5（0.0 或 1.0 表示默认）
     "web_ui": true,               // 是否在 /ui 提供内置 Web 控制台（非回环地址且未设 api_key 时将告警）
-    "reload_on_change": false     // 配置文件在磁盘上变化时自动应用（默认关闭）
+    "reload_on_change": false,    // 配置文件在磁盘上变化时自动应用（默认关闭）
+    "traffic_bucket_sec": 3600,   // 流量趋势每个桶的宽度（秒）；60 即按分钟观察最近一段时间
+    "traffic_bucket_count": 24,   // 趋势保留的桶数量；3600 x 24 即“最近一天，按小时”
+    "response_cache_ttl_sec": 0,  // 本地应答缓存有效期（秒）；0 表示关闭
+    "response_cache_max_entries": 128, // 缓存条目上限，超出时淘汰最久未使用的一条
+    "otlp_endpoint": ""           // OpenTelemetry OTLP/HTTP 指标端点，如 http://127.0.0.1:4318；留空关闭
   },
 
   "clients": [],
@@ -174,6 +179,11 @@
 | `language` | `string` | `"auto"` | 界面语言：`auto`（跟随系统区域）/ `en` / `zh`。CLI 与 GUI 共用同一份字典。 |
 | `ui_scale` | `double` | `1.0` | GUI 初始矢量缩放比例，可用范围约 `0.25` ~ `4.0`（推荐 `0.8` ~ `1.5`）；`0.0` 与 `1.0` 均表示默认。 |
 | `web_ui` | `bool` | `true` | 是否启用内置 Web 控制台。修改后即刻生效；若 `host` 设为非回环地址（如 `0.0.0.0`）且未设置 `api_key`，校验时将产生安全警告。 |
+| `traffic_bucket_sec` | `int` | `3600` | 流量趋势**每个桶的宽度（秒）**，小于 60 会被提升到 60。默认 `3600 × 24` 就是历史行为“最近一天按小时”；改成 `60 × 120` 就是“最近两小时按分钟”，正在排查某个中转站时更有用。每个桶都带自己的 `bucket_sec`，因此从旧遥测文件恢复的历史不会被按新宽度误读。 |
+| `traffic_bucket_count` | `int` | `24` | 趋势保留的桶数量。调小会立刻裁剪已持有的数据，不必等到下一个桶边界。 |
+| `response_cache_ttl_sec` | `int` | `0` | **本地应答缓存**的有效期（秒），`0` 表示关闭（默认）。开启后，完全相同（同账户、同协议、同模型、同请求体）的**非流式**请求在有效期内直接由内存作答，不再上行——这是最直接的省钱方式。流式请求永不缓存：把缓存体当作事件流回放需要凭空编造分块与时序，客户端会察觉。 |
+| `response_cache_max_entries` | `int` | `128` | 缓存条目上限，超出时淘汰**最久未使用**的一条（先清已过期的）。每条目是一整份回答，因此这是内存上限。 |
+| `otlp_endpoint` | `string` | `""` | OpenTelemetry **OTLP/HTTP** 指标端点，例如 `http://127.0.0.1:4318`；留空关闭。开启后每 30 秒向 `{endpoint}/v1/metrics` 推送一次 OTLP JSON（计数器按 CUMULATIVE + monotonic 上报），适合没有 Prometheus 抓取端的环境。导出失败只在日志里报告一次，不会刷屏。 |
 
 ### HTTPS 监听
 
@@ -192,6 +202,30 @@
 - 花费在**记账时**就按当时的价格累计，事后改价格不会重算历史。
 
 因此它适合回答"哪家更贵、今天花了多少"这类相对问题，而不是当作账单核对。
+
+每个客户端账户的当日花费（`cost_today`）也来自同一套算术，`budget_usd_per_day` 就是拿它来比；没有填价格的中转站对当日花费贡献 0，此时校验会告警——一个永远走不动的预算比没有预算更容易误导人。
+
+### 本地应答缓存
+
+`server.response_cache_ttl_sec` 打开后，**完全相同**的非流式请求在有效期内由内存直接作答，不再上行。命中时响应会带 `X-Literouter-Cache: hit`（存储时是 `miss`），日志里 `provider` 一列记为 `cache`，请求总数照常 +1，但**任何中转站统计都不动、不计 token**——这正是缓存的意义。
+
+缓存键是「账户 + 入站协议 + 逻辑模型 + 归一化后的请求体」的 SHA-256，字段长度前缀拼接（因此把字符挪过字段边界也是不同的键）。账户在键里是刻意的：两个账户问同一句话仍然是两个人，携带某一账户私有上下文的回答绝不能流向另一个账户。
+
+**不缓存**的情况：流式请求（缓存体无法在不编造时序的前提下当作事件流回放）、音频与图像（请求是 multipart、应答可能是二进制）、以及任何非 2xx 应答（把中转站一次 400 缓存成 TTL 内的常态是灾难）。缓存关闭时会把已持有的条目丢弃，重新打开不会拿到关闭之前的旧答案。
+
+### 中转站侧保护
+
+客户端配额（`clients[]`）管的是“谁可以问多少”，而 `providers[].max_concurrent` / `requests_per_minute` 管的是“literouter 自己往这个站发多少”。两者是不同的问题，补救方式也不同：**中转站满了不是中转站坏了**，因此达到上限的候选会被跳过并尝试下一个（不计熔断失败、不会打开熔断器），日志里写 `skipping a full relay`；整条链都满时返回 `429` 并带真实的 `Retry-After`（滚动窗口最早一次启动离开窗口的秒数）。
+
+每次启动都会记录进窗口，即使当时没有设限。只在设限时记录会让操作者打开限制的第一分钟“白送”——而那正是他最需要限制的时刻。窗口有固定上限，因此计数带来的内存是每站一个常数上界，与流量无关。
+
+### 流量趋势窗口
+
+`traffic_bucket_sec × traffic_bucket_count` 决定控制台趋势图的窗口与粒度。默认 `3600 × 24` 是“最近一天，按小时”；排查某个中转站时改成 `60 × 120` 就是“最近两小时，按分钟”。桶按 UTC 取整，每个桶都记录自己的 `bucket_sec`，因此重启后从遥测文件恢复的历史不会被按新宽度误读。
+
+### OpenTelemetry 导出
+
+设置 `server.otlp_endpoint`（如 `http://127.0.0.1:4318`）后，literouter 每 30 秒向 `{endpoint}/v1/metrics` 推送一次 **OTLP/HTTP JSON**：`literouter.requests` 等计数器按 CUMULATIVE + monotonic 上报，逐中转站与逐客户端指标带 `relay=` / `client=` 属性。适合没有 Prometheus 抓取端的部署；导出失败只记一条日志，不会持续刷屏。
 
 ### 遥测持久化
 
@@ -213,7 +247,16 @@
 |---|---|---|---|
 | `id` | `string` | 必填 | 唯一标识符（英文字母、数字、下划线、减号），用于路由与指标统计绑定。 |
 | `name` | `string` | `id` | 控制台与日志中展示的友好名称。 |
-| `protocol` | `string` | `"openai"` | 上游通信协议：`openai`（默认）、`anthropic`、`gemini`、`openai_responses`。 |
+| `protocol` | `string` | `"openai"` | 上游通信协议：`openai`（默认）、`anthropic`、`gemini`、`openai_responses`、`azure`、`vertex`、`bedrock`、`ollama`。代理按**报文形态**而不是协议名判断是否需要转换，因此 `azure` 与 OpenAI 同形（零解析直通），`vertex` 与 Gemini 同形。 |
+| `api_version` | `string` | `""` | `azure`：`api-version` 查询参数（留空用 `2024-10-21`）；`vertex`：路径中的 API 版本段（留空用 `v1`）。 |
+| `region` | `string` | `""` | `bedrock`：AWS 区域（**必填**，SigV4 无法推断）；`vertex`：位置（留空用 `us-central1`）。 |
+| `project` | `string` | `""` | `vertex`：项目 ID（**必填**）。 |
+| `credentials_file` | `string` | `""` | `vertex`：service-account JSON 密钥路径（**必填**）。其私钥用于签发 RS256 断言以换取访问令牌，令牌在过期前会被缓存复用。 |
+| `aws_access_key` | `string` | `""` | `bedrock`：SigV4 Access Key ID（**必填**），支持 `${VAR}` 引用，只在签名瞬间解析。 |
+| `aws_secret_key` | `string` | `""` | `bedrock`：SigV4 Secret Access Key（**必填**），同样支持 `${VAR}`。 |
+| `aws_session_token` | `string` | `""` | `bedrock`：临时凭据的 STS 会话令牌，会一并参与签名。 |
+| `max_concurrent` | `int` | `0` | **中转站侧**在途请求上限，`0` 不限制。与客户端配额无关：它约束的是 literouter 自己往这个站发多少。达到上限的站会像熔断一样被跳过并尝试下一个候选（**不**计熔断失败），整条链都满时返回 `429` 并带 `Retry-After`。 |
+| `requests_per_minute` | `int` | `0` | **中转站侧**滚动 60 秒启动上限，`0` 不限制。每次启动都会计入窗口，即使当时未设限——否则操作者刚打开限制的那一分钟会白送。 |
 | `price_in_per_million` | `double` | `0` | 该中转站**输入** token 的单价（美元 / 百万 token）。`0` 表示未填写：未填写的中转站**不计入**花费估算，而不是按 0 元计。 |
 | `price_out_per_million` | `double` | `0` | 该中转站**输出** token 的单价（美元 / 百万 token）。 |
 | `base_url` | `string` | 必填 | 上游服务基础地址，例如 `https://api.openai.com/v1`。必须为合法 HTTP/HTTPS URL。 |
@@ -227,7 +270,7 @@
 | `models` | `string[]`| `[]` | 声明该站点支持的模型列表。自动透传与一键探测时使用。 |
 | `groups` | `string[]` | `[]` | 中转站所属的分发组；客户端通过 `provider_groups` 获得使用权限。 |
 | `headers` | `object` | `{}` | 自定义请求头字典（键值对），每个发往该站点的请求都会自动附带。 |
-| `chat_path` | `string` | 依协议 | 自定义对话补全端点路径。留空时依据 `protocol` 自动推导为标准路径。 |
+| `chat_path` | `string` | 依协议（`openai`, `anthropic`, `gemini`, `openai_responses`, `azure`, `vertex`, `bedrock`, `ollama`） | 自定义对话补全端点路径。留空时依据 `protocol` 自动推导为标准路径（例如 `anthropic` → `/v1/messages`，`vertex` → `/v1/projects/…/publishers/google/models/{model}:generateContent`，`bedrock` → `/model/{model}/converse`）。 |
 | `embeddings_path`| `string` | `"/embeddings"`| 自定义向量嵌入端点路径。 |
 | `note` | `string` | `""` | 备注说明信息。 |
 
@@ -325,6 +368,7 @@ curl -X POST http://127.0.0.1:8787/__literouter/reload
 | `requests_per_day` | `integer` | `0` | UTC 日请求配额；0 不限制。 |
 | `tokens_per_day` | `integer` | `0` | UTC 日 Token 预算；0 不限制。 |
 | `token_reservation` | `integer` | `4096` | 每次预算请求的最小预留额度，未知用量保留预留。 |
+| `budget_usd_per_day` | `double` | `0` | UTC 日**消费上限（美元）**；0 不限制。与 Token 配额不同，它**无法预留**：单价取决于哪个中转站应答、它报告了多少 token，因此检查发生在准入时、实际花费在请求结算时累加。正在飞行的请求在触顶后仍会完成并照常计费——这是上限约束的是**下一个**请求，而非“这一天绝不超支”的诚实说明。只有报告了用量且填了价格的中转站会贡献花费；全部未填价时校验会告警（此时预算永远是 0 花费，形同虚设）。 |
 
 ### 客户端密钥 (`client_keys`)
 
