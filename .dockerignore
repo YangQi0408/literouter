@@ -1,0 +1,39 @@
+# Build context exclusions for the container image.
+#
+# The important one is `target/`. Without this file `COPY . .` drags the host's
+# build tree into the image, and the Dockerfile stages the binary with
+# `find cli/target -type f -name literouter` — which then has several stale
+# binaries from earlier local builds to choose from. The image ends up shipping
+# whichever one `find` happened to return first, which is how a build that
+# succeeds can still produce an image missing the feature you just added.
+#
+# `.git` is excluded because it is large and the image never needs history.
+# `web/node_modules` is excluded because `web/dist` is committed and is what the
+# C++ build embeds; the toolchain never runs npm.
+
+# Host build trees (all workspace members)
+target/
+**/target/
+build/
+**/build/
+
+# Version control and editor state
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+*.swp
+
+# Front-end dependencies and tooling caches; web/dist IS needed, so it stays.
+web/node_modules/
+web/.vite/
+**/node_modules/
+
+# Local runtime state and scratch files
+*.log
+*.pid
+*.tmp*
+__pycache__/
+*.pyc
+.mcpp/

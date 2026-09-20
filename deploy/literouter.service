@@ -1,0 +1,73 @@
+# literouter as a systemd service.
+#
+#   sudo install -m 0644 deploy/literouter.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now literouter
+#   systemctl status literouter
+#   journalctl -u literouter -f
+#
+# Install the binary to /usr/local/bin/literouter first (scripts/install.sh does
+# both). This unit runs as a dedicated unprivileged account and keeps the
+# config, the telemetry file and the client quota ledger in separate places,
+# because they have different lifetimes: the config is yours to edit and back
+# up, the state must survive restarts, and the ledger must survive everything.
+[Unit]
+Description=literouter — local AI relay aggregator
+Documentation=https://github.com/mcpp-community/literouter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=literouter
+Group=literouter
+
+# The config holds API keys, so it lives under /etc and is read-only to the
+# service. StateDirectory is created by systemd with the right ownership and is
+# the only thing the service writes.
+Environment=LITEROUTER_CONFIG=/etc/literouter/config.json
+Environment=LITEROUTER_STATE_DIR=/var/lib/literouter
+# Uncomment to force a language regardless of the system locale:
+# Environment=LITEROUTER_LANG=zh
+
+# `--force` is deliberately absent: a config that fails validation should stop
+# the service with the reason in the journal rather than run with a half-broken
+# routing table.
+ExecStart=/usr/local/bin/literouter serve --port 8787
+
+# SIGTERM is what the server expects: it stops accepting, drains in-flight
+# requests and writes the final telemetry document. Killing it earlier loses the
+# last counters and, worse, can truncate a streamed answer mid-flight.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=5
+
+# Hardening. The process needs one listening socket and outbound HTTPS; it does
+# not need a shell, a home directory, a writable /usr, or the ability to gain
+# privileges. PrivateTmp keeps anything it writes to /tmp out of everyone else's.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# ProtectSystem=strict makes everything read-only; these are the two paths the
+# service legitimately needs.
+ReadWritePaths=/var/lib/literouter
+ReadOnlyPaths=/etc/literouter
+
+[Install]
+WantedBy=multi-user.target
