@@ -1184,7 +1184,11 @@ public:
         ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
         sockaddr_in address{};
         address.sin_family = AF_INET;
-        address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+        // Unqualified on purpose: Darwin declares htonl/ntohs as function-like
+        // macros whose bodies are parenthesised expressions, and `::htonl(..)`
+        // does not survive that expansion. The sibling HangingRelay above is
+        // written the same way for the same reason.
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         address.sin_port = 0; // the kernel picks one
         if (::bind(listen_fd_, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
             return false;
@@ -1193,7 +1197,7 @@ public:
         if (::getsockname(listen_fd_, reinterpret_cast<sockaddr *>(&address), &length) != 0) {
             return false;
         }
-        port_ = ::ntohs(address.sin_port);
+        port_ = ntohs(address.sin_port);
         if (::listen(listen_fd_, 64) != 0) {
             return false;
         }

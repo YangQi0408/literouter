@@ -1041,7 +1041,10 @@ void testConfigSchema() {
     // it: loading must not rewrite what someone is editing.
     {
         TempDir dir;
-        const std::string path = dir.file("legacy.json");
+        // A path, not a string: on Windows path::value_type is wchar_t, so
+        // converting it to std::string does not compile. Every consumer below
+        // (writeFile, load, readFile) takes a path anyway.
+        const auto path = dir.file("legacy.json");
         writeFile(path,
                   R"({"schema": 1, "providers": [{"id": "a", "base_url": "https://a.example/v1", "protocol": "openai_compatible"}]})");
         auto store = ConfigStore::load(path);
