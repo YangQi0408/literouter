@@ -1411,7 +1411,7 @@ ReuseRun measureReuse(CountingRelay &relay, bool stream, int rounds) {
 // Every field a console renders must have been written by the traffic that was
 // supposed to write it. This group exists because four fields were not:
 // `latency_ms_p95` (serialized, typed in the console, never computed),
-// `ProviderStat.bytes_in`, `LogEntry.upstream_model` (the GUI draws a row for it)
+// `ProviderStat.bytes_in`, `LogEntry.upstream_model`
 // and `LogEntry.response_body` (the docs promise it and the drawer renders it).
 // All four read as "no data yet" in the UI, which is exactly how a broken field
 // hides: nothing errors, something is just permanently empty.
@@ -2907,9 +2907,9 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
 }
 
 // The local response cache, end to end: a repeated question must not be paid for
-// twice, and two accounts must never be served each other's answer.
+// twice.
 void group29ResponseCache(StubRelay &relay_a) {
-    LR_GROUP("29. a repeated request is answered from the local cache, per account");
+    LR_GROUP("29. a repeated request is answered from the local cache");
     literouter::AppConfig config;
     config.server.host = "127.0.0.1";
     config.server.port = 0;
@@ -2931,16 +2931,7 @@ void group29ResponseCache(StubRelay &relay_a) {
     route.targets = {literouter::RouteTarget{.provider = "cached", .model = {}}};
     config.routes = {route};
 
-    // Two accounts, so the cache key's client component can be observed rather
-    // than assumed.
     config.server.api_key = "admin-key";
-    literouter::ClientConfig alice;
-    alice.id = "alice";
-    alice.keys = {{"k", "alice-key", true}};
-    literouter::ClientConfig bob;
-    bob.id = "bob";
-    bob.keys = {{"k", "bob-key", true}};
-    config.clients = {alice, bob};
     config.server.response_cache_ttl_sec = 300;
     config.server.response_cache_max_entries = 8;
 
@@ -2956,13 +2947,13 @@ void group29ResponseCache(StubRelay &relay_a) {
     const std::string request = chatRequest(kRouteModel);
 
     // First: a miss, and the answer is stored.
-    const Hit first = postJson(port, "/v1/chat/completions", request, "alice-key");
+    const Hit first = postJson(port, "/v1/chat/completions", request, "admin-key");
     LR_CHECK_EQ(first.status, 200);
     LR_CHECK_EQ(first.cache, "miss");
     LR_CHECK_EQ(relay_a.chatRequests(), 1);
 
     // Second: a hit, byte-identical, and the relay is not asked again.
-    const Hit second = postJson(port, "/v1/chat/completions", request, "alice-key");
+    const Hit second = postJson(port, "/v1/chat/completions", request, "admin-key");
     LR_CHECK_EQ(second.status, 200);
     LR_CHECK_EQ(second.cache, "hit");
     LR_CHECK_MSG(second.body == first.body, "a cached answer must be byte-identical");
@@ -2992,28 +2983,21 @@ void group29ResponseCache(StubRelay &relay_a) {
     }
     LR_CHECK_MSG(saw_cache_entry, "the log must name the cache as the responder");
 
-    // A different account asks the same thing: its own key, so its own miss.
-    const Hit other = postJson(port, "/v1/chat/completions", request, "bob-key");
-    LR_CHECK_EQ(other.status, 200);
-    LR_CHECK_EQ(other.cache, "miss");
-    LR_CHECK_MSG(relay_a.chatRequests() == 2,
-                 "another account's cached answer must not be reused");
-
     // A different body is a different question.
     const std::string different =
         std::format(R"({{"model":"{}","messages":[{{"role":"user","content":"something else"}}]}})",
                     kRouteModel);
-    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", different, "alice-key").cache, "miss");
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", different, "admin-key").cache, "miss");
 
     // A streamed request is never cached: a cached answer cannot be replayed as
     // an event stream without inventing timing the client would notice.
     const Hit streamed =
-        postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true), "alice-key");
+        postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true), "admin-key");
     LR_CHECK_EQ(streamed.status, 200);
     LR_CHECK_MSG(streamed.cache.empty(),
                  "a streaming response must carry no cache marker: " + streamed.cache);
     const std::uint64_t entries_before = proxy.snapshot().cache_entries;
-    postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true), "alice-key");
+    postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true), "admin-key");
     LR_CHECK_EQ(proxy.snapshot().cache_entries, entries_before);
 
     // A non-2xx answer is not stored: caching a relay's 400 would make a
@@ -3024,12 +3008,12 @@ void group29ResponseCache(StubRelay &relay_a) {
     const std::string never_cached =
         std::format(R"({{"model":"{}","messages":[{{"role":"user","content":"not seen before"}}]}})",
                     kRouteModel);
-    const Hit bad = postJson(port, "/v1/chat/completions", never_cached, "alice-key");
+    const Hit bad = postJson(port, "/v1/chat/completions", never_cached, "admin-key");
     LR_CHECK_EQ(bad.status, 400);
     LR_CHECK(bad.cache.empty());
     // And it really was not stored: asking again still reaches the relay.
     const int before_repeat = relay_a.chatRequests();
-    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", never_cached, "alice-key").status, 400);
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", never_cached, "admin-key").status, 400);
     LR_CHECK_MSG(relay_a.chatRequests() == before_repeat + 1,
                  "a failed answer must not be cached");
     relay_a.setMode(StubRelay::Mode::Normal);
@@ -3041,7 +3025,7 @@ void group29ResponseCache(StubRelay &relay_a) {
     LR_CHECK(!proxy.snapshot().cache_enabled);
     LR_CHECK_EQ(proxy.snapshot().cache_entries, std::uint64_t{0});
     const int before_uncached = relay_a.chatRequests();
-    const Hit uncached = postJson(port, "/v1/chat/completions", request, "alice-key");
+    const Hit uncached = postJson(port, "/v1/chat/completions", request, "admin-key");
     LR_CHECK_EQ(uncached.status, 200);
     LR_CHECK_MSG(uncached.cache.empty(), "a disabled cache must not mark anything");
     // It really did go to the relay, which is the other half of "not cached".

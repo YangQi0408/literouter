@@ -30,7 +30,7 @@ export function Logs() {
         if (level !== 'all' && entry.level !== level) return false
         if (kind !== 'all' && entry.kind !== kind) return false
         if (!needle) return true
-        return [entry.message, entry.model, entry.provider, entry.request_id, entry.upstream_model, entry.client_id, entry.client_key_id]
+        return [entry.message, entry.model, entry.provider, entry.request_id, entry.upstream_model]
           .some((field) => String(field ?? '').toLowerCase().includes(needle))
       })
       .slice(-800)

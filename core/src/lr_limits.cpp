@@ -1,15 +1,13 @@
-// Per-relay admission. This is the third and last answer to "may this request
-// go out?", and it answers a different question from the other two:
+// Per-relay admission. This answers one of the two "may this request go out?"
+// questions, and it is a different question from the other:
 //
-//   ClientLedger — may this *account* ask? (its quota, its rate, its money)
-//   Router       — is this relay *failing*? (breaker state)
+//   Router          — is this relay *failing*? (breaker state)
 //   UpstreamLimiter — is this relay *full*? (what we are already sending it)
 //
-// The remedies differ, which is why they are not one thing. An exhausted client
-// gets a 429 it can retry tomorrow; a failing relay gets skipped until its
-// cooldown; a full relay gets skipped for *this* request and the next candidate
-// answers. Conflating "full" with "failing" would trip a breaker on a relay that
-// is serving perfectly and just happens to be busy.
+// The remedies differ, which is why they are not one thing: a failing relay gets
+// skipped until its cooldown, while a full relay gets skipped for *this* request
+// and the next candidate answers. Conflating "full" with "failing" would trip a
+// breaker on a relay that is serving perfectly and just happens to be busy.
 module;
 
 module literouter.core;

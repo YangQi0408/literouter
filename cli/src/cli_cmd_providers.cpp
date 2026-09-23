@@ -29,7 +29,6 @@ struct AddOptions {
     // relay contributes nothing to the cost estimate.
     double priceIn = 0.0;
     double priceOut = 0.0;
-    std::vector<std::string> groups;
     std::vector<std::string> models;
     std::vector<std::string> headers;
     bool enabled = true;
@@ -76,7 +75,6 @@ json providerJson(const literouter::ProviderConfig &provider) {
     node["weight"] = provider.weight;
     node["timeout_sec"] = provider.timeout_sec;
     node["models"] = provider.models;
-    node["groups"] = provider.groups;
     node["api_key"] = describeApiKey(provider.api_key);
     node["chat_path"] = provider.chat_path;
     node["embeddings_path"] = provider.embeddings_path;
@@ -186,7 +184,6 @@ void runAdd(Context &ctx, const AddOptions &opts) {
     provider.price_in_per_million = opts.priceIn;
     provider.price_out_per_million = opts.priceOut;
     provider.models = opts.models;
-    provider.groups = opts.groups;
     provider.chat_path = opts.chatPath;
     provider.embeddings_path = opts.embeddingsPath;
     provider.note = opts.note;
@@ -471,7 +468,6 @@ void registerAdd(CLI::App &parent, Context &ctx) {
                     "Input price in dollars per million tokens (0 = unknown)");
     sub->add_option("--price-out", opts->priceOut,
                     "Output price in dollars per million tokens (0 = unknown)");
-    sub->add_option("--group", opts->groups, std::string(literouter::i18n::tr("Provider group, repeatable")));
     sub->add_option("--model", opts->models, "A model id this relay advertises (repeatable)");
     sub->add_option("--header", opts->headers, "Extra upstream header, `Name: value` (repeatable)");
     sub->add_flag("--enable,!--no-enable", opts->enabled, "Enable the relay (default)")
@@ -535,37 +531,12 @@ void registerTest(CLI::App &parent, Context &ctx) {
 
 } // namespace
 
-void registerProviderGroups(CLI::App& parent, Context& ctx) {
-    struct Options { std::string id; std::vector<std::string> groups; bool clear = false; };
-    auto opts = std::make_shared<Options>();
-    auto* sub = parent.add_subcommand("groups", std::string(literouter::i18n::tr("Set provider groups")));
-    sub->fallthrough();
-    sub->add_option("id", opts->id, std::string(literouter::i18n::tr("Provider ID")))->required();
-    auto* groups = sub->add_option("--group", opts->groups, std::string(literouter::i18n::tr("Provider group, repeatable")));
-    sub->add_flag("--clear", opts->clear, std::string(literouter::i18n::tr("Clear provider groups")))->excludes(groups);
-    sub->callback([&ctx, opts] {
-        auto store = loadStore(ctx);
-        if (!store) { ctx.exitCode = kExitConfig; return; }
-        auto* provider = store->config().provider(opts->id);
-        if (!provider || (opts->groups.empty() && !opts->clear)) {
-            printError(std::string(literouter::i18n::tr("Choose an existing provider and --group or --clear")));
-            ctx.exitCode = kExitConfig;
-            return;
-        }
-        provider->groups = opts->groups;
-        if (!saveOrFail(ctx, *store)) return;
-        if (ctx.json) std::println("{}", json{{"id", opts->id}, {"groups", provider->groups}}.dump(2));
-        else printInfo(std::string(literouter::i18n::tr("Provider groups saved")));
-    });
-}
-
 void register_providers(CLI::App &root, Context &ctx) {
     CLI::App *providers = root.add_subcommand(
         "providers",
         std::string(literouter::i18n::tr("Manage relays (edits the config file, no server needed)")));
     providers->require_subcommand(1);
     providers->fallthrough();
-    registerProviderGroups(*providers, ctx);
     registerList(*providers, ctx);
     registerAdd(*providers, ctx);
     registerRemove(*providers, ctx);

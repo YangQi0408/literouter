@@ -12,9 +12,6 @@
 //   * not semantic — a request that differs by one character is a different
 //     key, because "close enough" in a cache means serving an answer to a
 //     question that was not asked;
-//   * not shared between clients — the account is part of the key, because two
-//     people asking the same thing are still two people, and an answer carrying
-//     one account's private context must never reach another's;
 //   * not streaming — replaying a cached body as an event stream would mean
 //     inventing chunk boundaries and timing, and a client that measures
 //     time-to-first-token would be lied to.
@@ -69,8 +66,8 @@ bool ResponseCache::enabled() const {
     return impl->enabled;
 }
 
-std::string ResponseCache::keyFor(std::string_view client, std::string_view protocol,
-                                 std::string_view model, std::string_view body) {
+std::string ResponseCache::keyFor(std::string_view protocol, std::string_view model,
+                                 std::string_view body) {
     // Length-prefixed fields rather than a separator join: a separator that
     // appears in a body (and `\n` certainly does, in any prompt) would make two
     // different requests hash to the same key. The version prefix is what makes
@@ -80,7 +77,6 @@ std::string ResponseCache::keyFor(std::string_view client, std::string_view prot
         material += std::format("\n{}:", field.size());
         material.append(field);
     };
-    append(client);
     append(protocol);
     append(model);
     append(body);

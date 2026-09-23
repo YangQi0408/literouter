@@ -4,8 +4,7 @@
 The sample JSON, the field tables and the code are three copies of the same
 facts, and the copy that is not compiled is the one that drifts: `log_capacity`
 was documented as 400 while the code defaulted to 200 (`ServerConfig` and
-`test_config` both said so), `language` and `ui_scale` were read, written,
-validated and in neither table nor sample, and a macOS config path was invented
+`test_config` both said so), and a macOS config path was invented
 that no branch of the code produces. Reviewing that by eye does not scale.
 
 So this walks the documentation against the code and reports what disagrees:
@@ -59,7 +58,7 @@ BULLET_FIELD = re.compile(r"^\s*-\s*`([A-Za-z_]+)`\s*\(([^)]*)\)")
 BULLET_DEFAULT = re.compile(r"(?:默认|default)s?[^`]*`([^`]+)`", re.IGNORECASE)
 # The sections whose fields this knows how to resolve. A route's target fields
 # are documented inside the routes section, as nested bullets.
-KNOWN_SECTIONS = ("server", "providers", "routes", "clients", "client_keys")
+KNOWN_SECTIONS = ("server", "providers", "routes")
 
 # A default cell that is not a literal has to be one of a closed set of claims
 # this script knows how to check. Counting such cells instead — which is what it
@@ -134,15 +133,11 @@ def required_paths(report: dict) -> set[str]:
             if issue.get("level") == "error"}
 
 
-# How a documented section maps onto the validator's path roots. `client_keys`
-# is documented as its own section but the validator reaches it through its
-# parent, so its paths look like `clients[0].keys[0].id`.
+# How a documented section maps onto the validator's path roots.
 SECTION_PATH_ROOTS = {
     "server": "server",
     "providers": "providers",
     "routes": "routes",
-    "clients": "clients",
-    "client_keys": "clients[0].keys",
 }
 
 
@@ -165,14 +160,12 @@ def reported_missing(paths: set[str], section: str, name: str) -> bool:
 # ("a literal for a field validate() rejects") has to skip them or it reports
 # false positives against two rows that are right:
 #
-#   server.api_key             required only once clients exist
-#   clients[0].keys[0].api_key required only while the key is enabled
+#   server.api_key             required only when the listener is off-loopback
 #
 # Anything added here should be a condition the validator genuinely makes, not
 # an exemption granted to silence a finding.
 CONDITIONALLY_REQUIRED = {
     "server.api_key",
-    "clients[0].keys[0].api_key",
 }
 
 
@@ -378,10 +371,6 @@ def check_coverage_and_defaults(text: str, defaults: dict, lang: str, problems: 
         "providers": defaults["providers"][0],
         "routes": {**defaults["routes"][0], **defaults["routes"][0]["targets"][0]},
     }
-    if defaults.get("clients"):
-        objects["clients"] = defaults["clients"][0]
-        if defaults["clients"][0].get("keys"):
-            objects["client_keys"] = defaults["clients"][0]["keys"][0]
     for section, fields in objects.items():
         body = sections.get(section)
         if body is None:
@@ -496,10 +485,6 @@ def main() -> int:
     print(f"  checked: {len(seed['server'])} server, {len(defaults['providers'][0])} provider, "
           f"{len(defaults['routes'][0])} route and "
           f"{len(defaults['routes'][0]['targets'][0])} target fields, zh and en")
-    if defaults.get("clients"):
-        client = defaults["clients"][0]
-        print(f"  distribution: {len(client)} client and "
-              f"{len(client.get('keys', [{}])[0]) if client.get('keys') else 0} client-key fields, zh and en")
     print("  note: a field the JSON writer only emits when it is not at its default "
           "(protocol, headers) cannot be enumerated from a default config, so its "
           "table row is compared but its presence is not required by this check")

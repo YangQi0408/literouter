@@ -65,14 +65,10 @@ void renderEntries(const std::vector<literouter::LogEntry> &entries) {
         printNote("  no log entries", false);
         return;
     }
-    const bool showClient = std::ranges::any_of(entries, [](const auto &entry) {
-        return !entry.client_id.empty() || !entry.client_key_id.empty();
-    });
     Table table;
     table.column("TIME");
     table.column("LEVEL");
     table.column("REQUEST");
-    if (showClient) table.column(std::string(literouter::i18n::tr("Client / key")));
     table.column("KIND");
     table.column("MODEL → RELAY");
     table.column("STATUS", Align::Right);
@@ -89,12 +85,6 @@ void renderEntries(const std::vector<literouter::LogEntry> &entries) {
                    literouter::humanMillis(entry.latency_ms),
                    literouter::humanBytes(entry.bytes),
                    literouter::truncateUtf8(entry.message, 60)};
-        if (showClient) {
-            const std::string attribution = entry.client_id.empty() && entry.client_key_id.empty()
-                ? "—" : (entry.client_id.empty() ? "—" : entry.client_id) + " / " +
-                            (entry.client_key_id.empty() ? "—" : entry.client_key_id);
-            row.insert(row.begin() + 3, attribution);
-        }
         table.row(std::move(row));
     }
     table.print();

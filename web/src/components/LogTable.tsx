@@ -15,7 +15,6 @@ export function LogTable({ entries }: { entries: LogEntry[] }) {
             <th>{t('colTime')}</th>
             <th>{t('colLevel')}</th>
             <th>{t('colKind')}</th>
-            <th>{t('colClient')}</th>
             <th>{t('colModel')}</th>
             <th>{t('colProvider')}</th>
             <th className="text-right">{t('colStatus')}</th>
@@ -43,8 +42,6 @@ export function LogTable({ entries }: { entries: LogEntry[] }) {
                 </td>
                 <td className="text-xs text-muted-foreground">{entry.kind}</td>
                 <td className="font-mono text-xs">
-                  <div>{entry.client_id || '—'}</div>
-                  {entry.client_key_id ? <div className="text-[11px] text-muted-foreground">{entry.client_key_id}</div> : null}
                 </td>
                 <td className="font-mono text-xs">
                   {entry.model}

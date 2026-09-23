@@ -333,26 +333,6 @@ std::string metricsText(const Snapshot &snapshot) {
                health.state == ProviderHealth::State::Healthy ? 1 : 0);
         sample("literouter_relay_cooldown_seconds", labels, health.cooldown_remaining);
     }
-    header("literouter_client_requests_total", "counter", "Accepted requests by client account.");
-    header("literouter_client_tokens_total", "counter", "Reported tokens by client account.");
-    header("literouter_client_cost_usd_total", "counter", "Estimated upstream cost by client account.");
-    header("literouter_client_active_requests", "gauge", "Active requests by client account.");
-    header("literouter_client_requests_today", "gauge", "Accepted requests in the UTC quota day.");
-    header("literouter_client_tokens_today", "gauge", "Charged tokens plus reservations in the UTC quota day.");
-    header("literouter_client_cost_today_usd", "gauge",
-           "Settled upstream spend in the UTC quota day, which is what a daily budget is measured "
-           "against.");
-    for (const auto &client : snapshot.clients) {
-        const auto labels = std::format("client=\"{}\"", metricLabel(client.client));
-        counter("literouter_client_requests_total", labels, client.requests);
-        counter("literouter_client_tokens_total", labels + ",direction=\"input\"", client.tokens_prompt);
-        counter("literouter_client_tokens_total", labels + ",direction=\"output\"", client.tokens_completion);
-        sample("literouter_client_cost_usd_total", labels, client.cost_usd);
-        sample("literouter_client_cost_today_usd", labels, client.cost_today);
-        counter("literouter_client_active_requests", labels, client.active_requests);
-        counter("literouter_client_requests_today", labels, client.requests_today);
-        counter("literouter_client_tokens_today", labels, client.tokens_today);
-    }
     header("literouter_cache_enabled", "gauge",
            "1 while the local response cache is storing answers.");
     sample("literouter_cache_enabled", "", snapshot.cache_enabled ? 1 : 0);
@@ -809,8 +789,6 @@ ProviderStat providerStatFromJson(const json &item) {
 
 LogEntry logEntryFromJson(const json &item) {
     LogEntry entry;
-    entry.client_id = item.value("client_id", std::string{});
-    entry.client_key_id = item.value("client_key_id", std::string{});
     entry.seq = item.value("seq", std::uint64_t{0});
     entry.time_unix = item.value("time_unix", 0.0);
     entry.level = item.value("level", std::string{"info"});
@@ -911,8 +889,6 @@ struct LogRing {
 // stack of the handler, so a request never reads another request's fields —
 // which a member on the server would have allowed.
 struct RequestContext {
-    ClientIdentity identity;
-    std::shared_ptr<ClientRequest> client_request;
     bool attempted_upstream = false;
     std::string id;
     std::string kind;
@@ -945,7 +921,6 @@ struct ProxyServer::Impl {
     // and constructing a fresh one per start is the whole fix.
     std::unique_ptr<h::Server> server;
     Router router;
-    ClientLedger client_ledger;
     // Two more gates in front of a relay, for two questions the breaker cannot
     // answer: is this relay full, and has this exact question already been
     // answered.
@@ -1174,17 +1149,9 @@ struct ProxyServer::Impl {
         if (ctx.reported->exchange(true)) {
             return;
         }
-        if (ctx.client_request) {
-            ctx.client_request->finish(facts.status >= 200 && facts.status < 300,
-                facts.prompt_tokens, facts.completion_tokens, facts.cost_usd,
-                facts.usage_reported || !ctx.attempted_upstream);
-        }
-
         LogEntry entry;
         entry.level = facts.status >= 200 && facts.status < 300 ? "info" : "error";
         entry.request_id = ctx.id;
-        entry.client_id = ctx.identity.client_id;
-        entry.client_key_id = ctx.identity.key_id;
         entry.kind = ctx.kind;
         entry.model = ctx.model;
         entry.provider = std::move(facts.provider);
@@ -1712,7 +1679,6 @@ struct ProxyServer::Impl {
                 providers.push_back(it->second);
             }
         }
-        const std::vector<ClientUsage> clients = client_ledger.snapshot();
         const std::uint64_t active =
             static_cast<std::uint64_t>(std::max(0, active_requests.load()));
         const std::uint64_t cache_hits = response_cache.hits();
@@ -1778,16 +1744,6 @@ struct ProxyServer::Impl {
             metrics.push_back(otlpMetric("literouter.relay.latency_ms_p95", "ms",
                                          stat.latency_ms_p95, start_nano, now_nano, true,
                                          attributes));
-        }
-        for (const auto &client : clients) {
-            const auto attributes = otlpAttribute("client", client.client);
-            metrics.push_back(otlpMetric("literouter.client.requests", "1",
-                                         static_cast<double>(client.requests), start_nano, now_nano,
-                                         false, attributes));
-            metrics.push_back(otlpMetric("literouter.client.cost_usd", "USD", client.cost_usd,
-                                         start_nano, now_nano, false, attributes));
-            metrics.push_back(otlpMetric("literouter.client.cost_today_usd", "USD",
-                                         client.cost_today, start_nano, now_nano, true, attributes));
         }
 
         json payload = json::object();
@@ -1937,8 +1893,6 @@ struct ProxyServer::Impl {
         LogEntry entry;
         entry.level = "warn";
         entry.request_id = ctx.id;
-        entry.client_id = ctx.identity.client_id;
-        entry.client_key_id = ctx.identity.key_id;
         entry.kind = ctx.kind;
         entry.model = ctx.model;
         entry.upstream_model = std::move(upstream_model);
@@ -1971,57 +1925,20 @@ struct ProxyServer::Impl {
         return extractApiKey(headers);
     }
 
-    static const ClientConfig *policy(const AppConfig &cfg, const ClientIdentity &identity) {
-        for (const auto &client : cfg.clients)
-            if (client.id == identity.client_id) return &client;
-        return nullptr;
+    // Single-user admission. Configured carriers: `server.api_key` is the one
+    // credential this build knows. When it is empty the listener is open — the
+    // documented behaviour, because binding to loopback is already the boundary
+    // on a machine with one operator.
+    static bool authorized(const AppConfig &cfg, const h::Request &req) {
+        if (cfg.server.api_key.empty()) return true;
+        return secureEquals(resolveSecret(cfg.server.api_key), requestKey(req));
     }
 
-    bool admitClient(const h::Request &req, h::Response &res, RequestContext &ctx, const json &body) {
-        const auto identity = authenticateClient(ctx.config, requestKey(req));
-        if (!identity) { sendError(res, 401, "invalid client key"); return false; }
-        ctx.identity = *identity;
-        if (identity->administrator) return true;
-        const auto *client = policy(ctx.config, *identity);
-        if (!client || !clientAllowsModel(*client, ctx.model)) {
-            sendError(res, 403, "this client cannot use the requested model", "permission_error", "model_forbidden");
-            return false;
-        }
-        // A conservative estimate complements the configured reservation. This
-        // is an admission budget, not an invented tokenizer or usage report.
-        std::uint64_t estimate = 0;
-        if (client->tokens_per_day > 0) {
-            for (const char *field : {"messages", "input", "prompt", "system"})
-                if (body.contains(field)) estimate += body.at(field).dump().size();
-            std::uint64_t output = 0;
-            for (const char *field : {"max_tokens", "max_completion_tokens", "max_output_tokens"})
-                if (body.contains(field) && body.at(field).is_number_unsigned())
-                    output = std::max(output, std::min<std::uint64_t>(body.at(field).get<std::uint64_t>(), 1000000000));
-            std::uint64_t n = 1;
-            if (body.contains("n") && body.at("n").is_number_unsigned())
-                n = std::clamp<std::uint64_t>(body.at("n").get<std::uint64_t>(), 1, 1000000);
-            estimate += output * n;
-        }
-        auto admitted = client_ledger.admit(*client, estimate);
-        if (!admitted) {
-            sendError(res, admitted.error().status, admitted.error().message,
-                      "rate_limit_error", "client_quota_exceeded");
-            res.set_header("Retry-After", std::to_string(admitted.error().retry_after_sec));
-            return false;
-        }
-        ctx.client_request = std::move(*admitted);
-        return true;
-    }
-
-    bool modelVisible(const AppConfig &cfg, const ClientIdentity &identity, const std::string &model) {
-        if (identity.administrator) return true;
-        const auto *client = policy(cfg, identity);
-        if (!client || !clientAllowsModel(*client, model)) return false;
-        const auto candidates = router.candidatesFor(model);
-        return std::ranges::any_of(candidates, [&](const auto &candidate) {
-            const auto *provider = cfg.provider(candidate.provider);
-            return provider && provider->enabled && clientAllowsProvider(*client, *provider);
-        });
+    bool admitClient(const h::Request &req, h::Response &res, RequestContext &ctx) {
+        if (authorized(ctx.config, req)) return true;
+        sendError(res, 401, "missing or invalid API key; send `Authorization: Bearer <key>`",
+                  "authentication_error", "invalid_api_key");
+        return false;
     }
 
     static void applyCors(h::Response &res) {
@@ -2122,13 +2039,13 @@ struct ProxyServer::Impl {
                          body.contains("stream") && body["stream"].is_boolean() && body["stream"].get<bool>();
         }
 
-        if (!admitClient(req, res, ctx, body)) {
+        if (!admitClient(req, res, ctx)) {
             finish(ctx, {.status = res.status, .message = "client admission rejected"});
             return;
         }
         if (!media && ctx.config.server.session_affinity_sec > 0) {
             const auto key = sessionKey(body);
-            if (!key.empty()) ctx.affinity_key = ctx.identity.client_id + ":" + key;
+            if (!key.empty()) ctx.affinity_key = key;
         }
 
         // ── the local response cache ────────────────────────────────────────
@@ -2136,15 +2053,9 @@ struct ProxyServer::Impl {
         // all. Streaming is excluded by construction: a cached answer is one
         // body, and the client asked for an event stream. Media is excluded
         // because its request is multipart and its answer can be binary.
-        //
-        // The account is part of the key. An administrator is the operator's own
-        // session, so it shares one namespace; two client accounts never share
-        // anything, because an answer can carry one account's private context.
         const bool cacheable = !media && !ctx.stream;
         const std::string cache_key =
-            cacheable ? ResponseCache::keyFor(ctx.identity.administrator ? std::string_view{}
-                                                                       : ctx.identity.client_id,
-                                              ingress_protocol, ctx.model, effective_req_body)
+            cacheable ? ResponseCache::keyFor(ingress_protocol, ctx.model, effective_req_body)
                       : std::string{};
         if (cacheable) {
             if (auto hit = response_cache.lookup(cache_key, nowUnix()); hit) {
@@ -2164,14 +2075,7 @@ struct ProxyServer::Impl {
         }
 
         auto candidates = order(router.candidatesFor(ctx.model));
-        if (const auto *client = policy(ctx.config, ctx.identity)) {
-            std::erase_if(candidates, [&](const auto &candidate) {
-                const auto *provider = ctx.config.provider(candidate.provider);
-                return !provider || !clientAllowsProvider(*client, *provider);
-            });
-        }
         if (media && !candidates.empty()) {
-            // Filter protocols only within the client's authorized channels.
             std::erase_if(candidates, [&](const Candidate &candidate) {
                 const auto *provider = ctx.config.provider(candidate.provider);
                 return provider == nullptr ||
@@ -3277,10 +3181,6 @@ void ProxyServer::setConfigPath(std::string path) {
 
 std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     ensureLocalTimezone();
-    if (!config.clients.empty()) {
-        const auto report = validate(config);
-        if (!report.ok()) return std::unexpected(report.summary());
-    }
     if (impl_->running.load()) {
         return std::unexpected(std::string{"server is already running"});
     }
@@ -3384,8 +3284,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         if (console_path && req.method == "GET" && impl_->snapshotConfig().server.web_ui) {
             return h::Server::HandlerResponse::Unhandled;
         }
-        if (authenticateClient(impl_->snapshotConfig(), Impl::requestKey(req),
-                               startsWith(req.path, kAdminPrefix))) {
+        if (Impl::authorized(impl_->snapshotConfig(), req)) {
             return h::Server::HandlerResponse::Unhandled;
         }
         sendError(res, 401, "missing or invalid API key; send `Authorization: Bearer <key>`",
@@ -3516,13 +3415,10 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         pipeline(req, res, "gemini_stream");
     });
 
-    server.Get("/v1beta/models", [this](const h::Request &req, h::Response &res) {
+    server.Get("/v1beta/models", [this](const h::Request &, h::Response &res) {
         const AppConfig cfg = impl_->snapshotConfig();
-        const auto identity = authenticateClient(cfg, Impl::requestKey(req));
-        if (!identity) { sendError(res, 401, "invalid client key"); return; }
         json models = json::array();
         for (const auto &name : cfg.logicalModels()) {
-            if (!impl_->modelVisible(cfg, *identity, name)) continue;
             json item = json::object();
             item["name"] = "models/" + name;
             item["version"] = "001";
@@ -3535,18 +3431,15 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         res.set_content(json{{"models", std::move(models)}}.dump(), "application/json");
     });
 
-    const auto modelsListHandler = [this](const h::Request &req, h::Response &res) {
+    const auto modelsListHandler = [this](const h::Request &, h::Response &res) {
         const AppConfig cfg = impl_->snapshotConfig();
-        const auto identity = authenticateClient(cfg, Impl::requestKey(req));
-        if (!identity) { sendError(res, 401, "invalid client key"); return; }
         json data = json::array();
         for (const auto &name : cfg.logicalModels()) {
-            if (!impl_->modelVisible(cfg, *identity, name)) continue;
             json item = json::object();
             item["id"] = name;
             item["object"] = "model";
             item["owned_by"] = "literouter";
-            if (const RouteConfig *route = cfg.route(name); route != nullptr && identity->administrator) {
+            if (const RouteConfig *route = cfg.route(name); route != nullptr) {
                 json hops = json::array();
                 for (const auto &target : route->targets) {
                     hops.push_back(target.model.empty()
@@ -3690,8 +3583,6 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
             else { entry["api_key"] = ""; entry["api_key_source"] = "literal"; }
         };
         if (doc.contains("server")) hideKey(doc["server"]);
-        for (auto &client : doc["clients"])
-            for (auto &key : client["keys"]) hideKey(key);
         if (auto providers = doc.find("providers");
             providers != doc.end() && providers->is_array()) {
             for (auto &entry : *providers) {
@@ -3761,29 +3652,8 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
             }
         }
 
-        // Match nested credentials by both account and key id, never by list
-        // position. The browser cannot accidentally copy another client's key.
-        if (!doc.contains("clients")) parsed->clients = current.clients;
-        for (auto &client : parsed->clients) {
-            for (auto &key : client.keys) {
-                bool clear = false;
-                if (doc.contains("clients")) for (const auto &c : doc.at("clients")) {
-                    if (c.value("id", std::string{}) != client.id || !c.contains("keys")) continue;
-                    for (const auto &k : c.at("keys"))
-                        if (k.value("id", std::string{}) == key.id)
-                            clear = k.value("api_key_clear", false);
-                }
-                if (clear) { key.api_key.clear(); continue; }
-                if (!key.api_key.empty()) continue;
-                for (const auto &stored : current.clients) {
-                    if (stored.id != client.id) continue;
-                    for (const auto &existing : stored.keys)
-                        if (existing.id == key.id) key.api_key = existing.api_key;
-                }
-            }
-        }
-        const bool clear_admin = doc.contains("server") && doc.at("server").value("api_key_clear", false);
-        if (clear_admin) parsed->server.api_key.clear();
+        const bool clear_server = doc.contains("server") && doc.at("server").value("api_key_clear", false);
+        if (clear_server) parsed->server.api_key.clear();
         else if (parsed->server.api_key.empty()) parsed->server.api_key = current.server.api_key;
 
         const ValidationReport report = validate(*parsed);
@@ -3973,12 +3843,6 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         std::scoped_lock lock{impl_->config_mutex};
         impl_->bound_server.port = bound;
     }
-    if (auto opened = impl_->client_ledger.open(defaultClientQuotaPath(impl_->configPath(), bound),
-                                               !config.clients.empty());
-        !opened) {
-        server.stop();
-        return std::unexpected(opened.error());
-    }
     // The telemetry file belongs to the instance, and the port is what names it.
     // Computed here rather than before the bind for two reasons: a config asking
     // for port 0 has no name until the kernel picks one, and the accept loop has
@@ -4013,7 +3877,6 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         if (impl_->runner.joinable()) {
             impl_->runner.join();
         }
-        impl_->client_ledger.close();
         return std::unexpected(std::string{"the accept loop stopped during startup"});
     }
 
@@ -4053,7 +3916,6 @@ void ProxyServer::stop() {
     // joined, and no handler can run again, so holding the object would only
     // pin a decommissioned listener and its address for the process lifetime.
     impl_->server.reset();
-    impl_->client_ledger.close();
     impl_->running.store(false);
     // The listener is gone, so the record of it should be too — a stale file
     // would otherwise be indistinguishable from one whose process is hung.
@@ -4120,19 +3982,10 @@ Snapshot ProxyServer::snapshot() const {
             }
         }
     }
-    out.clients = impl_->client_ledger.snapshot();
     out.cache_enabled = impl_->response_cache.enabled();
     out.cache_hits = impl_->response_cache.hits();
     out.cache_misses = impl_->response_cache.misses();
     out.cache_entries = impl_->response_cache.size();
-    for (const auto &client : cfg.clients) {
-        if (std::ranges::none_of(out.clients, [&](const auto &u) { return u.client == client.id; })) {
-            ClientUsage empty;
-            empty.client = client.id;
-            empty.day_unix = std::floor(nowUnix() / 86400.0) * 86400.0;
-            out.clients.push_back(std::move(empty));
-        }
-    }
     out.health = impl_->router.health(nowUnix());
     return out;
 }
@@ -4298,25 +4151,6 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
     s.tokens_completion = parsed.value("tokens_completion", std::uint64_t{0});
     s.latency_ms_avg = parsed.value("latency_ms_avg", 0.0);
     s.log_seq = parsed.value("log_seq", std::uint64_t{0});
-    if (const auto it = parsed.find("clients"); it != parsed.end() && it->is_array()) {
-        for (const auto &item : *it) {
-            if (!item.is_object()) continue;
-            ClientUsage u;
-            u.client = item.value("client", std::string{});
-            u.requests = item.value("requests", std::uint64_t{0});
-            u.successes = item.value("successes", std::uint64_t{0});
-            u.failures = item.value("failures", std::uint64_t{0});
-            u.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
-            u.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
-            u.cost_usd = item.value("cost_usd", 0.0);
-            u.active_requests = item.value("active_requests", std::uint64_t{0});
-            u.day_unix = item.value("day_unix", 0.0);
-            u.requests_today = item.value("requests_today", std::uint64_t{0});
-            u.tokens_today = item.value("tokens_today", std::uint64_t{0});
-            u.reserved_tokens = item.value("reserved_tokens", std::uint64_t{0});
-            s.clients.push_back(std::move(u));
-        }
-    }
     s.breakers_open = parsed.value("breakers_open", 0);
 
     if (const auto it = parsed.find("providers"); it != parsed.end() && it->is_array()) {

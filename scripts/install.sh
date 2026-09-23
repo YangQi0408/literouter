@@ -89,7 +89,7 @@ if [ "${UNINSTALL}" -eq 1 ]; then
     rm -f "${UNIT_PATH}" "${TARGET}"
     systemctl daemon-reload 2>/dev/null || true
     note "binary and unit removed"
-    note "kept ${CONFIG_DIR} (your keys) and ${STATE_DIR} (telemetry and quota ledgers)"
+    note "kept ${CONFIG_DIR} (your keys) and ${STATE_DIR} (telemetry)"
     note "remove them by hand if you are sure: rm -rf ${CONFIG_DIR} ${STATE_DIR}"
     exit 0
 fi

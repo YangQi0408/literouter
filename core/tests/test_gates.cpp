@@ -250,28 +250,23 @@ void cacheEviction() {
 }
 
 void cacheKeys() {
-    LR_GROUP("cache keys separate accounts, protocols, models and bodies");
+    LR_GROUP("cache keys separate protocols, models and bodies");
 
-    const std::string base = ResponseCache::keyFor("alice", "openai", "gpt-4o", "{\"a\":1}");
+    const std::string base = ResponseCache::keyFor("openai", "gpt-4o", "{\"a\":1}");
     LR_CHECK_EQ(base.size(), std::size_t{64}); // sha256, hex
-    LR_CHECK_EQ(base, ResponseCache::keyFor("alice", "openai", "gpt-4o", "{\"a\":1}"));
+    LR_CHECK_EQ(base, ResponseCache::keyFor("openai", "gpt-4o", "{\"a\":1}"));
 
     // Every field that could change the answer changes the key.
-    LR_CHECK(base != ResponseCache::keyFor("bob", "openai", "gpt-4o", "{\"a\":1}"));
-    LR_CHECK(base != ResponseCache::keyFor("alice", "anthropic", "gpt-4o", "{\"a\":1}"));
-    LR_CHECK(base != ResponseCache::keyFor("alice", "openai", "gpt-4o-mini", "{\"a\":1}"));
-    LR_CHECK(base != ResponseCache::keyFor("alice", "openai", "gpt-4o", "{\"a\":2}"));
-    // Two accounts sharing nothing is the property that matters most: an answer
-    // carrying one account's private context must never reach another's.
-    LR_CHECK(ResponseCache::keyFor("", "openai", "m", "b") !=
-             ResponseCache::keyFor("alice", "openai", "m", "b"));
+    LR_CHECK(base != ResponseCache::keyFor("anthropic", "gpt-4o", "{\"a\":1}"));
+    LR_CHECK(base != ResponseCache::keyFor("openai", "gpt-4o-mini", "{\"a\":1}"));
+    LR_CHECK(base != ResponseCache::keyFor("openai", "gpt-4o", "{\"a\":2}"));
 
     // Field boundaries are length-prefixed, so moving a character across a
     // boundary is a different key rather than the same concatenation.
-    LR_CHECK(ResponseCache::keyFor("ab", "c", "m", "b") !=
-             ResponseCache::keyFor("a", "bc", "m", "b"));
-    LR_CHECK(ResponseCache::keyFor("a", "b", "cd", "e") !=
-             ResponseCache::keyFor("a", "b", "c", "de"));
+    LR_CHECK(ResponseCache::keyFor("ab", "c", "m") !=
+             ResponseCache::keyFor("a", "bc", "m"));
+    LR_CHECK(ResponseCache::keyFor("a", "b", "cd") !=
+             ResponseCache::keyFor("a", "b", "c"));
 }
 
 } // namespace

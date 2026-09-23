@@ -29,7 +29,6 @@ struct Context {
 void register_serve(CLI::App &root, Context &ctx);
 void register_status(CLI::App &root, Context &ctx);
 void register_models(CLI::App &root, Context &ctx);
-void register_clients(CLI::App &root, Context &ctx);
 void register_providers(CLI::App &root, Context &ctx);
 void register_routes(CLI::App &root, Context &ctx);
 void register_config(CLI::App &root, Context &ctx);

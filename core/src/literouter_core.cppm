@@ -2,8 +2,8 @@
 //
 // Everything a front end needs lives here: the config model and its on-disk
 // form, the routing/failover decision layer, the HTTP proxy itself, and the
-// telemetry the console renders. Both `literouter.cli` and `literouter.gui`
-// import this module and nothing else from the engine.
+// telemetry the console renders. `literouter.cli` imports this module and
+// nothing else from the engine.
 //
 // The module deliberately exports no third-party type. httplib and nlohmann's
 // json stay in the implementation units, so a front end can be rebuilt without
@@ -26,8 +26,11 @@ inline constexpr std::string_view kUserAgent = "literouter/0.1.0";
 // up to this number, and a document from a NEWER build is refused rather than
 // silently loaded minus the fields this build has never heard of — losing those
 // fields on the next save is exactly the kind of quiet damage a tolerant reader
-// would cause.
-inline constexpr int kConfigSchema = 2;
+// would cause. Schema 3 is the single-user schema: the client-distribution
+// fields (`clients`, provider `groups`, `ui_scale`, `language`) are gone, and a
+// document that still carries them is migrated with a note naming what was
+// dropped rather than silently shedding it.
+inline constexpr int kConfigSchema = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration model
@@ -64,8 +67,6 @@ struct ProviderConfig {
     // Model ids this relay advertises. Used by /v1/models and by the fallback
     // matcher when a request names a model no route mentions.
     std::vector<std::string> models;
-    // Optional channel groups used by client access policies.
-    std::vector<std::string> groups;
     // Extra headers sent upstream (organisation ids, referer, ...).
     std::map<std::string, std::string> headers;
     // Path appended to base_url. Overridable because a handful of relays put
@@ -97,9 +98,8 @@ struct ProviderConfig {
     std::string aws_secret_key;
     // Bedrock: an STS session token, when the credentials above are temporary.
     std::string aws_session_token;
-    // Relay-side protection, distinct from the per-client limits in
-    // ClientConfig: this bounds what literouter itself sends to one relay. 0
-    // disables each. A relay at its limit is skipped like an open breaker and
+    // Relay-side protection: this bounds what literouter itself sends to one
+    // relay. 0 disables each. A relay at its limit is skipped like an open breaker and
     // the next candidate is tried, so a busy relay degrades to a slower answer
     // rather than to a failure.
     int max_concurrent = 0;
@@ -203,10 +203,6 @@ struct ServerConfig {
     // listener is reachable from more than this machine: the console exposes the
     // request log, which can carry prompts.
     bool web_ui = true;
-    // Interface language ("auto", "en", "zh"). Default "auto" detects from system locale.
-    std::string language = "auto";
-    // UI display scale (e.g. 1.0 = 100%, 0.8 = 80%, 1.25 = 125%). 0.0 or 1.0 means default.
-    double ui_scale = 1.0;
     // How wide one traffic-trend bucket is, in seconds, and how many are kept.
     // 3600 x 24 is the historical hour-by-day chart; 60 x 120 is the last two
     // hours at minute resolution, which is what a relay being debugged right now
@@ -233,47 +229,11 @@ struct ServerConfig {
 // Scheme-aware listener URL, with IPv6 brackets; path may be empty.
 std::string serverBaseUrl(const ServerConfig &server, std::string_view path = {});
 
-struct ClientKeyConfig {
-    std::string id;
-    std::string api_key;
-    bool enabled = true;
-};
-
-// Cryptographic key generation for explicit "create key" actions. Never use
-// hexId(), whose PRNG is only intended for request identifiers, for secrets.
-std::expected<std::string, std::string> generateClientKey();
-
-// An account owns its keys and quota. Empty allowlists permit every model/group.
-struct ClientConfig {
-    std::string id;
-    std::string name;
-    bool enabled = true;
-    std::vector<ClientKeyConfig> keys;
-    std::vector<std::string> models;
-    std::vector<std::string> provider_groups;
-    int requests_per_minute = 0;
-    int max_concurrent = 0;
-    std::uint64_t requests_per_day = 0;
-    std::uint64_t tokens_per_day = 0;
-    // Spend ceiling for the UTC day, in US dollars. 0 disables it. Unlike the
-    // token quota this cannot be reserved before dispatch, because the price
-    // depends on which relay answers and how many tokens it reports: the check
-    // is made at admission and the actual cost is added when the request
-    // settles, so a request already in flight when the ceiling is reached still
-    // completes and is still charged. It is a ceiling on the next request, not
-    // a promise that the day can never exceed it.
-    double budget_usd_per_day = 0.0;
-    // Reserved before dispatch, reconciled against upstream usage afterwards.
-    // Missing usage retains the reservation so an unmetered stream is not free.
-    std::uint64_t token_reservation = 4096;
-};
-
 struct AppConfig {
     int schema = kConfigSchema;
     ServerConfig server;
     std::vector<ProviderConfig> providers;
     std::vector<RouteConfig> routes;
-    std::vector<ClientConfig> clients;
 
     // Convenience: nullptr when no provider carries this id.
     const ProviderConfig *provider(std::string_view id) const;
@@ -285,80 +245,6 @@ struct AppConfig {
     // All known models: configured routes plus provider-advertised models.
     std::vector<std::string> allModels() const;
 };
-
-struct ClientIdentity {
-    std::string client_id;
-    std::string key_id;
-    bool administrator = false;
-};
-
-// Empty admin keys allow legacy local access only while clients is empty.
-std::optional<ClientIdentity> authenticateClient(const AppConfig &config,
-                                                 std::string_view presented,
-                                                 bool management = false);
-bool clientAllowsModel(const ClientConfig &client, std::string_view model);
-bool clientAllowsProvider(const ClientConfig &client, const ProviderConfig &provider);
-
-struct ClientUsage {
-    std::string client;
-    std::uint64_t requests = 0;
-    std::uint64_t successes = 0;
-    std::uint64_t failures = 0;
-    std::uint64_t tokens_prompt = 0;
-    std::uint64_t tokens_completion = 0;
-    double cost_usd = 0.0;
-    std::uint64_t active_requests = 0;
-    double day_unix = 0.0; // UTC midnight
-    std::uint64_t requests_today = 0;
-    std::uint64_t tokens_today = 0; // charged plus outstanding reservations
-    std::uint64_t reserved_tokens = 0;
-    // Settled spend for the UTC day. Only relays that report usage and have a
-    // price contribute, so it is a floor on what was spent, like cost_usd.
-    double cost_today = 0.0;
-};
-
-struct ClientRejection {
-    int status = 429;
-    std::string message;
-    int retry_after_sec = 1;
-};
-
-// Shared by copies of a streaming request. Destruction releases concurrency
-// even on exceptions; an unfinished upstream request keeps its token reserve.
-class ClientRequest {
-public:
-    explicit ClientRequest(std::function<void(bool, std::uint64_t, std::uint64_t, double, bool)> done);
-    ~ClientRequest();
-    void finish(bool success, std::uint64_t prompt, std::uint64_t completion,
-                double cost_usd, bool usage_known);
-private:
-    friend class ClientLedger;
-    std::function<void(bool, std::uint64_t, std::uint64_t, double, bool)> done_;
-    std::atomic<bool> finished_{false};
-};
-
-class ClientLedger {
-public:
-    ClientLedger();
-    ~ClientLedger();
-    ClientLedger(const ClientLedger &) = delete;
-    ClientLedger &operator=(const ClientLedger &) = delete;
-    // Load independent quota state; malformed state fails closed. Existing
-    // state or require_ownership takes an exclusive lock before returning.
-    std::expected<void, std::string> open(const std::filesystem::path &path,
-                                          bool require_ownership = false);
-    // Stop admissions; keep ownership until all admitted requests finish.
-    // Snapshots remain available after closing.
-    void close();
-    std::expected<std::shared_ptr<ClientRequest>, ClientRejection> admit(
-        const ClientConfig &client, std::uint64_t token_estimate = 0);
-    std::vector<ClientUsage> snapshot() const;
-private:
-    struct Impl;
-    std::shared_ptr<Impl> impl_;
-};
-
-std::string toJsonString(const ClientUsage &usage);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Paths
@@ -377,10 +263,6 @@ std::filesystem::path defaultStateDir();
 // the pid file, because two instances are two histories — sharing one file meant
 // the second writer silently replaced the first one's counters.
 std::filesystem::path defaultTelemetryPath(int port);
-
-// Quotas follow the canonical config path across port changes. Library users
-// without a config path retain one ledger per bound port.
-std::filesystem::path defaultClientQuotaPath(const std::filesystem::path &config_path, int port);
 
 // Where a running instance of this build records itself: one file per port,
 // since the port is what identifies an instance. Written after a successful
@@ -540,8 +422,8 @@ private:
 // Upstream admission
 //
 // A per-relay gate on what literouter itself sends, which is a different
-// question from what a client may ask for (ClientLedger) and from whether a
-// relay is healthy (Router). A relay can be perfectly healthy and still be one
+// question from whether a relay is healthy (Router). A relay can be perfectly
+// healthy and still be one
 // this proxy is already hammering with more concurrent streams than the operator
 // paid for. Distinct from the breaker because the remedy differs: a breaker says
 // "this relay is failing", a limit says "this relay is full".
@@ -601,11 +483,9 @@ private:
 // Local response cache
 //
 // Exact-match, non-streaming only, and bounded on both axes (TTL and entry
-// count). The key is a hash of the client, the protocol, the model and the
-// request body as the upstream would have received it, so a request that
-// differs in any way that could change the answer is a different key. The
-// client is part of it on purpose: two accounts must never be served each
-// other's answer, and a cache that could do that is worse than no cache.
+// count). The key is a hash of the protocol, the model and the request body as
+// the upstream would have received it, so a request that differs in any way
+// that could change the answer is a different key.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct CachedResponse {
@@ -625,8 +505,8 @@ public:
     void configure(int ttl_sec, int max_entries);
     bool enabled() const;
 
-    static std::string keyFor(std::string_view client, std::string_view protocol,
-                              std::string_view model, std::string_view body);
+    static std::string keyFor(std::string_view protocol, std::string_view model,
+                              std::string_view body);
 
     // A hit refreshes the entry's position in the LRU order, because a cache
     // that evicts what is being used is a cache with a worse hit rate than the
@@ -692,8 +572,6 @@ struct ProviderHealth {
 };
 
 struct LogEntry {
-    std::string client_id;
-    std::string client_key_id;
     std::uint64_t seq = 0;
     double time_unix = 0.0;
     // "info" | "warn" | "error"
@@ -754,7 +632,6 @@ struct TrafficBucket {
 };
 
 struct Snapshot {
-    std::vector<ClientUsage> clients;
     bool running = false;
     std::string host;
     int port = 0;
@@ -1105,8 +982,8 @@ private:
 // Owns the listening socket and the worker pool. `start` binds and returns;
 // the accept loop runs on its own thread. Everything the two front ends do —
 // start, stop, hot-reload, read telemetry, stream the log — goes through this
-// object, and the GUI holds one in-process while the CLI either creates one
-// (`serve`) or talks to a remote one over the admin endpoints.
+// object; the CLI either creates one in-process (`serve`) or talks to a remote
+// one over the admin endpoints.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class ProxyServer {

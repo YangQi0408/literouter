@@ -2,8 +2,6 @@ import { Check, Copy, Download, Upload } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import { SecretInput } from '@/components/SecretInput'
-import { stringifyConfig } from '@/lib/client-integers'
-import { ClientSnippets } from '@/components/ClientSnippets'
 import { Field, NumberField, SwitchField, TextField } from '@/components/fields'
 import { Issues } from '@/components/Issues'
 import { Button } from '@/components/ui/button'
@@ -33,7 +31,7 @@ export function Settings() {
       draft.server = { ...draft.server, ...changes }
     })
   const issues = saveIssues.length ? saveIssues : (serverReport?.issues ?? [])
-  const json = stringifyConfig(working)
+  const json = JSON.stringify(working, null, 2)
 
   async function copy() {
     try {
@@ -79,7 +77,6 @@ export function Settings() {
         draft.server = incoming.server
         draft.providers = incoming.providers
         draft.routes = incoming.routes
-        draft.clients = incoming.clients
       })
     } catch (error) {
       setImportError(`${t('importFailed')}: ${error instanceof Error ? error.message : String(error)}`)
@@ -121,19 +118,6 @@ export function Settings() {
               label={server.web_ui ? 'on' : 'off'}
             />
           </Field>
-          <Field label="language">
-            <Select value={server.language} onValueChange={(language) => patch({ language })}>
-              <SelectTrigger className="h-9 w-full font-mono text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">auto</SelectItem>
-                <SelectItem value="en">en</SelectItem>
-                <SelectItem value="zh">zh</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-
           <Field label="pass_through_unknown">
             <SwitchField
               checked={server.pass_through_unknown}
@@ -190,13 +174,6 @@ export function Settings() {
               value={server.request_deadline_sec}
               min={0}
               onChange={(request_deadline_sec) => patch({ request_deadline_sec })}
-            />
-          </Field>
-          <Field label="ui_scale">
-            <NumberField
-              value={server.ui_scale}
-              step={0.05}
-              onChange={(ui_scale) => patch({ ui_scale })}
             />
           </Field>
 
@@ -286,7 +263,6 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      <ClientSnippets />
 
       <Card>
         <CardHeader>

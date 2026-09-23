@@ -128,7 +128,6 @@ ProviderConfig providerFromJson(const json &node) {
     out.connect_timeout_sec = readInt(node, "connect_timeout_sec", 15);
     out.supports_stream = readBool(node, "supports_stream", true);
     out.models = readStringArray(node, "models");
-    out.groups = readStringArray(node, "groups");
     out.headers = readStringMap(node, "headers");
     out.chat_path = readString(node, "chat_path", "/chat/completions");
     out.embeddings_path = readString(node, "embeddings_path", "/embeddings");
@@ -166,7 +165,6 @@ json providerToJson(const ProviderConfig &value) {
     node["connect_timeout_sec"] = value.connect_timeout_sec;
     node["supports_stream"] = value.supports_stream;
     node["models"] = value.models;
-    node["groups"] = value.groups;
     if (!value.headers.empty()) {
         node["headers"] = value.headers;
     }
@@ -284,8 +282,6 @@ ServerConfig serverFromJson(const json &node) {
     out.log_body_limit = readInt(node, "log_body_limit", out.log_body_limit);
     out.persist_telemetry = readBool(node, "persist_telemetry", out.persist_telemetry);
     out.web_ui = readBool(node, "web_ui", out.web_ui);
-    out.language = readString(node, "language", out.language);
-    out.ui_scale = readDouble(node, "ui_scale", out.ui_scale);
     out.traffic_bucket_sec = readInt(node, "traffic_bucket_sec", out.traffic_bucket_sec);
     out.traffic_bucket_count = readInt(node, "traffic_bucket_count", out.traffic_bucket_count);
     out.response_cache_ttl_sec = readInt(node, "response_cache_ttl_sec", out.response_cache_ttl_sec);
@@ -316,8 +312,6 @@ json serverToJson(const ServerConfig &value) {
     node["log_body_limit"] = value.log_body_limit;
     node["persist_telemetry"] = value.persist_telemetry;
     node["web_ui"] = value.web_ui;
-    node["language"] = value.language;
-    node["ui_scale"] = value.ui_scale;
     node["traffic_bucket_sec"] = value.traffic_bucket_sec;
     node["traffic_bucket_count"] = value.traffic_bucket_count;
     node["response_cache_ttl_sec"] = value.response_cache_ttl_sec;
@@ -469,19 +463,6 @@ std::string toJsonString(const AppConfig &config) {
     }
     root["routes"] = std::move(routes);
 
-    root["clients"] = json::array();
-    for (const auto &client : config.clients) {
-        json keys = json::array();
-        for (const auto &key : client.keys)
-            keys.push_back(json{{"id", key.id}, {"api_key", key.api_key}, {"enabled", key.enabled}});
-        root["clients"].push_back(json{{"id", client.id}, {"name", client.name},
-            {"enabled", client.enabled}, {"keys", keys}, {"models", client.models},
-            {"provider_groups", client.provider_groups}, {"requests_per_minute", client.requests_per_minute},
-            {"max_concurrent", client.max_concurrent}, {"requests_per_day", client.requests_per_day},
-            {"tokens_per_day", client.tokens_per_day}, {"token_reservation", client.token_reservation},
-            {"budget_usd_per_day", client.budget_usd_per_day}});
-    }
-
     return root.dump(2);
 }
 
@@ -502,59 +483,6 @@ std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text) {
             "rather than editing the file, or the fields it added would be dropped on the "
             "next save",
             out.schema, kConfigSchema));
-    }
-
-    // Access rules fail closed on malformed types: treating a misspelled
-    // allowlist as an empty list would silently grant access to everything.
-    try {
-        if (root.contains("clients")) {
-            const auto &list = root.at("clients");
-            if (!list.is_array()) throw std::runtime_error("clients must be an array");
-            for (const auto &entry : list) {
-                if (!entry.is_object()) throw std::runtime_error("client must be an object");
-                ClientConfig c;
-                c.id = entry.value("id", std::string{});
-                c.name = entry.value("name", std::string{});
-                c.enabled = entry.value("enabled", true);
-                c.models = entry.value("models", std::vector<std::string>{});
-                c.provider_groups = entry.value("provider_groups", std::vector<std::string>{});
-                const auto nonnegative = [&](const char *key, std::uint64_t fallback) {
-                    if (!entry.contains(key)) return fallback;
-                    const auto &v = entry.at(key);
-                    if (!v.is_number_unsigned() || v.get<std::uint64_t>() > 9007199254740991ULL)
-                        throw std::runtime_error(std::string{key} + " must be a nonnegative safe integer");
-                    return v.get<std::uint64_t>();
-                };
-                const auto nonnegativeReal = [&](const char *key, double fallback) {
-                    if (!entry.contains(key)) return fallback;
-                    const auto &v = entry.at(key);
-                    if (!v.is_number() || !std::isfinite(v.get<double>()) || v.get<double>() < 0.0)
-                        throw std::runtime_error(std::string{key} + " must be a nonnegative number");
-                    return v.get<double>();
-                };
-                const auto rpm = nonnegative("requests_per_minute", 0);
-                const auto concurrent = nonnegative("max_concurrent", 0);
-                if (rpm > 2147483647ULL || concurrent > 2147483647ULL)
-                    throw std::runtime_error("client rate or concurrency is too large");
-                c.requests_per_minute = static_cast<int>(rpm);
-                c.max_concurrent = static_cast<int>(concurrent);
-                c.requests_per_day = nonnegative("requests_per_day", 0);
-                c.tokens_per_day = nonnegative("tokens_per_day", 0);
-                c.token_reservation = nonnegative("token_reservation", 4096);
-                c.budget_usd_per_day = nonnegativeReal("budget_usd_per_day", 0.0);
-                if (entry.contains("keys")) {
-                    if (!entry.at("keys").is_array()) throw std::runtime_error("keys must be an array");
-                    for (const auto &key : entry.at("keys")) {
-                        if (!key.is_object()) throw std::runtime_error("key must be an object");
-                        c.keys.push_back(ClientKeyConfig{key.value("id", std::string{}),
-                            key.value("api_key", std::string{}), key.value("enabled", true)});
-                    }
-                }
-                out.clients.push_back(std::move(c));
-            }
-        }
-    } catch (const std::exception &e) {
-        return std::unexpected(std::string{"invalid clients configuration: "} + e.what());
     }
 
     if (const auto it = root.find("server"); it != root.end()) {
@@ -614,10 +542,6 @@ std::string toJsonString(const Snapshot &snapshot) {
     node["latency_ms_avg"] = snapshot.latency_ms_avg;
     node["log_seq"] = snapshot.log_seq;
     node["breakers_open"] = snapshot.breakers_open;
-    node["clients"] = json::array();
-    for (const auto &usage : snapshot.clients)
-        node["clients"].push_back(json::parse(toJsonString(usage)));
-
     json providers = json::array();
     for (const auto &entry : snapshot.providers) {
         providers.push_back(statToJson(entry));
@@ -674,8 +598,6 @@ std::string toJsonString(const LogEntry &entry) {
     node["datetime"] = entry.dateTimeText();
     node["level"] = entry.level;
     node["request_id"] = entry.request_id;
-    node["client_id"] = entry.client_id;
-    node["client_key_id"] = entry.client_key_id;
     node["kind"] = entry.kind;
     node["model"] = entry.model;
     node["provider"] = entry.provider;
@@ -751,15 +673,33 @@ std::expected<ConfigMigration, std::string> migrateConfigJson(std::string_view t
                     proto));
             }
         }
-        // `system` was accepted as a synonym for auto detection; the canonical
-        // value is what the docs and the console both name.
-        if (toLower(parsed->server.language) == "system") {
-            parsed->server.language = "auto";
-            migration.notes.push_back("server.language: `system` -> `auto`");
+    }
+
+    // schema 2 -> 3. The client-distribution surface is gone, and so are the two
+    // settings only the native desktop console ever read. The reader already
+    // ignores them, so this step exists to SAY so: a field that quietly stops
+    // having an effect is the failure mode the schema number is for.
+    if (migration.from_schema < 3) {
+        const auto drop = [&](const std::string &what) {
+            migration.notes.push_back(std::format(
+                "{}: removed with the single-user schema", what));
+        };
+        if (root.contains("clients")) drop("clients");
+        if (const auto server = root.find("server"); server != root.end() && server->is_object()) {
+            if (server->contains("language")) drop("server.language");
+            if (server->contains("ui_scale")) drop("server.ui_scale");
+        }
+        if (const auto providers = root.find("providers");
+            providers != root.end() && providers->is_array()) {
+            for (const auto &entry : *providers) {
+                if (entry.is_object() && entry.contains("groups"))
+                    drop(std::format("providers[{}].groups", entry.value("id", std::string{})));
+            }
         }
         migration.notes.push_back(std::format("schema {} -> {}", migration.from_schema,
                                               migration.to_schema));
     }
+
     parsed->schema = kConfigSchema;
 
     // Re-serialised rather than patched in place: the writer is the one place

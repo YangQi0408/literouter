@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { humanBytes, humanCount, humanDuration, humanMillis, humanUptime, pct, successRatio } from '@/lib/format'
 
 /** These tables are not invented here: they are the same values core/tests/
- *  test_util.cpp pins for the C++ formatters, which the CLI and the GUI use.
+ *  test_util.cpp pins for the C++ formatters, which the CLI uses.
  *  The two implementations exist because one of them has to run in a browser,
  *  and the only thing that keeps them in step is a test that says so. */
 describe('humanUptime keeps counting to the second', () => {

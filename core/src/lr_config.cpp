@@ -141,8 +141,9 @@ std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path
             std::format("cannot inspect configuration path {}: {}", path.string(), ec.message()));
     }
     if (std::filesystem::is_symlink(status)) {
-        // Keep the configured link (and its canonical quota-ledger identity)
-        // intact. Rename into the target directory, never over the link itself.
+        // Keep the configured link (and therefore the path the operator wrote
+        // down, and anything keyed on it) intact. Rename into the target
+        // directory, never over the link itself.
         destination = std::filesystem::canonical(path, ec);
         if (ec) {
             return std::unexpected(
@@ -354,7 +355,7 @@ ValidationReport validate(const AppConfig &config) {
     if (config.server.api_key.empty() && config.server.host != "127.0.0.1" &&
         config.server.host != "localhost" && config.server.host != "::1") {
         addIssue(report, ValidationIssue::Level::Warning, "server.api_key",
-                 std::format("`{}` is reachable off this machine but no client key is set",
+                 std::format("`{}` is reachable off this machine but no server.api_key is set",
                              config.server.host));
     }
     if (config.server.web_ui && config.server.api_key.empty() &&
@@ -366,20 +367,6 @@ ValidationReport validate(const AppConfig &config) {
                  std::format("the web console is served on `{}` with no server.api_key; "
                              "anyone who can reach the port can read the request log",
                              config.server.host));
-    }
-    if (!config.server.language.empty()) {
-        const auto parsedLang = i18n::parseLang(config.server.language);
-        if (parsedLang == i18n::Lang::Auto && config.server.language != "auto" &&
-            config.server.language != "system") {
-            addIssue(report, ValidationIssue::Level::Warning, "server.language",
-                     std::format("unrecognised language `{}`; falling back to auto detection",
-                                 config.server.language));
-        }
-    }
-    if (config.server.ui_scale > 0.0 && (config.server.ui_scale < 0.25 || config.server.ui_scale > 4.0)) {
-        addIssue(report, ValidationIssue::Level::Warning, "server.ui_scale",
-                 std::format("ui_scale `{:.2f}` is outside the recommended range 0.25..4.00",
-                             config.server.ui_scale));
     }
     if (config.server.traffic_bucket_sec < 60) {
         addIssue(report, ValidationIssue::Level::Warning, "server.traffic_bucket_sec",
@@ -515,70 +502,6 @@ ValidationReport validate(const AppConfig &config) {
                      std::format("relay `{}` lists no models; it is only reachable through a "
                                  "route that names it explicitly",
                                  label));
-        }
-    }
-
-    // Distribution is opt-in. Existing local-only configs need no account;
-    // configuring accounts requires a distinct administration credential.
-    if (!config.clients.empty() && config.server.api_key.empty())
-        addIssue(report, ValidationIssue::Level::Error, "server.api_key",
-                 "an administrator key is required when clients are configured");
-    std::set<std::string, std::less<>> clientIds;
-    std::set<std::string, std::less<>> keyValues;
-    if (!config.server.api_key.empty()) keyValues.insert(config.server.api_key);
-    std::set<std::string, std::less<>> groups;
-    for (const auto &provider : config.providers)
-        for (const auto &group : provider.groups) groups.insert(group);
-    for (std::size_t i = 0; i < config.clients.size(); ++i) {
-        const auto &client = config.clients[i];
-        const auto where = std::format("clients[{}]", i);
-        if (client.id.empty() || !clientIds.insert(client.id).second)
-            addIssue(report, ValidationIssue::Level::Error, where + ".id", "client id must be nonempty and unique");
-        if (client.requests_per_minute < 0 || client.max_concurrent < 0)
-            addIssue(report, ValidationIssue::Level::Error, where, "client limits cannot be negative");
-        if (client.requests_per_day > 9007199254740991ULL ||
-            client.tokens_per_day > 9007199254740991ULL ||
-            client.token_reservation > 9007199254740991ULL)
-            addIssue(report, ValidationIssue::Level::Error, where,
-                     "client quota values must not exceed 9007199254740991");
-        if (client.tokens_per_day > 0 && (client.token_reservation == 0 ||
-                                          client.token_reservation > client.tokens_per_day))
-            addIssue(report, ValidationIssue::Level::Error, where + ".token_reservation",
-                     "token reservation must be positive and fit within the daily token quota");
-        if (!std::isfinite(client.budget_usd_per_day) || client.budget_usd_per_day < 0.0)
-            addIssue(report, ValidationIssue::Level::Error, where + ".budget_usd_per_day",
-                     "a daily budget is a nonnegative number of US dollars; use 0 to disable it");
-        if (client.budget_usd_per_day > 0.0) {
-            // The budget is enforced against what relays REPORT, and a relay
-            // with no price written down reports 0. Saying so here is the
-            // difference between a budget that silently does nothing and one an
-            // operator knows to make meaningful by pricing the relays.
-            const bool any_priced = std::ranges::any_of(config.providers, [](const ProviderConfig &p) {
-                return p.enabled && (p.price_in_per_million > 0.0 || p.price_out_per_million > 0.0);
-            });
-            if (!any_priced) {
-                addIssue(report, ValidationIssue::Level::Warning, where + ".budget_usd_per_day",
-                         "no enabled relay has a price written down, so every request costs 0 "
-                         "to this budget and it will never be reached");
-            }
-        }
-        std::set<std::string, std::less<>> keyIds;
-        for (std::size_t k = 0; k < client.keys.size(); ++k) {
-            const auto &key = client.keys[k];
-            const auto path = std::format("{}.keys[{}]", where, k);
-            if (key.id.empty() || !keyIds.insert(key.id).second)
-                addIssue(report, ValidationIssue::Level::Error, path + ".id", "key id must be nonempty and unique within its client");
-            if (key.api_key.empty()) {
-                if (key.enabled) addIssue(report, ValidationIssue::Level::Error, path + ".api_key", "an enabled client key must not be empty");
-            } else if (!keyValues.insert(key.api_key).second) {
-                addIssue(report, ValidationIssue::Level::Error, path + ".api_key", "client keys must differ from all other keys and the administrator key");
-            }
-        }
-        for (std::size_t g = 0; g < client.provider_groups.size(); ++g) {
-            const auto &group = client.provider_groups[g];
-            if (group.empty() || !groups.contains(group))
-                addIssue(report, ValidationIssue::Level::Warning, std::format("{}.provider_groups[{}]", where, g),
-                         "no provider belongs to this group; requests cannot use it");
         }
     }
 

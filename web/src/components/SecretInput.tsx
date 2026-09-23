@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { SecretConfig } from '@/lib/api'
-import { generateApiKey, hasSecret } from '@/lib/clients'
+import { generateApiKey, hasSecret } from '@/lib/secrets'
 import { useI18n } from '@/lib/i18n'
 
 export function SecretInput({ value, onChange, label, generate = false, clear = false }: {
@@ -21,7 +21,7 @@ export function SecretInput({ value, onChange, label, generate = false, clear = 
     <div className="flex flex-wrap items-center gap-2">
       <Input aria-label={label} type={visible ? 'text' : 'password'} value={value.api_key}
         autoComplete="off" spellCheck={false}
-        placeholder={hasSecret(value) ? t('keyStored') : '${CLIENT_KEY}'}
+        placeholder={hasSecret(value) ? t('keyStored') : '${LITEROUTER_KEY}'}
         onChange={(event) => onChange({ api_key: event.target.value, api_key_clear: false })}
         className="h-9 min-w-40 flex-1 font-mono text-xs" />
       <Button type="button" size="icon" variant="ghost" title={t('showKey')}

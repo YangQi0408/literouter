@@ -249,10 +249,6 @@ export function ProviderDialog({
             />
           </Field>
 
-          <Field label="groups" hint={t('providerGroupsHint')} wide>
-            <LinesField ariaLabel="provider groups" value={provider.groups} rows={2} onChange={(groups) => patch({ groups })} />
-          </Field>
-
           <Field label="headers" hint={t('hintHeaders')} wide>
             <HeadersField value={provider.headers} onChange={(headers) => patch({ headers })} />
           </Field>

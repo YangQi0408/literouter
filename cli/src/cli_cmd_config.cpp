@@ -315,14 +315,6 @@ void runLoad(Context &ctx, const std::filesystem::path &source, bool merge, bool
                 result.routes.push_back(route);
             }
         }
-        for (const auto &client : incoming->clients) {
-            const auto found = std::ranges::find(result.clients, client.id, &literouter::ClientConfig::id);
-            if (found != result.clients.end()) {
-                *found = client;
-            } else {
-                result.clients.push_back(client);
-            }
-        }
     }
 
     const literouter::ValidationReport report = literouter::validate(result);

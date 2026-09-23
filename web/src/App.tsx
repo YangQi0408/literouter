@@ -5,7 +5,6 @@ import { KeyDialog } from '@/components/KeyDialog'
 import { Toaster } from '@/components/ui/sonner'
 import { useTheme } from '@/lib/theme'
 import { useStore } from '@/store'
-import { Clients } from '@/views/Clients'
 import { Logs } from '@/views/Logs'
 import { Overview } from '@/views/Overview'
 import { Providers } from '@/views/Providers'
@@ -29,7 +28,6 @@ export function App() {
       <AppShell tab={tab} onTab={switchTab}>
         {tab === 'overview' ? <Overview /> : null}
         {tab === 'providers' ? <Providers /> : null}
-        {tab === 'clients' ? <Clients /> : null}
         {tab === 'routes' ? <Routes /> : null}
         {tab === 'logs' ? <Logs /> : null}
         {tab === 'settings' ? <Settings /> : null}

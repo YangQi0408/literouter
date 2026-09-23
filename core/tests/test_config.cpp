@@ -105,8 +105,6 @@ AppConfig fullyPopulated() {
     config.server.log_body_limit = 512;
     config.server.persist_telemetry = false;
     config.server.web_ui = false;
-    config.server.language = "zh";
-    config.server.ui_scale = 1.25;
     config.server.traffic_bucket_sec = 60;
     config.server.traffic_bucket_count = 120;
     config.server.response_cache_ttl_sec = 300;
@@ -185,47 +183,7 @@ AppConfig fullyPopulated() {
 
     config.routes = {route, disabledRoute};
 
-    // One account, so the client half of the codec (including the daily budget)
-    // is exercised by the round trip too.
-    literouter::ClientConfig client;
-    client.id = "team-a";
-    client.name = "Team A";
-    client.keys = {{.id = "k1", .api_key = "sk-client-one", .enabled = true},
-                   {.id = "k2", .api_key = "${LITEROUTER_TEST_ENV_KEY}", .enabled = false}};
-    client.models = {"fast"};
-    client.provider_groups = {"primary-group"};
-    client.requests_per_minute = 60;
-    client.max_concurrent = 3;
-    client.requests_per_day = 5000;
-    client.tokens_per_day = 2000000;
-    client.budget_usd_per_day = 12.5;
-    client.token_reservation = 2048;
-    config.clients = {client};
     return config;
-}
-
-void checkClientEqual(const literouter::ClientConfig &actual,
-                      const literouter::ClientConfig &expected) {
-    LR_CHECK_EQ(actual.id, expected.id);
-    LR_CHECK_EQ(actual.name, expected.name);
-    LR_CHECK_EQ(actual.enabled, expected.enabled);
-    LR_CHECK_EQ(static_cast<long long>(actual.keys.size()), static_cast<long long>(expected.keys.size()));
-    for (std::size_t i = 0; i < actual.keys.size() && i < expected.keys.size(); ++i) {
-        LR_CHECK_EQ(actual.keys[i].id, expected.keys[i].id);
-        LR_CHECK_EQ(actual.keys[i].api_key, expected.keys[i].api_key);
-        LR_CHECK_EQ(actual.keys[i].enabled, expected.keys[i].enabled);
-    }
-    LR_CHECK_MSG(actual.models == expected.models, "client.models");
-    LR_CHECK_MSG(actual.provider_groups == expected.provider_groups, "client.provider_groups");
-    LR_CHECK_EQ(actual.requests_per_minute, expected.requests_per_minute);
-    LR_CHECK_EQ(actual.max_concurrent, expected.max_concurrent);
-    LR_CHECK_EQ(static_cast<long long>(actual.requests_per_day),
-                static_cast<long long>(expected.requests_per_day));
-    LR_CHECK_EQ(static_cast<long long>(actual.tokens_per_day),
-                static_cast<long long>(expected.tokens_per_day));
-    LR_CHECK_EQ(actual.budget_usd_per_day, expected.budget_usd_per_day);
-    LR_CHECK_EQ(static_cast<long long>(actual.token_reservation),
-                static_cast<long long>(expected.token_reservation));
 }
 
 void checkServerEqual(const literouter::ServerConfig &actual,
@@ -249,8 +207,6 @@ void checkServerEqual(const literouter::ServerConfig &actual,
     LR_CHECK_EQ(actual.log_body_limit, expected.log_body_limit);
     LR_CHECK_EQ(actual.persist_telemetry, expected.persist_telemetry);
     LR_CHECK_EQ(actual.web_ui, expected.web_ui);
-    LR_CHECK_EQ(actual.language, expected.language);
-    LR_CHECK_EQ(actual.ui_scale, expected.ui_scale);
     LR_CHECK_EQ(actual.traffic_bucket_sec, expected.traffic_bucket_sec);
     LR_CHECK_EQ(actual.traffic_bucket_count, expected.traffic_bucket_count);
     LR_CHECK_EQ(actual.response_cache_ttl_sec, expected.response_cache_ttl_sec);
@@ -295,7 +251,6 @@ void checkProviderEqual(const ProviderConfig &actual, const ProviderConfig &expe
     LR_CHECK_MSG(actual.max_concurrent == expected.max_concurrent, where("max_concurrent"));
     LR_CHECK_MSG(actual.requests_per_minute == expected.requests_per_minute,
                  where("requests_per_minute"));
-    LR_CHECK_MSG(actual.groups == expected.groups, where("groups"));
     LR_CHECK_MSG(actual.note == expected.note, where("note"));
 }
 
@@ -305,7 +260,6 @@ void testSeedDefault() {
     const ValidationReport report = literouter::validate(seed);
 
     LR_CHECK_EQ(seed.schema, literouter::kConfigSchema);
-    LR_CHECK_EQ(seed.server.language, "auto");
     LR_CHECK_EQ(static_cast<long long>(seed.providers.size()), 2);
     LR_CHECK_EQ(static_cast<long long>(seed.routes.size()), 1);
     LR_CHECK_MSG(report.ok(), "the shipped seed must be usable as-is");
@@ -336,11 +290,6 @@ void testJsonRoundTrip() {
 
     LR_CHECK_EQ(back.schema, original.schema);
     checkServerEqual(back.server, original.server);
-    LR_CHECK_EQ(static_cast<long long>(back.clients.size()),
-                static_cast<long long>(original.clients.size()));
-    if (back.clients.size() == 1 && original.clients.size() == 1) {
-        checkClientEqual(back.clients[0], original.clients[0]);
-    }
     LR_CHECK_EQ(static_cast<long long>(back.providers.size()),
                 static_cast<long long>(original.providers.size()));
     LR_CHECK_EQ(static_cast<long long>(back.routes.size()),
@@ -421,7 +370,6 @@ void testMinimalDocuments() {
             // On by default: a restart that silently reset the counters and
             // emptied the log is what this field exists to prevent.
             LR_CHECK_EQ(parsed->server.persist_telemetry, true);
-            LR_CHECK_EQ(parsed->server.ui_scale, 1.0);
             LR_CHECK_EQ(static_cast<long long>(parsed->providers.size()), 0);
             LR_CHECK_EQ(static_cast<long long>(parsed->routes.size()), 0);
         }
@@ -588,7 +536,7 @@ void testLoadAndSave() {
 
 void testSaveThroughSymlink() {
 #ifndef _WIN32
-    LR_GROUP("saving through a config symlink preserves its target and quota identity");
+    LR_GROUP("saving through a config symlink preserves its target and the file on disk");
     TempDir dir;
     const lr_test::EnvGuard stateEnv{"LITEROUTER_STATE_DIR"};
     const lr_test::EnvGuard keyEnv{"LITEROUTER_TEST_SYMLINK_KEY"};
@@ -605,8 +553,6 @@ void testSaveThroughSymlink() {
     LR_CHECK_MSG(!ec, ec.message());
     if (ec) return;
 
-    const auto quotaBefore = literouter::defaultClientQuotaPath(link, 4321);
-    LR_CHECK_EQ(quotaBefore.string(), literouter::defaultClientQuotaPath(target, 4321).string());
     auto store = ConfigStore::load(link);
     LR_CHECK(store.has_value());
     if (!store) return;
@@ -618,21 +564,19 @@ void testSaveThroughSymlink() {
     LR_CHECK_MSG(!ec, ec.message());
     LR_CHECK_EQ(savedLink.string(), relativeTarget.string());
     LR_CHECK_EQ(store->path().string(), link.string());
-    LR_CHECK_EQ(literouter::defaultClientQuotaPath(link, 7654).string(), quotaBefore.string());
     auto reloaded = ConfigStore::load(link);
     LR_CHECK(reloaded.has_value());
     if (reloaded) {
         LR_CHECK_EQ(reloaded->config().server.port, 7654);
         LR_CHECK_EQ(reloaded->path().string(), link.string());
         LR_CHECK_EQ(reloaded->config().server.api_key, "${LITEROUTER_TEST_SYMLINK_KEY:-stored-default}");
-        LR_CHECK_EQ(literouter::defaultClientQuotaPath(reloaded->path(), 7654).string(), quotaBefore.string());
     }
     const std::string onDisk = readFile(target);
     LR_CHECK(onDisk.find("${LITEROUTER_TEST_SYMLINK_KEY:-stored-default}") != std::string::npos);
     LR_CHECK(onDisk.find("resolved-symlink-key-must-not-be-saved") == std::string::npos);
 
     // A broken link or cycle must remain a link, never silently become a new
-    // independent config with a fresh quota ledger identity.
+    // independent config at the link's own path.
     const auto dangling = dir.file("dangling.json");
     const auto missing = dir.file("missing.json");
     std::filesystem::create_symlink(missing.filename(), dangling);
@@ -818,7 +762,7 @@ void testValidateServer() {
         config.server.host = "0.0.0.0";
         const ValidationReport report = literouter::validate(config);
         LR_CHECK(report.ok());
-        LR_CHECK(findIssueContaining(report, "no client key", kWarning) != nullptr);
+        LR_CHECK(findIssueContaining(report, "no server.api_key is set", kWarning) != nullptr);
     }
     {
         // Persisting is fine and logging bodies is fine; the pair is what puts
@@ -1022,7 +966,6 @@ void testProviderReaderDefaults() {
                              actual.requests_per_minute, fallback.requests_per_minute));
     LR_CHECK(actual.models.empty());
     LR_CHECK(actual.headers.empty());
-    LR_CHECK(actual.groups.empty());
     // The one field the reader is allowed to fill in: a nameless relay is shown
     // by its id rather than as a blank row.
     LR_CHECK_EQ(actual.name, "bare");
@@ -1036,7 +979,6 @@ void testConfigSchema() {
     {
         const std::string legacy = R"({
             "schema": 1,
-            "server": {"language": "system"},
             "providers": [
                 {"id": "a", "base_url": "https://a.example/v1", "protocol": "openai_compatible"},
                 {"id": "b", "base_url": "https://b.example/v1", "protocol": "openai_chat"}
@@ -1058,7 +1000,6 @@ void testConfigSchema() {
         LR_CHECK(parsed.has_value());
         if (parsed) {
             LR_CHECK_EQ(parsed->schema, literouter::kConfigSchema);
-            LR_CHECK_EQ(parsed->server.language, "auto");
             LR_CHECK_EQ(parsed->providers.size(), std::size_t{2});
             if (parsed->providers.size() == 2) {
                 LR_CHECK_EQ(parsed->providers[0].protocol, "openai");

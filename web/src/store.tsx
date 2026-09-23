@@ -24,8 +24,8 @@ import {
   type ValidationReport,
 } from '@/lib/api'
 import { shouldReplaceDraft, settleSavedDraft } from '@/lib/draft'
-import { administratorKeyAfterSave } from '@/lib/clients'
 import { useI18n } from '@/lib/i18n'
+import { administratorKeyAfterSave } from '@/lib/secrets'
 
 /** Everything the console knows lives here: telemetry polled from the server,
  *  the config as the server holds it, the config as the operator is editing it,
