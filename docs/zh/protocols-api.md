@@ -36,7 +36,7 @@
 
 ## 客户端入口端点 (Client Inbound Endpoints)
 
-模型端点接受管理员 `server.api_key` 或启用的客户端密钥；客户端密钥受所属账户的权限和配额限制。仅当 `clients` 和管理员密钥都为空时关闭鉴权：
+模型端点接受 `server.api_key`。仅当此项为空时关闭鉴权：
 ```http
 Authorization: Bearer <your-api-key>
 ```
@@ -117,7 +117,7 @@ curl http://127.0.0.1:8787/v1/messages \
 
 媒体请求共用鉴权、路由策略、故障转移、熔断、日志和用量统计。非流式响应完整接收后才提交。语音生成及显式流式请求沿用响应头闸门：提交前的连接失败、`429` 和可重试 `5xx` 可切换中转站；成功响应头一旦提交，上游音频/SSE 中断就会终止客户端连接并记录失败，绝不切换站点拼接另一段内容。二进制响应及上游 `Content-Type` 保持原样；网关自身错误使用 OpenAI JSON 格式。无法确认上游是否已处理的传输失败可能造成重复操作或计费，不能接受重放时可设置 `max_attempts: 1`。
 
-Token 统计只采纳上游 JSON/SSE 实际返回的用量；Token 单价字段不会估算音频时长费用或按张图像费用。二进制上传和媒体响应不进入正文日志；Multipart 日志仅保存模型、流式标志和分段元数据（字段名、文件名、MIME 类型、字节数）。GUI 与 Web 日志支持音频、图像筛选。
+Token 统计只采纳上游 JSON/SSE 实际返回的用量；Token 单价字段不会估算音频时长费用或按张图像费用。二进制上传和媒体响应不进入正文日志；Multipart 日志仅保存模型、流式标志和分段元数据（字段名、文件名、MIME 类型、字节数）。Web 控制台的日志筛选支持音频与图像。
 
 ```bash
 curl http://127.0.0.1:8787/v1/audio/transcriptions \
@@ -246,7 +246,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
 
 ## 内部管理端点 (Admin API)
 
-管理端点统一以 `/__literouter` 为路径前缀，供 CLI、GUI 或自动化运维脚本调用。当配置了 `server.api_key` 时，管理接口同样要求携带 Bearer 鉴权头。
+管理端点统一以 `/__literouter` 为路径前缀，供 CLI、Web 控制台或自动化运维脚本调用。当配置了 `server.api_key` 时，管理接口同样要求携带 Bearer 鉴权头。
 
 管理接口与 Web 控制台**不会发送 CORS 头**，只有面向客户端的端点保留 `Access-Control-Allow-Origin: *`——请求日志可能包含用户的提示词，允许任意网页跨域读取等于把它们交出去。所有管理响应一律带 `Cache-Control: no-store`。
 
@@ -264,7 +264,6 @@ curl http://127.0.0.1:8787/v1/images/generations \
   "cache_entries": 0,
   "cache_hits": 0,
   "cache_misses": 0,
-  "clients": [],
   "config_path": "/home/you/.config/literouter/config.json",
   "cost_usd": 0.075,
   "health": [
@@ -328,7 +327,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
 
   `hourly` 是最近 24 个**小时桶**（`hour_unix` 为该小时起点，UTC 整点），旧到新排列：控制台的趋势图就是它，重启后会从遥测文件恢复，因此"今天的样子"不会因为重启而消失。没有流量时该数组为空。
 
-  `providers` 是累计统计（自上次 `POST /__literouter/reset-stats` 或遥测文件恢复起），其中 `latency_ms_p95` 是最近 64 次尝试的最近秩（nearest-rank）p95——取窗口内实际出现过的样本值，没有样本时为 0；`health` 是熔断器当前状态（`state` 取 `unknown` / `healthy` / `degraded` / `open`）。`uptime_sec` 每次请求实时计算，因此 Web 控制台与 GUI 的运行时长会逐秒跳动；显示格式为 `1h 2m 5s`，且**始终保留秒**（`humanUptime`），而一般的时长显示（如熔断冷却剩余时间）仍使用会向上归整到分钟的 `humanDuration`。
+  `providers` 是累计统计（自上次 `POST /__literouter/reset-stats` 或遥测文件恢复起），其中 `latency_ms_p95` 是最近 64 次尝试的最近秩（nearest-rank）p95——取窗口内实际出现过的样本值，没有样本时为 0；`health` 是熔断器当前状态（`state` 取 `unknown` / `healthy` / `degraded` / `open`）。`uptime_sec` 每次请求实时计算，因此 Web 控制台的运行时长会逐秒跳动；显示格式为 `1h 2m 5s`，且**始终保留秒**（`humanUptime`），而一般的时长显示（如熔断冷却剩余时间）仍使用会向上归整到分钟的 `humanDuration`。
 
 ### 2. 获取增量请求日志
 
@@ -372,7 +371,6 @@ curl http://127.0.0.1:8787/v1/images/generations \
 - **响应**：Prometheus 文本格式（`text/plain; version=0.0.4`），内容与 `/__literouter/status` **同源**——控制台给人看，这里给图看，两者读的是同一份快照。
 - **指标**：`literouter_build_info`、`literouter_running`、`literouter_uptime_seconds`、`literouter_requests_total`/`successes_total`/`failures_total`、`literouter_active_requests`、`literouter_breakers_open`、`literouter_log_entries_total`、`literouter_bytes_out_total`、`literouter_tokens_*_total`、`literouter_latency_ms_avg`、`literouter_cost_usd_total`；
 - **逐中转站**：`literouter_relay_*{relay="<id>"}`（请求/成功/失败/客户端中断/吸收重试/进出字节/Token/`latency_ms_last|avg|p95`/`last_used_unixtime`/`healthy`/`cooldown_seconds`/`cost_usd_total`）；
-- **逐客户端**：`literouter_client_*{client="<id>"}`（请求、`tokens_total{direction="input"|"output"}`、`cost_usd_total`、`cost_today_usd`（`budget_usd_per_day` 就是拿它来比）、`active_requests`、`requests_today`、`tokens_today`）；
 - **应答缓存**：`literouter_cache_enabled`、`literouter_cache_hits_total`、`literouter_cache_misses_total`、`literouter_cache_entries`——「已开启但零命中」与「已关闭」从配置上看是一样的，这四个指标是区分它们的方式。
 - **鉴权**：与其它管理端点一致受 `server.api_key` 保护（Prometheus 侧用 `bearer_token` / `authorization` 配置即可）。
 - **示例**（`prometheus.yml`）：
@@ -411,7 +409,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
 - **请求体**：`{ "config": <AppConfig> }` 或裸 `<AppConfig>` 对象
 - **校验与原子性**：先执行 JSON 反序列化，再执行语义校验（`validate()`）。若存在任何 `error` 级别错误，返回 **422 Unprocessable Entity**，且不改动内存和磁盘配置。
 - **密钥保留规则**：
-  - 管理员、中转站或客户端的 `api_key` 为空字符串：自动保留已保存的密钥（支持将脱敏 GET 的结果安全原样回传）。中转站按 ID 匹配，客户端密钥按账户 ID 和密钥 ID 匹配；
+  - 服务器或中转站的 `api_key` 为空字符串：自动保留已保存的密钥（支持将脱敏 GET 的结果安全原样回传）。中转站按 ID 匹配；
   - `api_key_clear: true`：显式清空该密钥，仍需通过配置校验；
   - 非空字符串：更新为新值（支持环境变量占位符 `${VAR}`）。
 - **持久化**：有配置文件路径时使用临时文件重命名原子落盘，并调用 `updateConfig()`；无路径时仅更新内存并返回 `"saved": false`。
@@ -431,11 +429,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
 | `GET /favicon.ico` | 302 跳转到 `/ui/favicon.svg` |
 
 - **开关控制**：由 `server.web_ui`（布尔值，默认 `true`）控制。也可以在启动时通过 CLI 参数 `serve --web-ui` 或 `serve --no-web-ui` 显式覆盖。关闭后访问 `/ui/` 返回 404（错误码 `console_disabled`）。配置修改（通过 reload 或 PUT）后即刻生效，无需重启进程。
-- **鉴权**：静态外壳不含任何数据，因此无需密钥即可加载；控制台数据需要管理员 `server.api_key`，客户端密钥不能读取管理数据。需要鉴权时，浏览器首次访问会弹出密钥输入框，密钥只保存在本机 localStorage。
+- **鉴权**：静态外壳不含任何数据，因此无需密钥即可加载；控制台数据需要 `server.api_key`。需要鉴权时，浏览器首次访问会弹出密钥输入框，密钥只保存在本机 localStorage。
 - **打包方式**：前端构建产物（`web/dist/` 下的 `index.html`、`app.js`、`app.css`、`favicon.svg`）通过 C++23 `#embed` 编译进二进制，服务器上只拷贝一个 `literouter` 即可。若编译器不支持 `#embed`（例如 ISO 严格模式下的 GCC），改用环境变量 `LITEROUTER_WEB_DIR` 指向包含这四个文件的构建产物目录（如 `web/dist`）。
 - **能力**：实时指标磁贴（请求/成功率/Token 速率等）、中转站健康矩阵与一键探测、路由候选链排序与编辑、可视化全局配置编辑与安全回传保存、一键复制 Continue / Cursor 接入配置、增量日志流过滤（按级别/类型/关键字过滤、暂停/清空）、暗亮主题切换与中英双语国际化。
 - **安全性**：与控制台同源，不向跨域请求开放管理端点；密钥仅用于浏览器到本机服务的同源请求，且字面量密钥绝不出网。
 
-## 客户端分发权限与用量
-
-配置 `clients` 后，管理接口仅接受管理员密钥；模型列表按账户的模型和中转站组权限过滤。状态中的 `clients` 数组报告账户用量和 UTC 日配额，请求日志追加 `client_id`、`client_key_id`。配置接口同时对管理员、上游与客户端明文密钥脱敏，空值保留已有密钥，`api_key_clear` 明确清空。详见[API 分发](distribution.md)。

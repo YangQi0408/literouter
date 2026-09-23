@@ -3,6 +3,8 @@
 > **文档性质**：记录「档一 / 档二 / 档三」这一轮改动的完成状态、可复现的验证证据，以及**尚未完成、需要外部条件**的少量事项。
 >
 > **最高优先级规范仍然是 `AGENTS.md`**，本文档不覆盖它。§3 的约束与陷阱是动手前必读。
+>
+> ⚠️ **后续变更（本文档之后）**：GUI 桌面控制台（`gui/` 成员、EUI-NEO、`hide_zlib.ver`、`LITEROUTER_GUI*` 环境变量、`docs/{zh,en}/gui.md`）与 **API 分发功能**（`clients[]` 客户端账户、按账户密钥、模型/中转站组权限、配额账本 `clients-config-*.json`、每日预算 `budget_usd_per_day`、`docs/{zh,en}/distribution.md`）**已整块移除**，配置 schema 升到 3。本文档正文保留当时的历史记录；凡与上述两项相关的内容（`lr_clients.cpp`、`test_clients`、`test_distribution`、`check_client_cli.py`、GUI 截图/冒烟、配额账本实测）**均已失效**，以 `AGENTS.md` §9 为准。
 
 ---
 
@@ -12,7 +14,7 @@
 
 | # | 改动 | 主要落点 |
 |---|---|---|
-| 档一1 | 客户端按金额的每日预算 `budget_usd_per_day` | `core/src/lr_clients.cpp`（准入判定 + 结算累加 `cost_today`）、`lr_json.cpp`、`lr_config.cpp` |
+| 档一1 | ~~客户端按金额的每日预算 `budget_usd_per_day`~~（已随分发功能移除） | ~~`core/src/lr_clients.cpp`~~、`lr_json.cpp`、`lr_config.cpp` |
 | 档一2 | 本地应答缓存（精确匹配、仅非流式、TTL + LRU） | `core/src/lr_cache.cpp`（新）、`lr_proxy.cpp`、`lr_json.cpp` |
 | 档一3 | 中转站侧并发/QPS 保护 `max_concurrent` / `requests_per_minute` | `core/src/lr_limits.cpp`（新）、`lr_proxy.cpp`、`lr_json.cpp` |
 | 档一4 | 流式 OpenAI → Anthropic 的 thinking 块合成 | `core/src/lr_protocol.cpp`（`StreamProtocolAdapter`，块惰性开闭） |
@@ -21,27 +23,27 @@
 | 档二7 | 配置 schema 迁移 | `lr_json.cpp`（`migrateConfigJson`、schema 上限）、`lr_config.cpp`、CLI `config migrate` |
 | 档二8 | 可观测性补完：存活/就绪拆分 + OTLP 导出 | `lr_proxy.cpp`（`/health/live`、`/health/ready`、`otlpPayload`/`exportOtlp`） |
 | 档三9 | 配置导入/导出/批量操作 | CLI `config export` / `config load`；Web 控制台导出/导入按钮 |
-| 档三10 | GUI / Web 功能对齐审计 | 结论已写入 `docs/{zh,en}/gui.md` 的「与 Web 控制台的功能对齐」一节 |
+| 档三10 | ~~GUI / Web 功能对齐审计~~（GUI 与 `gui.md` 已移除） | — |
 | 档三11 | 文档散文校验 | `scripts/check_config_docs.py`（散文单元格闭集校验 + `--validate-report`） |
-| 档三12 | 趋势时间桶宽度/数量可配置 | `traffic_bucket_sec` / `traffic_bucket_count`，贯穿 core / CLI / GUI / Web |
+| 档三12 | 趋势时间桶宽度/数量可配置 | `traffic_bucket_sec` / `traffic_bucket_count`，贯穿 core / CLI / Web |
 
-文档侧同步完成：`docs/{zh,en}/` 的 `configuration.md`、`protocols-api.md`、`routing-failover.md`、`cli.md`、`distribution.md`、`gui.md`、`environment.md`，以及 `README.md` / `README_en.md` 的特性清单与文档索引。
+文档侧同步完成：`docs/{zh,en}/` 的 `configuration.md`、`protocols-api.md`、`routing-failover.md`、`cli.md`、`environment.md`（当时还有 `distribution.md` 与 `gui.md`，现已被 `deployment.md` 取代），以及 `README.md` / `README_en.md` 的特性清单与文档索引。
 
 ### 1.2 权威验证证据（全部实测）
 
 ```text
 mcpp build --workspace                       → 0 error
-mcpp test -p core --timeout 600              → 15 passed; 0 failed（合计 2735 项断言，test_proxy 682 项）
+mcpp test -p core --timeout 600              → 当时 15 passed; 0 failed
+                                               （移除分发与 GUI 后为 13 套件，见 §5.1）
 npm --prefix web test                        → 73 passed (6 files)
 npm --prefix web run build                   → 重建后 web/dist 哈希不变（dist 与 src 同步）
 python3 scripts/check_config_docs.py --seed … --defaults … --status … --validate-report …
                                              → configuration.md matches the build and protocols-api.md matches a real reply
-                                               checked: 26 server / 14 provider / 3 route / 1 target / 12 client / 3 client-key fields, zh and en
-                                               prose default cells: 18 (12 verified against the build, 6 recognised)
-python3 scripts/check_client_cli.py <bin>    → persistence, validation, secret redaction and live usage PASS
+                                               （当时的字段计数含 client / client-key，现已随分发功能移除）
+~~python3 scripts/check_client_cli.py <bin>~~  → 脚本已删除（分发功能移除）
 literouter --version                         → 0.1.0
 literouter config init --force && config validate → exit 0
-LITEROUTER_GUI_SMOKE=1 xvfb-run -a mcpp run -p gui → 900 frames, 6 pages, exit 0
+~~LITEROUTER_GUI_SMOKE=1 xvfb-run -a mcpp run -p gui~~ → GUI 已移除，无此项
 ```
 
 ### 1.3 容器镜像：端到端实测
@@ -69,10 +71,10 @@ docker run -d --network=host -v <etc>:/etc/literouter -v <state>:/var/lib/litero
 
 1. **Docker 缓存挂载遮蔽了 mcpp 自带的 xlings。** `--mount=type=cache,target=/root/.mcpp/registry` 覆盖整个 registry，而 bundled xlings 就在 `registry/bin/xlings`；首次构建缓存卷为空，该二进制被遮蔽，构建在编译前死在 `xlings binary not found`。现只挂 `registry/data`（真正会膨胀的 4.5G 工具链目录）。
 2. **缺 `.dockerignore` 导致镜像里装的是陈旧二进制。** `COPY . .` 把宿主机 `cli/target/`（本机 5 个不同哈希的旧产物）带进镜像，而 Dockerfile 用 `find … | head -1` 取二进制——`find` 按目录序返回，于是装进镜像的是**任意一个旧二进制**。症状极具迷惑性：构建成功但镜像缺功能（实测 `/health/live` 返回 404）。已补 `.dockerignore` 排除 `target/`，**并且**把取二进制改成按 mtime 取最新，双保险。
-3. **32 条 GUI 用户可见字符串没有中文字典条目**（违反规则 9）。中文控制台里整块「性能与指标」卡片和协议窗格全部回退显示英文；`tr()` 对缺失条目静默回退英文，不报错、不构建失败。已全部补齐，并新增防回归测试 `test_i18n.cpp::testGuiSurfaceTranslations`。
+3. **32 条 GUI 用户可见字符串没有中文字典条目**（违反当时的规则 9）。中文控制台里整块「性能与指标」卡片和协议窗格全部回退显示英文；`tr()` 对缺失条目静默回退英文，不报错、不构建失败。当时已全部补齐（防回归测试为 `test_i18n.cpp::testGuiSurfaceTranslations`）。**GUI 现已删除**，该测试随之改为 `testCliTranslations`。
 4. **字典 11 组重复键**，其中 4 组语义冲突。最严重的是 `{"open"}`：熔断状态需要「熔断」、指标磁贴需要「开启」，`unordered_map` 初始化列表里后者静默覆盖前者，导致 CLI `status` 把三个已熔断中继显示成 `3 开启`。现已 0 重复、0 冲突，并新增语义断言。
 
-字典现状：**GUI 328 条 + CLI 81 条 `tr()` 字面量，缺失 0；`kZhTranslations` 558 键，重复 0，冲突 0**。
+字典现状（当时）：**GUI 328 条 + CLI 81 条 `tr()` 字面量，缺失 0；`kZhTranslations` 558 键，重复 0，冲突 0**。移除 GUI 与分发后，字典按「字面量仍出现在 `cli/src` 或 `core/src` 中」的可达性规则收敛。
 
 ### 1.5 `docker compose`：端到端实测
 
@@ -82,11 +84,12 @@ docker run -d --network=host -v <etc>:/etc/literouter -v <state>:/var/lib/litero
 0. 全新命名卷 compose up     → healthy；空配置卷时给出
                                 “config … does not exist; running with the built-in seed” 警告
                                 并使用内置 seed，不崩溃
-1. 以客户端身份发请求         → HTTP 200，requests_today = 1
-2. 状态卷内容                 → clients-config-<sha256>.json + .lock（配额账本）、
+1. 带密钥发请求               → HTTP 200，requests_today = 1
+2. 状态卷内容（当时）         → clients-config-<sha256>.json + .lock（配额账本）、
                                  telemetry-*.json、literouter-<port>.pid
+                                 （配额账本已随分发功能移除，现在只有后两者）
 3. down（不加 -v）→ up        → requests_today 仍为 1   ← compose 注释里的承诺
-4. down -v → up               → requests_today 归 0，且 clients-*.json 消失
+4. down -v → up               → 遥测归 0；当时的 clients-*.json 消失
 5. 安全上下文                 → uid=8787、CapDrop=[ALL]、no-new-privileges:true、
                                  Restart=unless-stopped
 6. 健康检查                   → healthy
@@ -100,7 +103,7 @@ docker run -d --network=host -v <etc>:/etc/literouter -v <state>:/var/lib/litero
 
 ### 2.1 在真实 Docker 主机上补测端口发布（唯一未覆盖项）
 
-**已覆盖**：`docker compose config` 合法；`docker compose build` 成功；`docker build` + `docker run` 端到端通过（§1.3）；compose 的命名卷拆分、配额账本持久性、健康检查、重启策略与安全上下文全部实测（§1.5）。
+**已覆盖**：`docker compose config` 合法；`docker compose build` 成功；`docker build` + `docker run` 端到端通过（§1.3）；compose 的命名卷拆分、状态持久性（当时还含配额账本）、健康检查、重启策略与安全上下文全部实测（§1.5）。
 
 **未覆盖**：`ports: 127.0.0.1:8787:8787` 的**端口发布**本身。它需要 bridge 网络，而本沙盒创建 veth 对会失败：
 
@@ -136,17 +139,17 @@ docker compose down -v
 ### 3.1 来自 `AGENTS.md` 的硬性规则（与本轮改动最相关的部分）
 
 - **规则 1**：`core/src/literouter_core.cppm` 是唯一契约层，**不得导出任何第三方类型**（`httplib::*`、`nlohmann::json` 必须留在 `.cpp` 内）。
-- **规则 2**：**绝不要**在 `cli/`、`gui/` 下创建 `src/main.cpp`（mcpp 会推断出第二个二进制目标，符号重复）。
+- **规则 2**：**绝不要**在 `cli/` 下创建 `src/main.cpp`（mcpp 会推断出第二个二进制目标，符号重复）。
 - **规则 4**：`api_key` 的 `${VAR}` / `${VAR:-fallback}` 引用**只能在发请求的瞬间**用 `resolveSecret()` 解析，**绝不写回配置文件**。
 - **规则 5**：流式请求一旦下发响应头即进入「已提交」状态，**此后不得故障转移**。
 - **规则 7**：`CHANGELOG.md` 与 `docs/release-notes/**.md` 会触发自动发版。**未经用户明确要求，不要改这两处**；常规说明写在提交信息里。
-- **规则 9**：新增用户可见字符串必须补字典。CLI/GUI 用 `core/src/lr_i18n.cpp` 的 `kZhTranslations`；Web 用 `web/src/lib/i18n.tsx` 的 `en`/`zh` **两个 map**。
+- **规则 8**（原规则 9）：新增用户可见字符串必须补字典。CLI 用 `core/src/lr_i18n.cpp` 的 `kZhTranslations`；Web 用 `web/src/lib/i18n.tsx` 的 `en`/`zh` **两个 map**。
 
 ### 3.2 字典维护
 
 - `tr()` 对缺失条目**静默回退英文**，不报错、不构建失败 —— 「能编译、能跑」不代表翻译齐全。
 - `kZhTranslations` 是 `unordered_map` 初始化列表：**重复键后者静默覆盖前者**。改字典后请复跑去重扫描。
-- 同一英文词在不同语境需要不同中文时，**必须拆成两个键**（本轮 `Models` → 日志筛选用「模型」，中转站编辑器字段改用 `Models list` →「模型列表」）。
+- 同一英文词在不同语境需要不同中文时，**必须拆成两个键**（当时 `Models` → 日志筛选用「模型」，改为 `Models list` →「模型列表」）。
 - 覆盖扫描脚本要点：正则抓 `tr("…")`，**C++ 相邻字符串字面量会拼接**，必须把连续的 `"a" "b"` 合并成 `"ab"` 再和字典比对，否则会漏报。
 
 ### 3.3 工具链特有禁忌
@@ -191,7 +194,7 @@ npm --prefix web run build && mcpp build -p cli    # 顺序不能反
 - `--status`：一份真实的 `GET /__literouter/status` 响应，用于核对 `protocols-api.md` 的样例；
 - `--validate-report`：`literouter config validate --json` 对一份**故意缺字段**的配置的输出。有了它，`required` 散文单元格才能从「recognised」升级为「verified」，并且是**双向**校验——文档说必填但验证器不报错会被抓，文档给必填字段写了字面量默认值也会被抓。
 
-`CONDITIONALLY_REQUIRED` 里列了两个**有条件必填**的字段（`server.api_key` 仅在配置了客户端时必填、`clients[0].keys[0].api_key` 仅在密钥启用时必填），它们的表格单元格写 `""` 是**正确**的。往这个集合里加东西时，必须是验证器真的有条件，而不是为了消掉一条报告。
+`CONDITIONALLY_REQUIRED` 里现在只列一个**有条件必填**的字段（`server.api_key` 在监听非回环地址时才被验证器报告），它的表格单元格写 `""` 是**正确**的。往这个集合里加东西时，必须是验证器真的有条件，而不是为了消掉一条报告。
 
 ### 3.9 Web 控制台的两条硬约定
 
@@ -202,16 +205,15 @@ npm --prefix web run build && mcpp build -p cli    # 顺序不能反
 
 ## 4. 收尾自查清单（DoD）
 
-- [ ] `mcpp test -p core --timeout 600` → 15 套件全部通过、0 failures；
+- [ ] `mcpp test -p core --timeout 600` → 13 套件全部通过、0 failures；
 - [ ] `npm --prefix web test` 通过；改动 `web/src/lib` 或 `store.tsx` 后必须跑；
 - [ ] `mcpp build --workspace` → 无 error；
 - [ ] 若动过 `web/src`：`npm --prefix web run build` 已跑，`web/dist` 与 `web/src` **在同一提交**里（可用「重建后 `md5sum` 不变」自证）；
-- [ ] 若动过用户可见字符串：CLI/GUI 字典与 Web 的 `en`/`zh` 两个 map 均已补齐，**并复跑了字典去重扫描**（0 重复、0 冲突）；
+- [ ] 若动过用户可见字符串：CLI 字典与 Web 的 `en`/`zh` 两个 map 均已补齐，**并复跑了字典去重扫描**（0 重复、0 冲突）；
 - [ ] 若动过配置字段：`docs/{zh,en}/configuration.md` 已同步，`check_config_docs.py` 带 `--validate-report` 通过（CI 会卡这一项）；
-- [ ] 若动过 GUI：`LITEROUTER_GUI_SMOKE=1` 冒烟通过，且**关键页面已用真实截图核对**（§5.2 的方法）；
 - [ ] 若动过 Docker：`docker build` 与 `docker run` 端到端通过（探针、`/ui`、非 root 用户、SIGTERM 优雅退出）；
 - [ ] **未**改动 `CHANGELOG.md` 与 `docs/release-notes/`（规则 7），除非用户明确要求发版；
-- [ ] `cli/`、`gui/` 下**没有** `src/main.cpp`；
+- [ ] `cli/` 下**没有** `src/main.cpp`；
 - [ ] 提交信息符合 Conventional Commits（`AGENTS.md` §7）。
 
 ---
@@ -220,23 +222,16 @@ npm --prefix web run build && mcpp build -p cli    # 顺序不能反
 
 ### 5.1 构建、测试、运行
 
-- 仓库：`/home/yangqi/literouter`；workspace 成员 `core` / `cli` / `gui` + 内嵌 `web`；版本 `0.1.0`。
+- 仓库：`/home/yangqi/literouter`；workspace 成员 `core` / `cli` + 内嵌 `web`；版本 `0.1.0`。
 - 构建：`mcpp build -p <member>` / `mcpp build --workspace`；测试：`mcpp test -p core [<suite>] [--timeout 600]`；运行：`mcpp run -p cli -- …`。
 - 新增源文件（mcpp 自动 glob `src/**/*.{cppm,cpp}`）：`core/src/lr_limits.cpp`、`lr_cache.cpp`、`lr_auth.cpp`。
 - 新增测试文件（各自编译成独立二进制）：`core/tests/test_auth.cpp`、`test_gates.cpp`。
-- 测试套件（15）：`test_auth`、`test_clients`、`test_config`、`test_distribution`、`test_gates`、`test_i18n`、`test_json_api`、`test_malformed`、`test_media`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`。
-- 字典规模：`kZhTranslations` 558 键；GUI 328 条 + CLI 81 条 `tr()` 字面量全覆盖。
+- 测试套件（13）：`test_auth`、`test_config`、`test_gates`、`test_i18n`、`test_json_api`、`test_malformed`、`test_media`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`。（`test_clients` 与 `test_distribution` 已随分发功能删除。）
+- 字典规模：`kZhTranslations` 只保留 CLI 侧仍可达的条目。
 
-### 5.2 GUI 真实截图验证方法
+### 5.2 ~~GUI 真实截图验证方法~~（已移除）
 
-```bash
-Xvfb :97 -screen 0 1400x950x24 &
-DISPLAY=:97 LITEROUTER_CONFIG=<cfg> LITEROUTER_SMOKE=1 LITEROUTER_GUI_SMOKE=1 \
-  LITEROUTER_GUI_PAGE=4 LIBGL_ALWAYS_SOFTWARE=1 <gui-bin> &
-sleep 8 && DISPLAY=:97 import -window root /tmp/page4.png
-```
-
-页面索引：`0=概览 1=中转站 2=路由 3=日志 4=设置 5=客户端`。中转站编辑器第二窗格（`协议设置与限流`）的分段控件绝对坐标约 `x≈955, y≈125`（面板居中于 (270,85)）。用 `xdotool mousemove X Y click 1` 触发点击。
+GUI 成员已删除，本节记录的方法不再适用。替代做法是用 `browser-use` skill 驱动无头 Chrome 验证 `/ui/` 控制台（见 `AGENTS.md` 任务 C）。
 
 ### 5.3 接口与协议
 

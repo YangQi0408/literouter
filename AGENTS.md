@@ -8,7 +8,7 @@
 
 `literouter` 是一个基于 C++23 和 `mcpp` 构建的本地 AI 中转站聚合器（API Relay Aggregator）。它对外提供单一的本地 OpenAI 兼容端点（`http://127.0.0.1:8787/v1`），对内将请求分发至多个中转站，支持模型重命名、优先级故障转移、熔断、SSE 流式透传以及遥测统计。
 
-工程采用 `mcpp` 虚拟工作区（Virtual Workspace），划分为三个子成员（Members）：
+工程采用 `mcpp` 虚拟工作区（Virtual Workspace），划分为两个子成员（Members）加一个随二进制内嵌的前端：
 
 ```text
 literouter/
@@ -29,9 +29,6 @@ literouter/
 │       └── lr_test_check.h     # 断言宏与 EnvGuard；命名为 .h 以免被当作测试构建
 ├── cli/                        # 命令行前端：literouter 可执行文件 (CLI11)
 │   └── src/                    # cli_main.cpp 及各类 cli_cmd_*.cpp
-├── gui/                        # 桌面控制台前端：literouter-gui 可执行文件 (EUI-NEO)
-│   ├── src/                    # gui_main.cpp, app_state.h, pages/, components/
-│   └── hide_zlib.ver           # Linux 链接必需的版本脚本，见规则 8
 └── web/                        # 内置 Web 控制台（React 19 + TypeScript + Vite + Tailwind + shadcn/ui）
     ├── src/                    # 前端源码（views/, components/, store.tsx 等）
     │   └── lib/*.test.ts       # 纯函数单测（vitest），与源码同目录
@@ -47,10 +44,9 @@ literouter/
 | `lr_protocol.cpp` | 四种协议的请求/响应双向转换与 `StreamProtocolAdapter` |
 | `lr_router.cpp` | `candidatesFor()` 候选链推导与熔断器状态机（纯决策层，不持有 socket） |
 | `lr_upstream.cpp` | 单次 `upstreamPost()` / `probeProvider()`、上游连接池（每线程每中转站一条，缓冲与流式共用），不含路由逻辑 |
-| `lr_clients.cpp` | 客户端鉴权、模型/渠道组授权、独立持久化配额账本和流式请求预留结算 |
 | `lr_config.cpp` | `ConfigStore` 加载与原子保存、路径解析、`validate()` |
 | `lr_json.cpp` | 配置与遥测的 JSON 编解码 |
-| `lr_i18n.cpp` | C++ 侧 en/zh 字典（CLI 与 GUI 共用） |
+| `lr_i18n.cpp` | C++ 侧 en/zh 字典（CLI 使用） |
 | `lr_util.cpp` | 字符串、格式化、URL 拆分等小工具 |
 
 ### 1.1 请求生命周期与多协议网关
@@ -90,12 +86,12 @@ literouter/
 - 未经明确的用户需求或架构升级指令，不要随意修改或删除公共函数签名。
 
 ### 规则 2：严禁创建 `src/main.cpp`
-- 在 `cli` 和 `gui` 的 `mcpp.toml` 中，已显式声明了 `[targets.*]` 目标文件（如 `cli_main.cpp`、`gui_main.cpp`）。
-- **千万不要在这些目录下创建或重命名出 `src/main.cpp`**！`mcpp` 构建系统会自动推断 `src/main.cpp` 为另一个隐式二进制目标，从而引发符号重复和构建崩溃。
+- 在 `cli` 的 `mcpp.toml` 中，已显式声明了 `[targets.*]` 目标文件（即 `cli_main.cpp`）。
+- **千万不要在该目录下创建或重命名出 `src/main.cpp`**！`mcpp` 构建系统会自动推断 `src/main.cpp` 为另一个隐式二进制目标，从而引发符号重复和构建崩溃。
 
 ### 规则 3：头文件包含与模块导入顺序
 - 在所有消费 `literouter.core` 的编译单元中，必须遵循固定顺序：
-  1. 先引入所有第三方 C/C++ 传统头文件（如 `#include <CLI/CLI.hpp>`、`#include <eui_neo.h>`）；
+  1. 先引入所有第三方 C/C++ 传统头文件（如 `#include <CLI/CLI.hpp>`）；
   2. 然后再导入 C++23 核心模块：`import literouter.core;`。
 - `literouter.core` 已经导出了标准库（`export import std;`），因此消费代码无需重复导入 `std`。
 
@@ -117,13 +113,9 @@ literouter/
 - **未经用户明确要求发版，不要修改这两处**。顺手更新一行 changelog 就足以对外发出一个版本。
 - 常规的功能与修复说明写在提交信息里即可。
 
-### 规则 8：`gui/hide_zlib.ver` 不可移动或改名
-- 该版本脚本隐藏 GUI 主程序中的 `deflate*` / `inflate*` 符号，避免与 `libgio-2.0.so` 动态加载的 `libz.so` 冲突。
-- `gui/mcpp.toml` 的 `[target.linux.build]` 以相对路径 `../../../hide_zlib.ver` 引用它（相对于 mcpp 的构建工作目录）。移动、改名或调整 `target/` 层级都会直接破坏 Linux GUI 的链接。
-
-### 规则 9：用户可见字符串必须补齐对应字典
+### 规则 8：用户可见字符串必须补齐对应字典
 - 本项目存在**两套彼此独立**的 i18n 实现，共三份字典：
-  1. **CLI 与 GUI**：共用 C++ 侧的 `literouter::i18n::tr()`，中文字典是 `core/src/lr_i18n.cpp` 的 `kZhTranslations`（英文即源码里的原文，无需单独字典）；
+  1. **CLI**：使用 C++ 侧的 `literouter::i18n::tr()`，中文字典是 `core/src/lr_i18n.cpp` 的 `kZhTranslations`（英文即源码里的原文，无需单独字典）；
   2. **Web 控制台**：完全独立的 `web/src/lib/i18n.tsx`，内含 `en` / `zh` 两个 map，两边都要补。
 - **缺失翻译会静默回退英文原文**（`lr_i18n.cpp` 中 `tr()` 直接 `return text;`），既不报错也不构建失败，只会在界面上露出一句英文。
 - 因此新增任何用户可见字符串，都必须同步补上对应字典条目；改动 Web 文案时 `en` 与 `zh` 两个 map 都要补。
@@ -136,13 +128,12 @@ literouter/
 
 ### 3.1 构建命令
 ```bash
-# 全局全量构建 (core + cli + gui)
+# 全局全量构建 (core + cli)
 mcpp build --workspace
 
 # 独立构建某个成员
 mcpp build -p core
 mcpp build -p cli
-mcpp build -p gui
 ```
 
 ### 3.2 运行测试
@@ -163,7 +154,7 @@ mcpp test -p core test_proxy
 mcpp test -p core test_proxy --timeout 600
 ```
 
-当前套件：`test_clients`、`test_distribution`、`test_media`、`test_config`、`test_i18n`、`test_json_api`、`test_malformed`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`。
+当前套件：`test_media`、`test_config`、`test_i18n`、`test_json_api`、`test_malformed`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`、`test_auth`、`test_gates`。
 
 Web 控制台的纯函数另有一套 vitest 单测（`web/src/lib/*.test.ts`，与源码同目录）：
 
@@ -206,18 +197,6 @@ mcpp run -p cli -- bench --model gpt-4o --runs 3
 mcpp run -p cli -- replay --file request.json --show
 ```
 
-### 3.4 运行 GUI
-```bash
-# 启动桌面控制台 (需图形环境与 OpenGL)
-mcpp run -p gui
-
-# 无头冒烟：各页面渲染固定帧数后自动退出（CI 用 xvfb-run 包一层）
-LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
-
-# 钉住单页做确定性验证，避免定时轮播导致抓帧抓错页面
-LITEROUTER_GUI_SMOKE=1 LITEROUTER_GUI_PAGE=2 mcpp run -p gui
-```
-
 ### 3.5 开发期常用环境变量
 
 完整清单见 `docs/{zh,en}/environment.md`，以下是改代码时最常用的几个：
@@ -227,9 +206,8 @@ LITEROUTER_GUI_SMOKE=1 LITEROUTER_GUI_PAGE=2 mcpp run -p gui
 | `LITEROUTER_CONFIG` | 指向临时配置文件，**避免污染真实 `~/.config/literouter/config.json`**，测试套件正是靠它隔离 |
 | `LITEROUTER_STATE_DIR` | 指向状态目录（`server.persist_telemetry` 开启时其中的 `telemetry-<port>.json` 保存计数器与请求日志，`literouter-<port>.pid` 记录当前监听者） |
 | `LITEROUTER_CA_BUNDLE` | 指定上游 HTTPS 校验用的 CA 包；上游报"证书被拒"时先查这个 |
-| `LITEROUTER_GUI_SMOKE` / `LITEROUTER_GUI_PAGE` | GUI 无头冒烟与页面钉选 |
 | `LITEROUTER_WEB_DIR` | `#embed` 不可用时（如 ISO 严格模式的 GCC）从该目录按请求读取 Web 产物 |
-| `LITEROUTER_LANG` | 强制 CLI/GUI 语言，验证 i18n 时用（见规则 9） |
+| `LITEROUTER_LANG` | 强制 CLI 语言，验证 i18n 时用（见规则 8） |
 
 ### 3.6 编辑器：clangd 必须用 mcpp 自带的那一份
 
@@ -299,7 +277,7 @@ C++ 模块的 `std.pcm` 与编译器构建**严格绑定**，系统 clangd 会�
 
 ### 任务 A：在 Core 中新增配置字段
 
-一个配置字段要真正可用，扇面横跨 core 与三个前端。只改 core 的话字段能存能读，但 CLI、GUI、Web 三处界面都看不到它——这是最容易漏的一类改动。以最近新增的 `server.web_ui` 为参照，完整清单如下：
+一个配置字段要真正可用，扇面横跨 core 与两个前端。只改 core 的话字段能存能读，但 CLI、Web 两处界面都看不到它——这是最容易漏的一类改动。以最近新增的 `server.web_ui` 为参照，完整清单如下：
 
 **Core（必做）**
 1. `core/src/literouter_core.cppm`：在 `ServerConfig` / `ProviderConfig` / `RouteConfig` 中添加**带默认值**的字段，并补一行注释说明它的取值含义；
@@ -309,17 +287,16 @@ C++ 模块的 `std.pcm` 与编译器构建**严格绑定**，系统 clangd 会�
 
 **前端（凡是用户需要看见或修改的字段，都要做）**
 
-5. `gui/src/pages/settings.h`（或对应页面）：加控件，注意规则 9 的字典；
-6. `web/src/lib/api.ts`：补 TypeScript 类型定义；
-7. `web/src/views/Settings.tsx`（或对应视图）：加控件；
-8. `web/src/store.tsx`：若涉及前端状态流转；
-9. `web/src/lib/i18n.tsx`：`en` 与 `zh` **两个 map 都要补**文案；
-10. `cli/src/cli_cmd_serve.cpp`：若该字段需要命令行开关覆盖。
+5. `web/src/lib/api.ts`：补 TypeScript 类型定义；
+6. `web/src/views/Settings.tsx`（或对应视图）：加控件；
+7. `web/src/store.tsx`：若涉及前端状态流转；
+8. `web/src/lib/i18n.tsx`：`en` 与 `zh` **两个 map 都要补**文案；
+9. `cli/src/cli_cmd_serve.cpp`：若该字段需要命令行开关覆盖。
 
 **若字段影响服务端行为**
 
-11. `core/src/lr_proxy.cpp`：实现实际行为；
-12. `core/tests/test_proxy.cpp`：补行为断言。
+10. `core/src/lr_proxy.cpp`：实现实际行为；
+11. `core/tests/test_proxy.cpp`：补行为断言。
 
 最后执行 `mcpp test -p core` 与 `mcpp build --workspace` 确认全绿。
 
@@ -337,13 +314,7 @@ C++ 模块的 `std.pcm` 与编译器构建**严格绑定**，系统 clangd 会�
 5. 在 `cli/src/cli_main.cpp` 中调用注册函数；
 6. 运行 `mcpp run -p cli -- <name> --help` 验证命令注册与选项解析。
 
-### 任务 C：在 GUI 中修改或新增页面
-1. GUI 组件与页面均位于 `gui/src/pages/` 与 `gui/src/components/`；
-2. 页面采用 EUI-NEO 的 DSL 声明式 UI，通过 `app_state.h` 中的 `AppState` 访问运行中数据；
-3. **不要在 UI 渲染主循环帧（`compose`）中执行任何耗时阻塞操作或网络 I/O**。网络请求或配置保存应放入 `AppState` 的后台线程池或异步队列中执行。
-4. 运行 `mcpp build -p gui` 确认编译成功。
-
-### 任务 D：修改内置 Web 控制台
+### 任务 C：修改内置 Web 控制台
 1. 前端基于 **React 19 + TypeScript + Vite + Tailwind CSS v4 + shadcn/ui** 开发，源码位于 `web/src/`，固定产物输出至 `web/dist/`（`index.html`、`app.css`、`app.js`、`favicon.svg`）；
 2. 构建产物通过 `#embed` 在**编译期**嵌进 `core`（见 `core/src/lr_proxy.cpp` 顶部），因此修改前端代码后必须先运行 `npm --prefix web run build` 重新生成 `web/dist/`，再构建 C++ 模块（`mcpp build -p cli`）。**`web/dist/` 构建产物必须与 `web/src/` 源码同步提交**，以便无 Node.js 环境的用户直接编译；
 3. **禁止引入任何外部资源或 CDN**（无外链字体/外部脚本/远程图标），控制台需在断网内网环境下可用；组件库直接导入本地源码（如 `@radix-ui/react-*` 单包、`lucide-react` 本地图标）；
@@ -394,11 +365,9 @@ React 会处理 `element.click()` 派发的真实事件，不需要模拟坐标�
 
 `.github/workflows/ci.yml` 在 Linux / macOS / Windows 三平台跑同一套流程。本地自查时优先覆盖以下几处——它们是最常见的 CI 失败原因：
 
-1. **`web/dist` 同步检查**：Linux 任务会执行 `git diff --exit-code -- web/dist`。改了 `web/src/` 却没重新构建并提交 `web/dist/`，CI 直接失败（对应任务 D 第 2 条）。
-2. **GUI 构建的平台差异**：macOS 上 GUI 构建标记为 `continue-on-error`（zlib 共享链接缺 C++ 运行时符号），**Linux 与 Windows 上不容许失败**。
-3. **CLI 冒烟**：`--version` → `config init --force` → `config validate` 三连。注意 `--force` 会覆写配置文件，所以本地跑之前先设好 `LITEROUTER_CONFIG`。
-4. **GUI 无头冒烟**：仅 Linux，`xvfb-run` + `LITEROUTER_GUI_SMOKE=1`，并以 `LIBGL_ALWAYS_SOFTWARE=1` 强制软件光栅化。
-5. **配置文档校验**：仅 Linux，`scripts/check_config_docs.py` 会把 `docs/{zh,en}/configuration.md` 的样例 JSON 与字段表同 `config init` / `serve --print-config` 的真实输出逐字段比对（字段缺失、多出字段、默认值不符都会失败）。**新增或改名任何配置字段后，必须同步文档**，否则 CI 直接红——这是上一轮 `log_capacity` 文档写 400、代码是 200 之类漂移的专用护栏。
+1. **`web/dist` 同步检查**：Linux 任务会执行 `git diff --exit-code -- web/dist`。改了 `web/src/` 却没重新构建并提交 `web/dist/`，CI 直接失败（对应任务 C 第 2 条）。
+2. **CLI 冒烟**：`--version` → `config init --force` → `config validate` 三连。注意 `--force` 会覆写配置文件，所以本地跑之前先设好 `LITEROUTER_CONFIG`。
+3. **配置文档校验**：仅 Linux，`scripts/check_config_docs.py` 会把 `docs/{zh,en}/configuration.md` 的样例 JSON 与字段表同 `config init` / `serve --print-config` 的真实输出逐字段比对（字段缺失、多出字段、默认值不符都会失败）。**新增或改名任何配置字段后，必须同步文档**，否则 CI 直接红——这是上一轮 `log_capacity` 文档写 400、代码是 200 之类漂移的专用护栏。
 
 `release.yml` 是独立的发版流水线，触发条件见规则 7。
 
@@ -410,13 +379,13 @@ React 会处理 `element.click()` 派发的真实事件，不需要模拟坐标�
 
 ```text
 feat(core,cli): add dynamic web_ui toggle and PUT /__literouter/config endpoint
-fix(gui,build): eliminate zlib duplicate symbol warning and optimize build concurrency
+fix(cli,build): keep the response cache key stable across config saves
 test(core): add coverage for web console bundle, config PUT, and web_ui toggle
 docs: modularize documentation into docs/ with Chinese and English versions
 ci: unify multi-platform CI into single workflow
 ```
 
-常用 type：`feat` / `fix` / `docs` / `test` / `ci` / `chore` / `refactor`。常用 scope：`core` / `cli` / `gui` / `web` / `build` / `release` / `test`。描述用英文小写祈使句，不加句号。
+常用 type：`feat` / `fix` / `docs` / `test` / `ci` / `chore` / `refactor`。常用 scope：`core` / `cli` / `web` / `build` / `release` / `test`。描述用英文小写祈使句，不加句号。
 
 ---
 
@@ -429,20 +398,23 @@ ci: unify multi-platform CI into single workflow
 - [ ] `mcpp build --workspace` 执行无误，全工作区无 warning、无 error；
 - [ ] 涉及 CLI 修改的，手动运行一次对应子命令确认控制台输出无乱码、对齐正常；
 - [ ] 涉及配置变动的，确认环境变量密钥引用未被意外展开成明文；
-- [ ] 涉及新增配置字段的，四个前端（CLI / GUI / Web / 文档）均已同步，见任务 A 的完整清单；
-- [ ] 涉及新增用户可见字符串的，C++ 与 Web 两侧字典均已补齐（规则 9）；
+- [ ] 涉及新增配置字段的，前端（CLI / Web / 文档）均已同步，见任务 A 的完整清单；
+- [ ] 涉及新增用户可见字符串的，C++ 与 Web 两侧字典均已补齐（规则 8）；
 - [ ] 涉及前端改动的，`web/dist/` 已重新构建并与 `web/src/` 一同提交（CI 会 diff 校验）；
 - [ ] 未擅自改动 `CHANGELOG.md` 或 `docs/release-notes/`（规则 7）；
 - [ ] 未在任何 member 中遗留 `src/main.cpp` 或临时测试垃圾文件；
 - [ ] 提交信息符合第 7 节的 Conventional Commits 规范；
 - [ ] 保持代码风格整洁，保留所有既有注释和文档。
 
-## 9. 个人自用与分发约束
+## 9. 个人自用约束
 
-- `clients` 为空时保留个人使用方式；存在客户端时 `server.api_key` 必须是独立管理员凭据。客户端密钥不能访问管理 API。
-- 客户端权限过滤必须覆盖文本、嵌入、音频和图像请求；路由策略、会话亲和与故障转移只能在授权候选内执行。
-- `clients-config-<hash>.json` 是独立额度账本，使用规范化绝对配置路径的 SHA-256 标识；未设置配置路径的核心库调用才回退到 `clients-<port>.json`。必须持有独占系统锁才能读写账本。禁止让改监听端口、清空遥测、关闭 `persist_telemetry`、重启或删除后重建账户重置配额。无客户端、无已有账本的个人实例不创建配额或锁文件。
-- 流式请求到结束或中断时才释放并发槽位；用量未知保留预留。明确报告零 Token 与没有报告用量必须区分。
-- 管理 API 不返回明文密钥，也不能暴露 `${VAR:-fallback}` 中的默认凭据；回写空密钥时按稳定账户/密钥 ID 保留原始配置。
-- 修改客户端功能后执行 `mcpp test -p core`、Web 测试与构建，以及 `python3 scripts/check_client_cli.py <literouter-binary>`。
+`literouter` 是**单用户个人聚合器**：只保留一个 `server.api_key` 作为访问凭据，同时用于模型接口与管理接口。不存在客户端账户、按账户的密钥、权限模型（模型/中转站组）、配额账本与每日预算——这些属于已移除的 API 分发功能，**不要重新引入**：
+
+- 不要新增 `clients[]` 之类的账户或按账户密钥结构，也不要在鉴权之上叠加权限过滤。鉴权就是 `authorized()` 对 `server.api_key` 的一次比较。
+- 不要为配额、用量账本或每日预算引入持久化文件（`clients-config-*.json`、`.json.lock` 等）与统计维度。
+- 配置里出现 `clients` / `client_keys` / `providers[].groups` 一律视为旧版遗留：加载时由 schema 迁移丢弃并记录一条说明，而不是报错。
+
+其余约束：
+
+- 管理 API 不返回明文密钥，也不能暴露 `${VAR:-fallback}` 中的默认凭据；回写空密钥时保留原始引用。
 - TLS 默认关闭，证书与私钥成对配置，监听变更重启生效；管理客户端保持证书及主机名验证。

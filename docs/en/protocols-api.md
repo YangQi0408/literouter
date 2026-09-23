@@ -36,7 +36,7 @@ This document covers `literouter`'s inbound client endpoints, supported upstream
 
 ## Client Inbound Endpoints
 
-Model endpoints accept the administrator `server.api_key` or an enabled client key. Client keys follow their account's permissions and quotas. Authentication is disabled only when both `clients` and the administrator key are empty:
+Model endpoints accept `server.api_key`. Authentication is disabled only while that key is empty:
 ```http
 Authorization: Bearer <your-api-key>
 ```
@@ -116,7 +116,7 @@ These endpoints require an **`openai` provider** that implements the requested e
 
 Media requests share authentication, routing policy, failover, circuit breakers, request logs, and usage counters with text requests. Non-streaming responses are buffered before commitment. Speech and explicit streaming requests use the response-header gate: connection failures, `429`, and retryable `5xx` may switch providers before a response is committed. After successful headers are committed, a truncated upstream audio/SSE response terminates the client connection, records a failure, and never switches providers. Binary response bytes and the upstream `Content-Type` are preserved; gateway-generated errors remain OpenAI-style JSON. A retry after an ambiguous transport failure may repeat an upstream operation or charge, so use `max_attempts: 1` when replay is unacceptable.
 
-Usage reflects token counts actually reported in JSON/SSE. Audio duration charges and image-per-item charges are not estimated by the token price fields. Binary uploads and media responses are omitted from body logs; multipart logs retain only model/stream and part metadata (names, filenames, MIME types, byte counts). GUI and Web logs include audio/image filters.
+Usage reflects token counts actually reported in JSON/SSE. Audio duration charges and image-per-item charges are not estimated by the token price fields. Binary uploads and media responses are omitted from body logs; multipart logs retain only model/stream and part metadata (names, filenames, MIME types, byte counts). The web console's log filters include audio and image.
 
 ```bash
 curl http://127.0.0.1:8787/v1/audio/transcriptions \
@@ -263,7 +263,6 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   "cache_entries": 0,
   "cache_hits": 0,
   "cache_misses": 0,
-  "clients": [],
   "config_path": "/home/you/.config/literouter/config.json",
   "cost_usd": 0.075,
   "health": [
@@ -327,7 +326,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 
   `hourly` holds the last 24 **hour buckets** (`hour_unix` is the start of the hour, on the UTC hour), oldest first: it is what the console's trend chart draws, and it is restored from the telemetry file on restart so the shape of the day does not vanish with the process. The array is empty until there has been traffic.
 
-  `providers` holds cumulative stats (since the last `POST /__literouter/reset-stats` or the restored telemetry file) — `latency_ms_p95` being the nearest-rank p95 over the last 64 attempts, always a sample the relay really served, and 0 when the window is empty — and `health` the breaker state, whose `state` is one of `unknown` / `healthy` / `degraded` / `open`. `uptime_sec` is computed per request, which is what lets the web console and the GUI tick the uptime once a second; it is formatted as `1h 2m 5s` and always keeps the seconds (`humanUptime`), while plain durations — a breaker's remaining cooldown, for instance — still use the minute-rounding `humanDuration`.
+  `providers` holds cumulative stats (since the last `POST /__literouter/reset-stats` or the restored telemetry file) — `latency_ms_p95` being the nearest-rank p95 over the last 64 attempts, always a sample the relay really served, and 0 when the window is empty — and `health` the breaker state, whose `state` is one of `unknown` / `healthy` / `degraded` / `open`. `uptime_sec` is computed per request, which is what lets the web console tick the uptime once a second; it is formatted as `1h 2m 5s` and always keeps the seconds (`humanUptime`), while plain durations — a breaker's remaining cooldown, for instance — still use the minute-rounding `humanDuration`.
 
 ### 2. Incremental Request Logs
 
@@ -370,7 +369,6 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 - **Response**: Prometheus text format (`text/plain; version=0.0.4`), carrying the *same* numbers as `/__literouter/status` — the console is for a person, this is for a graph, and both read one snapshot.
 - **Metrics**: `literouter_build_info`, `literouter_running`, `literouter_uptime_seconds`, `literouter_requests_total` / `successes_total` / `failures_total`, `literouter_active_requests`, `literouter_breakers_open`, `literouter_log_entries_total`, `literouter_bytes_out_total`, `literouter_tokens_*_total`, `literouter_latency_ms_avg`, `literouter_cost_usd_total`;
 - **Per relay**: `literouter_relay_*{relay="<id>"}` (requests / successes / failures / client-aborted / absorbed retries / bytes in and out / tokens / `latency_ms_last|avg|p95` / `last_used_unixtime` / `healthy` / `cooldown_seconds` / `cost_usd_total`);
-- **Per client**: `literouter_client_*{client="<id>"}` (requests, `tokens_total{direction="input"|"output"}`, `cost_usd_total`, `cost_today_usd` — which is what `budget_usd_per_day` is measured against — `active_requests`, `requests_today`, `tokens_today`);
 - **Response cache**: `literouter_cache_enabled`, `literouter_cache_hits_total`, `literouter_cache_misses_total`, `literouter_cache_entries`. "Enabled with no hits" and "disabled" look identical in the config; these four are how they are told apart.
 - **Auth**: the same `server.api_key` gate as every other management endpoint, which a scraper satisfies with `bearer_token` / `authorization`.
 - **Example** (`prometheus.yml`):
@@ -409,7 +407,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 - **Request Body**: `{ "config": <AppConfig> }` or bare `<AppConfig>` object
 - **Validation & Atomicity**: Deserializes JSON, then runs semantic validation (`validate()`). If any errors occur, returns **422 Unprocessable Entity** and touches neither memory nor disk config.
 - **Secret Preservation Rules**:
-  - An empty administrator, provider or client `api_key` preserves its stored value (safe round-trip from the redacted GET response). Providers match by ID; client keys match by account ID and key ID;
+  - An empty server or provider `api_key` preserves its stored value (safe round-trip from the redacted GET response). Providers match by ID;
   - `api_key_clear: true`: explicitly clears that secret, subject to validation;
   - Non-empty string: updates to the new value (supports `${VAR}` placeholders).
 - **Persistence**: When started with a config path, saves atomically using temporary-file-and-rename and calls `updateConfig()`; when running without a config path, updates memory only and returns `"saved": false`.
@@ -429,11 +427,8 @@ While `literouter serve` runs, the same port carries a modern web console built 
 | `GET /favicon.ico` | 302 to `/ui/favicon.svg` |
 
 - **Toggle Control**: Controlled by `server.web_ui` (boolean, defaults to `true`). Can also be overridden at launch via CLI flags `serve --web-ui` or `serve --no-web-ui`. When disabled, navigating to `/ui/` returns 404 (error code `console_disabled`). Changes via reload or PUT take effect immediately without restarting the process.
-- **Auth**: The shell holds no data, so it loads without a key. Console data requires the administrator `server.api_key`; client credentials cannot open management data. The first authenticated visit opens a key prompt and the key stays in that browser's localStorage.
+- **Auth**: The shell holds no data, so it loads without a key. Console data requires `server.api_key`. The first authenticated visit opens a key prompt and the key stays in that browser's localStorage.
 - **Packaging**: Frontend build artifacts (under `web/dist/`) are compiled into the binary with C++23 `#embed`, so a server needs nothing but `literouter`. Where `#embed` is unavailable (an ISO-strict GCC, for instance), set `LITEROUTER_WEB_DIR` to a directory holding the same four files (e.g. `web/dist`).
 - **Capabilities**: Live metric tiles (requests, success rate, token rates), relay health matrix with one-click probing, route candidate ordering and editing, full visual configuration editing and safe round-trip persistence, copy-ready Continue / Cursor snippets, incremental request log streaming (filter by level, kind, or keyword, pause/clear), dark/light theme toggle, and English/Chinese i18n.
 - **Security**: Same-origin only, admin endpoints never advertise CORS headers; secrets are used solely for browser-to-localhost requests and literal keys never leave the server.
 
-## Client distribution permissions and usage
-
-With `clients` configured, only administrator credentials can access management endpoints. Model lists respect account model and provider-group permissions. Status `clients` reports account usage and UTC daily quotas; logs add `client_id` and `client_key_id`. Config GET redacts administrator, provider and client literal keys; blank PUT values retain stored keys and `api_key_clear` explicitly clears them. See [API distribution](distribution.md).

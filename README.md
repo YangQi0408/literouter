@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>基于 C++23 与 mcpp 构建的本地高性能 AI 中转站聚合器与多协议网关</strong><br>
-  单本地端点 · 智能重试 · 响应头闸门 · 熔断自愈 · 跨协议直通 · 密钥零泄露 · 原生 CLI 与 GUI
+  单本地端点 · 智能重试 · 响应头闸门 · 熔断自愈 · 跨协议直通 · 密钥零泄露 · 原生 CLI 与 Web 控制台
 </p>
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 ## 什么是 literouter？
 
-`literouter` 是一个兼顾个人自用与 API 分发的高性能 AI 网关。它对外提供统一端口（默认 `http://127.0.0.1:8787`），对内将请求按你设定的策略分发至多个上游模型中转站与官方 API。
+`literouter` 是一个个人自用的高性能 AI 网关。它对外提供统一端口（默认 `http://127.0.0.1:8787`），对内将请求按你设定的策略分发至多个上游模型中转站与官方 API。
 
 你只需将各类常用客户端（Chatbox、NextChat、Cursor、沉浸式翻译、Shell 脚本或 Python SDK）统一指向 `literouter`，由它在毫秒级自动接管调度：**哪个中转站有对应模型、哪个挂了、哪个被限流了、哪个需要重命名映射，全部自动静默处理**。
 
@@ -31,25 +31,21 @@
 ## 核心特性
 
 - ⚡ **单端点聚合**：统一管理多个中转站的 Base URL 与 API Key，客户端无需频繁切换配置。
-- 👥 **客户端分发**：独立管理员与客户端凭据，每账户多密钥、模型/中转站组权限、RPM/并发限制、持久化请求/Token 日配额，以及**按金额封顶的每日预算**（`budget_usd_per_day`）；CLI、GUI、Web 均可管理并查看用量与估算成本。个人自用无需创建账户。
-- 🧠 **本地应答缓存**：对**非流式**请求做精确匹配缓存（TTL + LRU 淘汰），命中时直接返回并带上 `X-Literouter-Cache: hit`，完全不触达上游——省下的是真金白银。缓存按客户端隔离，流式响应永不缓存。
+- 🧠 **本地应答缓存**：对**非流式**请求做精确匹配缓存（TTL + LRU 淘汰），命中时直接返回并带上 `X-Literouter-Cache: hit`，完全不触达上游——省下的是真金白银。流式响应永不缓存。
 - 🚦 **中转站侧保护**：可为每个上游单独设置**并发上限**与**每分钟请求数**。到达上限的中转站会被**跳过而不是判为失败**（不触发熔断），请求自动交给候选链里的下一个站点，从源头避免把上游打到限流。
 - 🔒 **HTTPS 与多模态接口**：支持监听侧 TLS，以及通过现有 OpenAI 兼容上游调用音频转录、翻译、语音合成和图像生成/编辑/变体接口。
 - 🛡️ **响应头闸门 (Header Gate)**：独创流式安全机制。首包响应头发出前发生网络错误、超时、429 或 5xx 无感切换下一个候选；首包下发后立即锁定连接，**彻底杜绝回答流交叉拼接串扰**。
 - 🔌 **熔断与探针自动恢复**：连续失败触发中转站熔断降级；冷却期后自动放行单请求探针，验证成功即刻满血复活。
 - 🔄 **多协议网关与零开销直通**：**入站**支持 OpenAI、Claude Messages、Google Gemini 与 OpenAI Responses 协议；**出口**支持 `openai`、`azure`、`anthropic`、`gemini`、`vertex`、`bedrock`、`ollama`、`responses` 八种协议（Azure 的 `api-version`、Vertex 的 OAuth2 服务账号、Bedrock 的 SigV4 签名均原生实现）。同协议请求享受**零 JSON 解析、零拷贝直通极速转发**，异构协议自动双向无缝转换（含 Ollama NDJSON 与 Bedrock AWS event-stream 流式分帧）。
-- 📈 **可观测性**：存活（`/health/live`）与就绪（`/health/ready`）探针分离，Prometheus `/__literouter/metrics` 逐中转站与逐客户端导出，并支持 **OTLP 指标推送**到 `{endpoint}/v1/metrics`。
+- 📈 **可观测性**：存活（`/health/live`）与就绪（`/health/ready`）探针分离，Prometheus `/__literouter/metrics` 逐中转站导出，并支持 **OTLP 指标推送**到 `{endpoint}/v1/metrics`。
 - 🔐 **密钥零泄露安全占位符**：配置中支持 `${OPENAI_API_KEY}` 或 `${VAR:-fallback}` 环境变量引用；仅在实际发起网络请求瞬间内存解析，保存配置时绝对不回写明文。
 - 🐳 **开箱即用的部署方式**：提供 `Dockerfile`、`docker-compose.yml`、systemd 服务单元与一键安装脚本 `scripts/install.sh`（校验发布包 SHA-256）。容器镜像只装一个二进制与 CA 证书，以非 root 用户运行。
-- 💻 **三前端协同**：
+- 💻 **双前端协同**：
   - **CLI 命令行**：支持前台运行、`tail -f` 风格实时日志跟踪、状态看板与环境体检 (`doctor`)。
   - **Web 控制台**：`serve` 启动后同一端口自带 `/ui` 页面——基于 React + Vite + Tailwind + shadcn/ui 构建的现代 Web 控制台，支持概览遥测、中转站/路由可视化编辑、一键探测、日志过滤与配置修改；构建产物内嵌于二进制，零额外部署（二次开发前端需 Node.js 22+）。
-  - **GUI 桌面控制台**：基于 OpenGL 的原生桌面应用，提供实时指标磁贴、可配置时间窗的用量趋势、中转站健康矩阵、可视化拖拽调序、一键探测并同步模型。
-- 🌐 **原生跨平台与国际化**：支持 Linux、macOS、Windows；界面支持中英双语无缝切换与 80%~150% 动态矢量缩放。
+- 🌐 **原生跨平台**：支持 Linux、macOS、Windows。
 
 ---
-
-支持个人自用与多客户端分发：客户端多密钥、模型/中转站组权限、持久化配额与限流共用同一套网关。详见[API 分发](docs/zh/distribution.md)。
 
 ## 快速开始
 
@@ -77,8 +73,7 @@ mcpp run -p cli -- doctor
 # 方式 A：启动前台 CLI 代理服务
 mcpp run -p cli -- serve
 
-# 方式 B：启动带硬件加速的原生桌面控制台 (GUI)
-mcpp run -p gui
+# （没有第二个前端需要单独启动，控制台由 `serve` 一并提供。）
 ```
 
 ### 4. 打开内置 Web 控制台
@@ -147,9 +142,8 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 | 📖 [**配置文件与密钥管理**](docs/zh/configuration.md) | 完整 JSON 配置字段规范、安全占位符语法、规则校验与热重载 |
 | 🛡️ [**路由与故障转移机制**](docs/zh/routing-failover.md) | 候选链推导算法、响应头闸门 (Header Gate) 原理、熔断器状态机 |
 | 🔄 [**接口与协议规范**](docs/zh/protocols-api.md) | 客户端入口端点、上游协议适配、同协议零开销直通与 Admin API |
-| 💻 [**命令行工具 (CLI) 手册**](docs/zh/cli.md) | 命令参数用法与客户端管理、状态看板监控与自动化脚本示例 |
-| 📦 [**分发、配额与部署**](docs/zh/distribution.md) | 客户端账户与额度语义、Docker / systemd / 安装脚本四种落地方式 |
-| 🖥️ [**桌面控制台 (GUI) 使用指南**](docs/zh/gui.md) | 六大功能面板说明、模型自动探测、界面缩放快捷键与字体回退 |
+| 💻 [**命令行工具 (CLI) 手册**](docs/zh/cli.md) | 命令参数用法、状态看板监控与自动化脚本示例 |
+| 📦 [**部署与落地**](docs/zh/deployment.md) | Docker / systemd / 安装脚本：把服务落到机器上的几种方式 |
 | ⚙️ [**环境变量参考手册**](docs/zh/environment.md) | 系统环境变量完整列表及 Linux / macOS / Windows 跨平台路径 |
 
 ---
@@ -169,10 +163,6 @@ mcpp test -p core
 # 独立构建各个组件
 mcpp build -p core
 mcpp build -p cli
-mcpp build -p gui
-
-# GUI 自动化无头冒烟测试
-LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
 ```
 
 ---

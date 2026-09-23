@@ -13,7 +13,6 @@ The `literouter` command-line executable provides complete service lifecycle man
 - [Log Streaming (`logs`)](#log-streaming-logs)
 - [System Diagnostics (`doctor`)](#system-diagnostics-doctor)
 - [Model Discovery (`models`)](#model-discovery-models)
-- [Client Distribution (`clients`)](#client-distribution-clients)
 - [Provider Management (`providers`)](#provider-management-providers)
 - [Route Management (`routes`)](#route-management-routes)
 - [Configuration Utility (`config`)](#configuration-utility-config)
@@ -50,7 +49,6 @@ literouter [OPTIONS] <SUBCOMMAND>
 | [`doctor`](#system-diagnostics-doctor) | Run deep diagnostics on config, environment variables, and upstream networks |
 | [`models`](#model-discovery-models) | Display available models and their candidate upstream chains |
 | [`providers`](#provider-management-providers) | List, add, remove, test, enable, or disable upstream providers |
-| [`clients`](#client-distribution-clients) | Manage client accounts, keys, access rules, request/token quotas and usage |
 | [`routes`](#route-management-routes) | List, add, remove, enable, or disable model routing rules |
 | [`config`](#configuration-utility-config) | Show path, display file contents, initialize seed config, validate, migrate, or export/import the whole config |
 | [`bench`](#benchmark-bench) | The same question to every relay that serves a model, compared |
@@ -272,12 +270,22 @@ literouter config migrate
 literouter config export backup.json
 literouter config export - > backup.json
 
-# Load a whole config, or merge only the relays, routes and accounts it names
+# Load a whole config, or merge only the relays and routes it names
 literouter config load backup.json
 literouter config load new-relays.json --merge
 # Validate and report without writing anything
 literouter config load backup.json --dry-run
 ```
+
+**On schema migration**: the `schema` field records the config structure version.
+Loading migrates an older document in memory and `config migrate` writes the
+migrated form back to disk, reporting every change it made: schema 1 -> 2 folds
+`openai_compatible` / `openai_chat` into `openai`, and schema 2 -> 3 drops the
+distribution-era fields (`clients`, `server.language`, `server.ui_scale`,
+`providers[].groups`) with a note naming each one. In the other direction, a
+config from a **newer** literouter is refused rather than loaded minus the fields
+this build has never heard of — losing them on the next save is the real silent
+damage.
 
 ---
 
@@ -332,44 +340,3 @@ one that was logged — worse than not replaying it at all.
 | `--show` | Print the answer body (converted back to chat shape if the relay speaks another protocol) |
 | `--json` | Machine-readable output (global flag) |
 
-
-## Client Distribution (`clients`)
-
-Personal use needs no client accounts. For distribution, first set `server.api_key` to an administrator key (a literal or `${ENV_VAR}` reference). It retains management access; keys under `clients` only access model endpoints. Each account can own several keys sharing one quota.
-
-```bash
-# Tag an existing relay, then restrict an account to that channel and model.
-literouter providers groups relay-primary --group team
-literouter clients add team-a --name "Team A" --model gpt-4o --group team \
-  --rpm 60 --concurrent 4 --requests-per-day 2000 --tokens-per-day 1000000 \
-  --budget-usd-per-day 5 --token-reservation 4096
-
-# Store the placeholder without expanding it, or read a literal key from stdin.
-literouter clients keys add team-a desktop --key-env TEAM_A_DESKTOP_KEY
-literouter clients keys add team-a server --key-stdin < /secure/client-key.txt
-literouter clients keys replace team-a desktop --key-env TEAM_A_ROTATED_KEY
-
-literouter clients list
-literouter clients show team-a --json
-literouter clients usage team-a
-literouter clients usage --json
-
-# Update only named fields. Lists replace the previous list.
-literouter clients update team-a --rpm 120 --model gpt-4o --model gpt-4o-mini
-literouter clients update team-a --all-models --all-groups
-literouter clients keys disable team-a desktop
-literouter clients keys enable team-a desktop
-literouter clients keys remove team-a desktop
-literouter clients disable team-a
-literouter clients enable team-a
-literouter clients remove team-a
-literouter providers groups relay-primary --clear
-```
-
-`providers add` also accepts repeatable `--group`. Keys have stable IDs within their account; lists and JSON output never reveal stored key values. `clients keys add` and `replace` require either `--key-env` or `--key-stdin`; secret values are not accepted as command-line arguments.
-
-Empty model/group lists allow all models/groups. `--rpm`, `--concurrent`, `--requests-per-day` and `--tokens-per-day` default to `0` (unlimited). Daily quotas reset at **00:00 UTC**. `--token-reservation` defaults to `4096`; with a daily token quota it must be positive and fit within that quota. Requests reserve tokens before dispatch, reconcile against reported usage, and retain the reservation if upstream omits usage. `tokens_today` includes reservations; `reserved_tokens` reports the outstanding amount. The quota ledger persists independently of telemetry logging and is not reset by resetting dashboard counters.
-
-`--budget-usd-per-day` is a daily ceiling **in money** (USD, `0` — the default — is unlimited), alongside the token quota. A token quota is not equivalent across models whose prices differ by orders of magnitude — a million tokens of `gpt-4o` and of a cheap model are not the same cost — so "five dollars a day for this person" is the natural dimension for distribution. It **cannot be reserved**: the price depends on which relay answers and how many tokens it reports, so the check happens at admission and the actual cost is added when the request settles; a request already in flight when the ceiling is reached still completes and is still charged. Only relays that **report usage and have a price** contribute to the day's spend, and `config validate` warns when nothing is priced, because the ceiling would then be permanently unreachable and therefore inert. `literouter clients usage` shows the day's spend next to the ceiling.
-
-Commands editing accounts, keys or groups write the config file; reload the running proxy or enable `server.reload_on_change`. `clients usage` queries the running proxy with the configured administrator key. Missing accounts and invalid edits leave the file unchanged and return a nonzero exit code.

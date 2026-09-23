@@ -49,14 +49,14 @@ You can override the default configuration path at any time via:
 
 ```jsonc
 {
-  "schema": 2,
+  "schema": 3,
 
   "server": {
     "host": "127.0.0.1",          // Listen address (binding to non-loopback without api_key triggers a security warning)
     "port": 8787,                 // Port to listen on; 0 lets OS assign an ephemeral free port
     "tls_cert_file": "",         // Absolute PEM certificate chain path; both TLS paths empty keep HTTP
     "tls_key_file": "",          // Absolute unencrypted PEM private key path; restart to apply
-    "api_key": "",                // Administrator key; empty disables auth only without clients
+    "api_key": "",                // Access key for the model and management endpoints; empty disables authentication
     "pass_through_unknown": true, // Automatically pass through models not listed in `routes` to providers declaring them
     "max_attempts": 0,            // Max candidates to try per request; 0 means try all available candidates
     "routing_policy": "priority", // Chain order: priority (default) / fastest (measured) / cheapest (price)
@@ -69,8 +69,6 @@ You can override the default configuration path at any time via:
     "log_bodies": false,          // Capture request/response bodies in logs (disabled by default for prompt privacy)
     "log_body_limit": 2048,       // Maximum body bytes recorded when log_bodies is true
     "persist_telemetry": true,    // Persist counters and the request log to the state dir (see "Telemetry Persistence")
-    "language": "auto",           // UI language: auto / en / zh
-    "ui_scale": 1.0,              // GUI display scale: 0.8 ~ 1.5 (0.0 or 1.0 means default)
     "web_ui": true,               // Serve the built-in web console at /ui (a non-loopback host without api_key warns)
     "reload_on_change": false,    // Apply the config file when it changes on disk (off by default)
     "traffic_bucket_sec": 3600,   // Width of one traffic-trend bucket in seconds; 60 watches the last minutes
@@ -79,8 +77,6 @@ You can override the default configuration path at any time via:
     "response_cache_max_entries": 128, // Cache entries kept; the least recently used is evicted
     "otlp_endpoint": ""           // OpenTelemetry OTLP/HTTP metrics endpoint, e.g. http://127.0.0.1:4318; empty disables
   },
-
-  "clients": [],
 
   "providers": [
     {
@@ -97,7 +93,6 @@ You can override the default configuration path at any time via:
       "timeout_sec": 120,                      // Request timeout in seconds
       "connect_timeout_sec": 15,               // TCP / TLS handshake timeout in seconds
       "supports_stream": true,                 // Supports Server-Sent Events (SSE) streaming
-      "groups": [],
       "models": ["gpt-4o", "text-embedding-3-small"], // Models advertised by this provider
       "headers": {                             // Extra HTTP headers attached to every upstream request
         "HTTP-Referer": "https://example.com"
@@ -162,7 +157,7 @@ You can override the default configuration path at any time via:
 | `port` | `uint16` | `8787` | Port to bind to. Set to `0` to let OS pick an available ephemeral port. |
 | `tls_cert_file` | `string` | `""` | Absolute PEM certificate chain path. Set together with `tls_key_file` for HTTPS; keep both empty for HTTP. Startup validates files, certificate dates, and key matching. Listener changes require restart. |
 | `tls_key_file` | `string` | `""` | Absolute path to the matching unencrypted PEM private key. Its contents are never written into the config or returned to the web console. |
-| `api_key` | `string` | `""` | Administrator credential, supporting environment references. Required when clients exist; also permits model calls. Authentication is disabled only with no clients and an empty administrator key. |
+| `api_key` | `string` | `""` | Access credential for the model endpoints and the management API, supporting environment references. Authentication is disabled only while it is empty. A non-loopback `host` and the web console both warn when it is empty, because either would otherwise expose the request log. |
 | `pass_through_unknown` | `bool` | `true` | If client requests an unrouted model, pass through to providers advertising that model. |
 | `max_attempts` | `size_t` | `0` | Upper limit of candidate providers to try per request. `0` means try all candidates. |
 | `routing_policy` | `string` | `"priority"` | How the **candidate chain is ordered before the first attempt**: `priority` (the default — the declared `priority`/`weight` order), `fastest` (relays with a measurement first, by p95, because a relay that is usually fast and occasionally terrible should not be tried first), `cheapest` (priced relays first, by input + output price per million; an unpriced relay sorts last because its cost is unknown rather than zero). Ties keep the priority order, and **session affinity still wins over both**: which relay has already seen this conversation is the more specific fact. |
@@ -176,18 +171,16 @@ You can override the default configuration path at any time via:
 | `log_bodies` | `bool` | `false` | Whether to record request and response bodies in the log buffer. **Obvious credentials are still masked** (the known `sk-`/`AIza`/`ghp_` prefixes, `Bearer <token>`, JWTs, private-key blocks, `api_key: <long value>`), because prompts are where people paste them; masking happens before truncation, so a partial key is never left behind. |
 | `log_body_limit` | `size_t` | `2048` | Maximum bytes stored per body when `log_bodies` is true. |
 | `persist_telemetry` | `bool` | `true` | Whether counters, per-relay stats and the request log are persisted to the state directory and read back at startup. See "Telemetry Persistence" below. |
-| `language` | `string` | `"auto"` | UI language: `auto` (follow the system locale) / `en` / `zh`. Shared by the CLI and the GUI. |
-| `ui_scale` | `double` | `1.0` | Initial GUI vector scale, accepted roughly between `0.25` and `4.0` (recommended `0.8` ~ `1.5`); `0.0` and `1.0` both mean default. |
 | `web_ui` | `bool` | `true` | Whether to enable the built-in web console. Takes effect immediately; a non-loopback host without an `api_key` emits a security warning. |
 | `traffic_bucket_sec` | `int` | `3600` | Width of one **traffic-trend bucket**, in seconds; values below 60 are raised to 60. The default `3600 × 24` is the historical "last day, hourly" chart; `60 × 120` is the last two hours at minute resolution, which is what debugging a relay right now wants. Each bucket carries its own `bucket_sec`, so a history restored from an older telemetry file is never relabelled at the new width. |
 | `traffic_bucket_count` | `int` | `24` | How many buckets the trend keeps. Lowering it trims what is already held immediately rather than at the next bucket boundary. |
-| `response_cache_ttl_sec` | `int` | `0` | TTL of the **local response cache**, in seconds; `0` disables it (the default). When on, an identical **non-streaming** request (same account, protocol, model and body) is answered from memory until the TTL expires instead of being sent upstream — the most direct way to stop paying twice for the same question. Streaming requests are never cached: replaying a stored body as an event stream would mean inventing chunk boundaries and timing, and a client that measures time-to-first-token would be lied to. |
+| `response_cache_ttl_sec` | `int` | `0` | TTL of the **local response cache**, in seconds; `0` disables it (the default). When on, an identical **non-streaming** request (same protocol, model and body) is answered from memory until the TTL expires instead of being sent upstream — the most direct way to stop paying twice for the same question. Streaming requests are never cached: replaying a stored body as an event stream would mean inventing chunk boundaries and timing, and a client that measures time-to-first-token would be lied to. |
 | `response_cache_max_entries` | `int` | `128` | Entries kept before the **least recently used** one is dropped (expired ones first). Each entry is a whole answer, so this is the memory ceiling. |
 | `otlp_endpoint` | `string` | `""` | OpenTelemetry **OTLP/HTTP** metrics endpoint, e.g. `http://127.0.0.1:4318`; empty disables export. When set, OTLP JSON is pushed to `{endpoint}/v1/metrics` every 30 seconds (counters as CUMULATIVE and monotonic), for deployments with nothing scraping Prometheus. An export failure is logged once per failure run rather than on every tick. |
 
 ### HTTPS listener
 
-Personal use keeps `http://127.0.0.1:8787` by default. For distribution, set `server.tls_cert_file` to the absolute path of a PEM chain (leaf certificate first, followed by intermediates), and `server.tls_key_file` to its matching unencrypted PEM private key. The certificate SAN must cover the hostname or IP clients connect to. Missing, expired, not-yet-valid, or mismatched credentials prevent startup, even with `serve --force`.
+The default is `http://127.0.0.1:8787`. To serve the listener over HTTPS, set `server.tls_cert_file` to the absolute path of a PEM chain (leaf certificate first, followed by intermediates), and `server.tls_key_file` to its matching unencrypted PEM private key. The certificate SAN must cover the hostname or IP clients connect to. Missing, expired, not-yet-valid, or mismatched credentials prevent startup, even with `serve --force`.
 
 All model, health, and `/ui/` management endpoints on the listener then use HTTPS. Host, port, TLS paths, and replacement certificates at the same paths take effect after restarting the listener; saving or hot reload keeps active requests intact. Status always advertises the actual running scheme and address.
 
@@ -203,19 +196,17 @@ Public CA certificates use the system trust store. For a private CA, set `LITERO
 
 That makes it the right tool for "which relay is dearer, and what has today cost me", not a bill to reconcile against.
 
-A client account's settled spend for the day (`cost_today`) comes out of the same arithmetic, and `budget_usd_per_day` is measured against it. Relays with no price written down contribute nothing to it, which is why the validator warns about a budget on a fleet where nothing is priced: a ceiling that can never be reached is more misleading than no ceiling.
-
 ### Local Response Cache
 
 With `server.response_cache_ttl_sec` on, an **identical** non-streaming request is answered from memory until the TTL expires instead of being sent upstream. A hit carries `X-Literouter-Cache: hit` (a store carries `miss`), the log records `cache` in the `provider` column, and the request total still goes up — but **no relay statistic moves and no tokens are charged**, which is the point.
 
-The key is the SHA-256 of account + ingress protocol + logical model + the normalised request body, joined with length prefixes so that moving a character across a field boundary is a different key. The account is in the key deliberately: two people asking the same question are still two people, and an answer carrying one account's private context must never reach another's.
+The key is the SHA-256 of ingress protocol + logical model + the normalised request body, joined with length prefixes so that moving a character across a field boundary is a different key.
 
 **Not** cached: streaming requests (a stored body cannot be replayed as an event stream without inventing timing the client would notice), audio and images (the request is multipart and the answer may be binary), and any non-2xx answer (caching one relay 400 for the whole TTL turns a transient problem into a permanent one). Turning the cache off drops what it held, so re-enabling it cannot serve an answer from before it was switched off.
 
 ### Relay-side Protection
 
-Client quotas (`clients[]`) answer "who may ask how much"; `providers[].max_concurrent` and `requests_per_minute` answer "how much is literouter itself sending to this relay". They are different questions with different remedies: **a full relay is not a broken relay**, so a candidate at its limit is skipped and the next one is tried (no breaker failure, no breaker opened) and the log says `skipping a full relay`. When the whole chain is full the client gets `429` with a real `Retry-After` — the seconds until the oldest start in the rolling window leaves it.
+`providers[].max_concurrent` and `requests_per_minute` answer "how much is literouter itself sending to this relay": **a full relay is not a broken relay**, so a candidate at its limit is skipped and the next one is tried (no breaker failure, no breaker opened) and the log says `skipping a full relay`. When the whole chain is full the client gets `429` with a real `Retry-After` — the seconds until the oldest start in the rolling window leaves it.
 
 Every start is recorded even while no limit is set. Recording only when limited would give an operator a free first minute after turning a limit on, which is exactly when the limit was wanted. The window has a fixed ceiling, so the memory cost of counting is a constant per relay rather than a function of traffic.
 
@@ -225,11 +216,11 @@ Every start is recorded even while no limit is set. Recording only when limited 
 
 ### OpenTelemetry Export
 
-Setting `server.otlp_endpoint` (for example `http://127.0.0.1:4318`) makes literouter push **OTLP/HTTP JSON** to `{endpoint}/v1/metrics` every 30 seconds: counters such as `literouter.requests` are reported as CUMULATIVE and monotonic, and the per-relay and per-client metrics carry `relay=` / `client=` attributes. It is for deployments with nothing scraping Prometheus. A failed export is logged once rather than on every tick.
+Setting `server.otlp_endpoint` (for example `http://127.0.0.1:4318`) makes literouter push **OTLP/HTTP JSON** to `{endpoint}/v1/metrics` every 30 seconds: counters such as `literouter.requests` are reported as CUMULATIVE and monotonic, and the per-relay metrics carry a `relay=` attribute. It is for deployments with nothing scraping Prometheus. A failed export is logged once rather than on every tick.
 
 ### Telemetry Persistence
 
-With `persist_telemetry` on (the default), the server writes the following to `telemetry-<port>.json` in the **state directory** (the port being the one the instance actually bound) (see the [Environment Variables Reference](environment.md)) and reads it back on the next start, so `literouter status`, the `/ui` console and the GUI do not reset to zero across a restart:
+With `persist_telemetry` on (the default), the server writes the following to `telemetry-<port>.json` in the **state directory** (the port being the one the instance actually bound) (see the [Environment Variables Reference](environment.md)) and reads it back on the next start, so `literouter status` and the `/ui` console do not reset to zero across a restart:
 
 - Global counters: `total_requests` / `total_success` / `total_failure` / `bytes_out` / `tokens_*` / average latency;
 - Per-relay stats: requests, successes/failures/aborts, absorbed retries, bytes in and out, tokens and latency;
@@ -237,7 +228,7 @@ With `persist_telemetry` on (the default), the server writes the following to `t
 
 Writes match the config file: a temp file in the same directory followed by an atomic rename, mode `0600`. Flushing happens on a background timer (at most once every 3 seconds, and only when something changed) and once more on `stop()`. A corrupt or unrecognised file is ignored and logged, never a reason to refuse startup; a disk write that fails logs one error and leaves request handling alone.
 
-> ⚠️ **Privacy**: with `log_bodies` on as well, bodies (that is, prompts) are written to disk too. Validation warns about that combination. Set `persist_telemetry` to `false` to disable telemetry persistence; client quota state is still persisted independently.
+> ⚠️ **Privacy**: with `log_bodies` on as well, bodies (that is, prompts) are written to disk too. Validation warns about that combination. Set `persist_telemetry` to `false` to disable telemetry persistence.
 
 ### Provider Configuration (`providers`)
 
@@ -255,7 +246,7 @@ Writes match the config file: a temp file in the same directory followed by an a
 | `aws_access_key` | `string` | `""` | `bedrock`: SigV4 access key id (**required**). `${VAR}` references work and are resolved only at signing time. |
 | `aws_secret_key` | `string` | `""` | `bedrock`: SigV4 secret access key (**required**), `${VAR}` supported the same way. |
 | `aws_session_token` | `string` | `""` | `bedrock`: STS session token for temporary credentials; it is signed along with the rest. |
-| `max_concurrent` | `int` | `0` | **Relay-side** in-flight limit; `0` is unlimited. Unrelated to the per-client quotas: this bounds what literouter itself sends to this relay. A relay at its limit is skipped like an open breaker and the next candidate is tried (**without** counting a breaker failure); when the whole chain is full the client gets `429` with a `Retry-After`. |
+| `max_concurrent` | `int` | `0` | **Relay-side** in-flight limit; `0` is unlimited. It bounds what literouter itself sends to this relay, not what any caller may ask for. A relay at its limit is skipped like an open breaker and the next candidate is tried (**without** counting a breaker failure); when the whole chain is full the client gets `429` with a `Retry-After`. |
 | `requests_per_minute` | `int` | `0` | **Relay-side** rolling 60-second start limit; `0` is unlimited. Every start is recorded even when no limit is set — otherwise the first minute after an operator turns a limit on would be free, which is exactly when it was wanted. |
 | `price_in_per_million` | `double` | `0` | What this relay charges for **input** tokens, in USD per million. `0` means not written down, and an unpriced relay contributes **nothing** to the cost estimate rather than being counted at zero. |
 | `price_out_per_million` | `double` | `0` | What this relay charges for **output** tokens, in USD per million. |
@@ -268,7 +259,6 @@ Writes match the config file: a temp file in the same directory followed by an a
 | `connect_timeout_sec` | `uint32` | `15` | TCP / TLS connection establishment timeout in seconds. |
 | `supports_stream` | `bool` | `true` | Whether this provider supports Server-Sent Events (SSE) streaming. |
 | `models` | `string[]`| `[]` | List of model names advertised by this provider (used in pass-through mode). |
-| `groups` | `string[]` | `[]` | Distribution groups assigned to this provider; clients select allowed groups through `provider_groups`. |
 | `headers` | `object` | `{}` | Key-value pairs of extra HTTP headers attached to every request. |
 | `chat_path` | `string` | By protocol (`openai`, `anthropic`, `gemini`, `openai_responses`, `azure`, `vertex`, `bedrock`, `ollama`) | Custom chat endpoint path; automatically inferred from `protocol` if empty (e.g. `anthropic` → `/v1/messages`, `vertex` → `/v1/projects/…/publishers/google/models/{model}:generateContent`, `bedrock` → `/model/{model}/converse`). |
 | `embeddings_path`| `string` | `"/embeddings"`| Custom embeddings endpoint path. |
@@ -306,7 +296,7 @@ In any `api_key` field, `literouter` supports 5 declaration formats:
 To guarantee maximum credential security:
 
 1. **Resolved at invocation time**: The configuration holds raw placeholder strings in memory. Secrets are resolved into plaintext by `resolveSecret()` **strictly at the moment of issuing the network request**.
-2. **Never write back plaintext**: Whenever configuration is saved to disk via GUI or CLI `config save`, `ConfigStore` **strictly preserves the original environment variable placeholders**, preventing accidental leaks into configuration files.
+2. **Never write back plaintext**: Whenever configuration is saved to disk, through `/ui` or the CLI, `ConfigStore` **strictly preserves the original environment variable placeholders**, preventing accidental leaks into configuration files.
 3. **Hardened file permissions**: If a configuration contains literal plaintext keys, the file permissions are automatically clamped to `0600` (read/write for owner only) upon save.
 
 ---
@@ -324,7 +314,9 @@ Before loading or saving, the validation engine checks the configuration for iss
 - 🟡 **Warning** (Server can run, but attention recommended):
   - Referenced environment variable is not defined in the current system;
   - Route candidate chain includes a disabled provider;
-  - Server listens on non-loopback (`0.0.0.0`) without `server.api_key`.
+  - Server listens on non-loopback (`0.0.0.0`) without `server.api_key`;
+  - The web console is served on a non-loopback address without `server.api_key`, so anyone
+    who can reach the port can read the request log.
 - 🔵 **Info** (Informational notifications):
   - Provider has an empty models list (can only be reached via explicit routes);
   - Server port is `0` (ephemeral port allocation).
@@ -348,34 +340,6 @@ mcpp run -p cli -- config reload
 # Option 2: Admin API endpoint
 curl -X POST http://127.0.0.1:8787/__literouter/reload
 
-# Option 3: Click "Reload from disk" in GUI Settings tab
+# Option 3: Click "Reload from disk" in the Settings tab of the console
 ```
 
-### Client Configuration (`clients`)
-
-Defaults to an empty array for personal use. Configuring accounts requires a separate administrator `server.api_key`. See [Personal use and API distribution](distribution.md) for examples, permissions and quota settlement.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `id` | `string` | Required | Stable unique account ID; usage survives removal and recreation. |
-| `name` | `string` | `""` | Display name. |
-| `enabled` | `bool` | `true` | Whether the account can accept new requests. |
-| `keys` | `object[]` | `[]` | Keys sharing account permissions and quotas. |
-| `models` | `string[]` | `[]` | Allowed logical models; empty permits all. |
-| `provider_groups` | `string[]` | `[]` | Allowed provider groups; empty permits all. |
-| `requests_per_minute` | `int` | `0` | Rolling 60-second request limit; 0 is unlimited. |
-| `max_concurrent` | `int` | `0` | In-flight limit, including complete streams; 0 is unlimited. |
-| `requests_per_day` | `integer` | `0` | UTC daily request quota; 0 is unlimited. |
-| `tokens_per_day` | `integer` | `0` | UTC daily token budget; 0 is unlimited. |
-| `token_reservation` | `integer` | `4096` | Minimum reservation per budgeted request; retained when usage is unknown. |
-| `budget_usd_per_day` | `double` | `0` | **Daily spend ceiling in US dollars**; `0` is unlimited. Unlike the token quota this cannot be reserved: the price depends on which relay answers and how many tokens it reports, so the check happens at admission and the actual cost is added when the request settles. A request already in flight when the ceiling is reached still completes and is still charged — the ceiling bounds the **next** request rather than promising the day can never exceed it. Only relays that report usage and have a price contribute; when no enabled relay is priced the validator warns, because the budget would then be permanently inert. |
-
-### Client Keys (`client_keys`)
-
-These fields belong to each `clients[].keys[]` object.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `id` | `string` | Required | Key ID unique within the account. |
-| `api_key` | `string` | `""` | Literal or environment reference; cannot be empty when enabled. |
-| `enabled` | `bool` | `true` | Whether this key can authenticate. |

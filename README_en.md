@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>High-Performance Local AI Relay Aggregator and Multi-Protocol Gateway built with C++23 and mcpp</strong><br>
-  Single Endpoint · Intelligent Retry · Header Gate · Auto-Healing Circuit Breaker · Cross-Protocol Passthrough · Zero-Leak Secrets · Native CLI & GUI
+  Single Endpoint · Intelligent Retry · Header Gate · Auto-Healing Circuit Breaker · Cross-Protocol Passthrough · Zero-Leak Secrets · Native CLI & Web Console
 </p>
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 ## What is literouter?
 
-`literouter` is a high-performance AI gateway for both personal aggregation and API distribution. It presents a unified endpoint (default `http://127.0.0.1:8787`) to client applications while dispatching requests across multiple upstream relays and official model provider APIs according to your configurable rules.
+`literouter` is a high-performance personal AI gateway. It presents a unified endpoint (default `http://127.0.0.1:8787`) to client applications while dispatching requests across multiple upstream relays and official model provider APIs according to your configurable rules.
 
 Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate, shell scripts, or standard SDKs) to `literouter`, and let it handle upstream orchestration seamlessly: **which provider offers the requested model, which node is down, which is rate-limited, and which requires model aliasing—all managed automatically in milliseconds**.
 
@@ -31,25 +31,21 @@ Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate
 ## Key Features
 
 - ⚡ **Single Endpoint Aggregation**: Centralizes upstream Base URLs and API Keys into a single local port, eliminating the need to reconfigure client applications.
-- 👥 **Client Distribution**: Separate administrator and client credentials, multiple keys per account, model/provider-group permissions, RPM/concurrency limits, persistent daily request/token quotas, and a **daily budget in US dollars** (`budget_usd_per_day`). CLI, GUI and Web manage accounts and display usage and estimated cost; personal use requires no accounts.
-- 🧠 **Local Response Cache**: Exact-match caching for **non-streaming** requests (TTL + LRU eviction). A hit is served directly with `X-Literouter-Cache: hit` and never touches the upstream — the saving is real money. The cache is isolated per client, and streaming responses are never cached.
+- 🧠 **Local Response Cache**: Exact-match caching for **non-streaming** requests (TTL + LRU eviction). A hit is served directly with `X-Literouter-Cache: hit` and never touches the upstream — the saving is real money. Streaming responses are never cached.
 - 🚦 **Relay-side Protection**: Per-upstream **concurrency** and **requests-per-minute** ceilings. A relay that is at its limit is **skipped rather than failed** — it does not trip the breaker, and the request moves on to the next target in the chain, which avoids driving an upstream into its own rate limiter.
 - 🔒 **HTTPS and Media Endpoints**: Listener TLS plus audio transcription, translation, speech synthesis, image generation, edits and variations through existing OpenAI-compatible providers.
 - 🛡️ **Header Gate & Lossless Streaming Failover**: Novel streaming safety mechanism. Network drops, timeouts, 429 rate limits, or 5xx server errors trigger seamless failover before the first response header reaches the client. Once the first byte is emitted, the connection is locked to **strictly prevent corrupting or interweaving answers**.
 - 🔌 **Circuit Breaker with Auto-Probing**: Consecutive failures trip down relays into cooldown. Once cooldown expires, a single-request probe tests recovery automatically without overwhelming services.
 - 🔄 **Multi-Protocol Gateway & Zero-Overhead Fast Path**: **Inbound** OpenAI, Claude Messages, Google Gemini and OpenAI Responses requests; **outbound** `openai`, `azure`, `anthropic`, `gemini`, `vertex`, `bedrock`, `ollama` and `responses` (Azure `api-version`, Vertex OAuth2 service accounts and Bedrock SigV4 signing are all implemented natively). Matching protocols enjoy **zero JSON parsing and zero-copy streaming passthrough**, while mismatched protocols are converted bi-directionally on the fly — including Ollama NDJSON and Bedrock AWS event-stream framing.
-- 📈 **Observability**: Liveness (`/health/live`) and readiness (`/health/ready`) probes are separate, Prometheus `/__literouter/metrics` exports per relay and per client, and **OTLP metric push** to `{endpoint}/v1/metrics` is supported.
+- 📈 **Observability**: Liveness (`/health/live`) and readiness (`/health/ready`) probes are separate, Prometheus `/__literouter/metrics` exports per relay, and **OTLP metric push** to `{endpoint}/v1/metrics` is supported.
 - 🔐 **Zero-Leak Secret Placeholders**: Store `${OPENAI_API_KEY}` or `${VAR:-fallback}` placeholders in your config. Secrets are resolved in memory strictly when dispatching requests and are never written back to disk.
 - 🐳 **Ready-made Deployment**: `Dockerfile`, `docker-compose.yml`, a systemd unit and a one-shot installer (`scripts/install.sh`, which verifies the release SHA-256). The container image carries one binary and a CA bundle, and runs as a non-root user.
-- 💻 **Three Frontends**:
+- 💻 **Two Frontends**:
   - **CLI**: Supports foreground server mode, `tail -f` live log streaming, status dashboards, and system diagnostics (`doctor`).
   - **Web Console**: `serve` carries a modern React + Vite + Tailwind + shadcn/ui `/ui` console on the same port, providing telemetry overview, provider/route management, probing, log filtering, and full config editing; assets are embedded in the binary with zero extra deployment (developing the web UI requires Node.js 22+).
-  - **GUI Console**: Native hardware-accelerated OpenGL desktop dashboard featuring real-time telemetry tiles, usage trends over a configurable time window, provider health matrices, visual route ordering, and one-click model auto-discovery.
-- 🌐 **Cross-Platform & Internationalization**: Native support for Linux, macOS, and Windows. Includes English and Simplified Chinese localization, alongside dynamic vector UI scaling (80% ~ 150%).
+- 🌐 **Cross-Platform**: Native support for Linux, macOS, and Windows.
 
 ---
-
-The same gateway supports personal use and client distribution, with multiple keys per account, model/provider-group permissions, persistent quotas and rate limits. See [API distribution](docs/en/distribution.md).
 
 ## Quick Start
 
@@ -77,8 +73,7 @@ mcpp run -p cli -- doctor
 # Option A: Run CLI server in foreground
 mcpp run -p cli -- serve
 
-# Option B: Run native OpenGL desktop console (GUI)
-mcpp run -p gui
+# (There is no second front end to start; the console is served by `serve`.)
 ```
 
 ### 4. Open the built-in Web Console
@@ -147,9 +142,8 @@ Technical details are organized into topic-specific documentation:
 | 📖 [**Configuration & Secrets**](docs/en/configuration.md) | Complete JSON schema, placeholder syntax, rule validation, and hot reload |
 | 🛡️ [**Routing & Failover**](docs/en/routing-failover.md) | Candidate chain resolution, Header Gate streaming logic, circuit breaker state machine |
 | 🔄 [**Protocols & API Reference**](docs/en/protocols-api.md) | Inbound endpoints, upstream protocol adapters, fast-path streaming, and Admin APIs |
-| 💻 [**CLI Manual**](docs/en/cli.md) | Comprehensive reference for all 8 subcommands, live dashboard, and automation scripts |
-| 📦 [**Distribution, Quotas & Deployment**](docs/en/distribution.md) | Client accounts and quota semantics, plus Docker / systemd / installer deployment |
-| 🖥️ [**Desktop GUI Guide**](docs/en/gui.md) | Walkthrough of the six core panels, model scanning, zoom shortcuts, and CJK font fallback |
+| 💻 [**CLI Manual**](docs/en/cli.md) | Reference for every subcommand, plus the live dashboard and automation scripts |
+| 📦 [**Deployment**](docs/en/deployment.md) | Docker / systemd / installer: the ways to land this on a machine |
 | ⚙️ [**Environment Variables**](docs/en/environment.md) | Full environment variable reference and cross-platform path resolution |
 
 ---
@@ -169,10 +163,6 @@ mcpp test -p core
 # Build individual members
 mcpp build -p core
 mcpp build -p cli
-mcpp build -p gui
-
-# Run automated headless GUI smoke tests
-LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
 ```
 
 ---

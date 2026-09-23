@@ -238,7 +238,7 @@ Configured via `server.max_attempts`:
 
 ## Relay-side Limits
 
-Client quotas (`clients[].requests_per_minute` / `max_concurrent`) answer "who may ask how much". `providers[].max_concurrent` / `requests_per_minute` answer "how much is literouter itself sending to this relay". They are different questions with different remedies.
+`providers[].max_concurrent` / `requests_per_minute` answer "how much is literouter itself sending to this relay".
 
 **A full relay is not a broken relay.** A candidate at its limit is therefore **skipped and the next one tried**, with no breaker failure counted and no breaker opened — a relay serving at full capacity with no headroom left should not be judged as failing. The log says `skipping a full relay` and names the reason ("already has N request(s) in flight" or "has taken N request(s) in the last minute").
 
@@ -253,7 +253,7 @@ Two implementation details worth knowing:
 
 With `server.response_cache_ttl_sec` on (`0`, the default, disables it), an **identical** non-streaming request is answered from memory until the TTL expires instead of being sent upstream. A hit carries `X-Literouter-Cache: hit` (a store carries `miss`), the log records `cache` in the `provider` column, and the request total still goes up — but **no relay statistic moves and no tokens are charged**.
 
-The key is the SHA-256 of account + ingress protocol + logical model + the normalised request body, joined with length prefixes so that moving a character across a field boundary is a different key. **The account is in the key deliberately**: two people asking the same question are still two people, and an answer carrying one account's private context must never reach another's.
+The key is the SHA-256 of ingress protocol + logical model + the normalised request body, joined with length prefixes so that moving a character across a field boundary is a different key.
 
 **Not** cached: streaming requests (replaying a stored body as an event stream would mean inventing chunk boundaries and timing, and a client that measures time-to-first-token would be lied to), audio and images (the request is multipart and the answer may be binary), and any non-2xx answer (caching one 400 for the whole TTL turns a transient problem into a permanent one). Turning the cache off drops what it held, so re-enabling it cannot serve an answer from before it was switched off.
 
