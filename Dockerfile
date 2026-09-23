@@ -14,9 +14,6 @@
 # the requirement before changing this default:
 #
 #     objdump -T cli/target/*/*/bin/literouter | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
-#
-# The GUI is deliberately not built: it needs OpenGL and a display, and a
-# headless container is what the web console at /ui is for.
 
 ARG RUNTIME_BASE=debian:trixie-slim
 
@@ -98,10 +95,9 @@ RUN apt-get update \
 COPY --from=builder /out/literouter /usr/local/bin/literouter
 
 # Config and state are separate mounts on purpose. The config holds keys and is
-# meant to be edited and backed up; the state directory holds the telemetry file
-# and the client quota ledger, which must survive a container replacement — a
-# quota ledger on an anonymous volume is a quota that resets when the container
-# does.
+# meant to be edited and backed up; the state directory holds the telemetry file,
+# which must survive a container replacement — telemetry on an anonymous volume
+# is a history that resets when the container does.
 ENV LITEROUTER_CONFIG=/etc/literouter/config.json
 ENV LITEROUTER_STATE_DIR=/var/lib/literouter
 

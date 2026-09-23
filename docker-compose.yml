@@ -5,9 +5,9 @@
 #   docker compose exec literouter literouter status
 #
 # Two volumes, and the split matters: `config` holds the keys and is what you
-# edit and back up, while `state` holds the telemetry file and the client quota
-# ledger. Putting the ledger on an anonymous volume would mean every
-# `docker compose down -v` hands every client a fresh day's quota.
+# edit and back up, while `state` holds the telemetry file. Putting that on an
+# anonymous volume would mean every `docker compose down -v` throws the request
+# history away.
 services:
   literouter:
     build:

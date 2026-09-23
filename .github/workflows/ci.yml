@@ -36,11 +36,6 @@ jobs:
           - os: windows-latest
             platform: windows-x86_64
 
-    env:
-      # Linux runner has no GPU: force Mesa's software rasterizer so GUI's
-      # GLFW/OpenGL startup does not depend on a hardware GLX context.
-      LIBGL_ALWAYS_SOFTWARE: '1'
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -111,7 +106,7 @@ jobs:
           bin="$(ls -t cli/target/*/*/bin/literouter | head -1)"
           tmp="$(mktemp -d)"
           LITEROUTER_CONFIG="$tmp/seed.json" "$bin" config init --force
-          printf '{"providers":[{}],"routes":[{"targets":[{"provider":"p"}]}],"clients":[{"keys":[{}]}]}' > "$tmp/minimal.json"
+          printf '{"providers":[{}],"routes":[{"targets":[{"provider":"p"}]}]}' > "$tmp/minimal.json"
           LITEROUTER_CONFIG="$tmp/minimal.json" "$bin" serve --print-config --force > "$tmp/defaults.json"
           # A real status reply, from a short-lived instance on a port nothing
           # else on a runner is likely to hold, so the documented sample is
@@ -144,11 +139,6 @@ jobs:
           python3 scripts/check_config_docs.py --seed "$tmp/seed.json" --defaults "$tmp/defaults.json" \
             --status "$tmp/status.json" --validate-report "$tmp/validate.json"
 
-      - name: Build gui
-        # On macOS, zlib shared linkage currently lacks C++ runtime symbols; keep going if it fails
-        continue-on-error: ${{ runner.os == 'macOS' }}
-        run: mcpp build -p gui
-
       - name: Test core
         run: mcpp test -p core
 
@@ -158,22 +148,6 @@ jobs:
           mcpp run -p cli -- config init --force
           mcpp run -p cli -- config validate
 
-      - name: Client distribution CLI integration (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          bin="$(ls -t cli/target/*/*/bin/literouter | head -1)"
-          python3 scripts/check_client_cli.py "$bin"
-
-      - name: GUI smoke test (Linux headless)
-        if: runner.os == 'Linux'
-        run: |
-          command -v xvfb-run >/dev/null || {
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq xvfb
-          }
-          xvfb-run -a -s "-screen 0 1600x900x24" \
-            env LITEROUTER_GUI_SMOKE=1 mcpp run -p gui
-
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
@@ -181,6 +155,3 @@ jobs:
           if-no-files-found: warn
           path: |
             cli/target/**/bin/literouter*
-            gui/target/**/bin/literouter-gui*
-            gui/target/**/bin/*.dll
-            gui/target/**/bin/*.so*

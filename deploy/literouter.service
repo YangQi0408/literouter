@@ -8,9 +8,9 @@
 #
 # Install the binary to /usr/local/bin/literouter first (scripts/install.sh does
 # both). This unit runs as a dedicated unprivileged account and keeps the
-# config, the telemetry file and the client quota ledger in separate places,
-# because they have different lifetimes: the config is yours to edit and back
-# up, the state must survive restarts, and the ledger must survive everything.
+# config and the telemetry file in separate places, because they have
+# different lifetimes: the config is yours to edit and back up, and the state
+# has to survive restarts.
 [Unit]
 Description=literouter — local AI relay aggregator
 Documentation=https://github.com/mcpp-community/literouter
