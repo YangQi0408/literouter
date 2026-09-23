@@ -186,12 +186,6 @@ jobs:
         run: |
           mcpp build -p core --release
           mcpp build -p cli --release
-          # Build GUI on Linux and Windows; on macOS ignore zlib shared linking issue
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            mcpp build -p gui --release || true
-          else
-            mcpp build -p gui --release
-          fi
 
       - name: Install packaging utilities (Linux)
         if: runner.os == 'Linux'
@@ -209,12 +203,10 @@ jobs:
 
           # Copy binaries
           find cli/target -type f \( -name "literouter" -o -name "literouter.exe" \) -exec cp {} "$STAGING/" \;
-          find gui/target -type f \( -name "literouter-gui" -o -name "literouter-gui.exe" \) -exec cp {} "$STAGING/" \; 2>/dev/null || true
-          find gui/target -type f -name "*.dll" -exec cp {} "$STAGING/" \; 2>/dev/null || true
 
           # On Linux, patch ELF interpreter & RPATH for portable standalone execution
           if [ "${{ runner.os }}" = "Linux" ]; then
-            for bin in "$STAGING/literouter" "$STAGING/literouter-gui"; do
+            for bin in "$STAGING/literouter"; do
               if [ -f "$bin" ]; then
                 patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 "$bin" 2>/dev/null || python3 scripts/patch_elf_interp.py "$bin" || true
                 patchelf --set-rpath '$ORIGIN' "$bin" 2>/dev/null || true
@@ -222,15 +214,13 @@ jobs:
             done
           fi
 
-          chmod +x "$STAGING/literouter" "$STAGING/literouter-gui" 2>/dev/null || true
+          chmod +x "$STAGING/literouter" 2>/dev/null || true
 
           # Export standalone single binaries directly to dist-release for single-file download
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "$STAGING/literouter.exe" "dist-release/literouter-${VER}-${{ matrix.platform }}.exe" 2>/dev/null || true
-            cp "$STAGING/literouter-gui.exe" "dist-release/literouter-gui-${VER}-${{ matrix.platform }}.exe" 2>/dev/null || true
           else
             cp "$STAGING/literouter" "dist-release/literouter-${VER}-${{ matrix.platform }}" 2>/dev/null || true
-            cp "$STAGING/literouter-gui" "dist-release/literouter-gui-${VER}-${{ matrix.platform }}" 2>/dev/null || true
           fi
 
           # Copy documentation and license
