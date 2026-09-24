@@ -6,11 +6,11 @@
 #   systemctl status literouter
 #   journalctl -u literouter -f
 #
-# Install a locally built binary to /usr/local/bin/literouter first. This unit
-# runs as a dedicated unprivileged account and keeps the config and the
-# telemetry file in separate places, because they have different lifetimes:
-# the config is yours to edit and back up, and the state has to survive
-# restarts.
+# Install the binary to /usr/local/bin/literouter first (scripts/install.sh can
+# do both). This unit runs as a dedicated unprivileged account and keeps the
+# config and the telemetry file in separate places, because they have different
+# lifetimes: the config is yours to edit and back up, and the state has to
+# survive restarts.
 [Unit]
 Description=literouter — local AI relay aggregator
 Documentation=https://github.com/mcpp-community/literouter

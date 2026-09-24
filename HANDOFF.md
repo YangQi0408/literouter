@@ -19,7 +19,7 @@
 | 档一3 | 中转站侧并发/QPS 保护 `max_concurrent` / `requests_per_minute` | `core/src/lr_limits.cpp`（新）、`lr_proxy.cpp`、`lr_json.cpp` |
 | 档一4 | 流式 OpenAI → Anthropic 的 thinking 块合成 | `core/src/lr_protocol.cpp`（`StreamProtocolAdapter`，块惰性开闭） |
 | 档二5 | 出口协议扩展：Azure OpenAI / Vertex AI / AWS Bedrock / Ollama | `core/src/lr_protocol.cpp`、`lr_auth.cpp`（新） |
-| 档二6 | 容器化与运维 | `Dockerfile`、`.dockerignore`、`docker-compose.yml`、`deploy/literouter.service` |
+| 档二6 | 容器化与运维 | `Dockerfile`、`.dockerignore`、`docker-compose.yml`、`deploy/literouter.service`、`scripts/install.sh` |
 | 档二7 | 配置 schema 迁移 | `lr_json.cpp`（`migrateConfigJson`、schema 上限）、`lr_config.cpp`、CLI `config migrate` |
 | 档二8 | 可观测性补完：存活/就绪拆分 + OTLP 导出 | `lr_proxy.cpp`（`/health/live`、`/health/ready`、`otlpPayload`/`exportOtlp`） |
 | 档三9 | 配置导入/导出/批量操作 | CLI `config export` / `config load`；Web 控制台导出/导入按钮 |
@@ -142,7 +142,7 @@ docker compose down -v
 - **规则 2**：**绝不要**在 `cli/` 下创建 `src/main.cpp`（mcpp 会推断出第二个二进制目标，符号重复）。
 - **规则 4**：`api_key` 的 `${VAR}` / `${VAR:-fallback}` 引用**只能在发请求的瞬间**用 `resolveSecret()` 解析，**绝不写回配置文件**。
 - **规则 5**：流式请求一旦下发响应头即进入「已提交」状态，**此后不得故障转移**。
-- **规则 7**：仓库不提供自动发版工作流、GitHub Release 或预编译下载包。`CHANGELOG.md` 与 `docs/release-notes/` 仅保留历史记录，未经用户明确要求不要改动；常规说明写在提交信息里。
+- **规则 7**：产品 GitHub Release 与 API 分发是两件事。`release.yml` 为每个人运行的本地单用户网关发布跨平台二进制；`clients[]`、按账户密钥、权限组、配额账本和每日预算仍保持移除。`CHANGELOG.md` 与 `docs/release-notes/` 会触发真实发布，未经用户明确要求不要改动；常规说明写在提交信息里。
 - **规则 8**（原规则 9）：新增用户可见字符串必须补字典。CLI 用 `core/src/lr_i18n.cpp` 的 `kZhTranslations`；Web 用 `web/src/lib/i18n.tsx` 的 `en`/`zh` **两个 map**。
 
 ### 3.2 字典维护

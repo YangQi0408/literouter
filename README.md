@@ -39,7 +39,7 @@
 - 🔄 **多协议网关与零开销直通**：**入站**支持 OpenAI、Claude Messages、Google Gemini 与 OpenAI Responses 协议；**出口**支持 `openai`、`azure`、`anthropic`、`gemini`、`vertex`、`bedrock`、`ollama`、`responses` 八种协议（Azure 的 `api-version`、Vertex 的 OAuth2 服务账号、Bedrock 的 SigV4 签名均原生实现）。同协议请求享受**零 JSON 解析、零拷贝直通极速转发**，异构协议自动双向无缝转换（含 Ollama NDJSON 与 Bedrock AWS event-stream 流式分帧）。
 - 📈 **可观测性**：存活（`/health/live`）与就绪（`/health/ready`）探针分离，Prometheus `/__literouter/metrics` 逐中转站导出，并支持 **OTLP 指标推送**到 `{endpoint}/v1/metrics`。
 - 🔐 **密钥零泄露安全占位符**：配置中支持 `${OPENAI_API_KEY}` 或 `${VAR:-fallback}` 环境变量引用；仅在实际发起网络请求瞬间内存解析，保存配置时绝对不回写明文。
-- 🐳 **本地部署方式**：提供 `Dockerfile`、`docker-compose.yml` 与 systemd 服务单元，适合把个人网关长期运行在本机或自有服务器上。容器镜像只装一个二进制与 CA 证书，以非 root 用户运行。
+- 🐳 **本地部署方式**：提供跨平台 GitHub Release、Linux 安装脚本、`Dockerfile`、`docker-compose.yml` 与 systemd 服务单元，适合每个人把自己的网关长期运行在本机或自有服务器上。容器镜像只装一个二进制与 CA 证书，以非 root 用户运行。
 - 💻 **双前端协同**：
   - **CLI 命令行**：支持前台运行、`tail -f` 风格实时日志跟踪、状态看板与环境体检 (`doctor`)。
   - **Web 控制台**：`serve` 启动后同一端口自带 `/ui` 页面——基于 React + Vite + Tailwind + shadcn/ui 构建的现代 Web 控制台，支持概览遥测、中转站/路由可视化编辑、一键探测、日志过滤与配置修改；构建产物内嵌于二进制，零额外部署（二次开发前端需 Node.js 22+）。
@@ -143,7 +143,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 | 🛡️ [**路由与故障转移机制**](docs/zh/routing-failover.md) | 候选链推导算法、响应头闸门 (Header Gate) 原理、熔断器状态机 |
 | 🔄 [**接口与协议规范**](docs/zh/protocols-api.md) | 客户端入口端点、上游协议适配、同协议零开销直通与 Admin API |
 | 💻 [**命令行工具 (CLI) 手册**](docs/zh/cli.md) | 命令参数用法、状态看板监控与自动化脚本示例 |
-| 📦 [**部署与落地**](docs/zh/deployment.md) | Docker / systemd：把个人网关落到本机或自有服务器 |
+| 📦 [**部署与落地**](docs/zh/deployment.md) | Release / 安装脚本 / Docker / systemd：把个人网关落到本机或自有服务器 |
 | ⚙️ [**环境变量参考手册**](docs/zh/environment.md) | 系统环境变量完整列表及 Linux / macOS / Windows 跨平台路径 |
 
 ---

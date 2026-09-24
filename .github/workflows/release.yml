@@ -1,0 +1,247 @@
+# Build and publish the local single-user gateway for Linux, macOS, and Windows.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/release-notes/**.md'
+      - 'CHANGELOG.md'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version tag, for example v0.2.0'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check-release:
+    name: Check release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      release_notes: ${{ steps.check.outputs.release_notes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version and release notes
+        id: check
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          notes_file=""
+          version="$INPUT_VERSION"
+
+          if [ -z "$version" ]; then
+            changed_files="$(git diff --name-only "${{ github.event.before || 'HEAD~1' }}" "${{ github.sha }}" || true)"
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              if [[ "$file" =~ ^docs/release-notes/.*\.md$ ]]; then
+                notes_file="$file"
+                version="$(basename "$file" .md)"
+                break
+              fi
+              if [ "$file" = "CHANGELOG.md" ]; then
+                notes_file="$file"
+                version="$(grep -oE '##[[:space:]]*\[?v?[0-9]+\.[0-9]+\.[0-9]+' "$file" | head -n 1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+')"
+                break
+              fi
+            done <<< "$changed_files"
+          fi
+
+          version="${version#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid or missing release version: $version" >&2
+            exit 1
+          fi
+          tag="v$version"
+
+          if [ -z "$notes_file" ]; then
+            if [ -f "docs/release-notes/$tag.md" ]; then
+              notes_file="docs/release-notes/$tag.md"
+            elif [ -f "docs/release-notes/$version.md" ]; then
+              notes_file="docs/release-notes/$version.md"
+            fi
+          fi
+          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+            echo "tag already exists: $tag" >&2
+            exit 1
+          fi
+
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          delimiter="RELEASE_NOTES_${RANDOM}_$(date +%s)"
+          {
+            echo "release_notes<<$delimiter"
+            if [ -n "$notes_file" ] && [ -f "$notes_file" ]; then
+              cat "$notes_file"
+            else
+              echo "Release $tag"
+            fi
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+  build-release:
+    name: Build release (${{ matrix.platform }})
+    needs: check-release
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            archive_type: tar
+          - os: macos-latest
+            platform: macos-arm64
+            archive_type: tar
+          - os: windows-latest
+            platform: windows-x86_64
+            archive_type: zip
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install mcpp (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL https://github.com/mcpp-community/mcpp/releases/latest/download/install.sh \
+            | MCPP_NO_PATH=1 bash
+          echo "$HOME/.mcpp/bin" >> "$GITHUB_PATH"
+
+      - name: Install xlings and mcpp (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://d2learn.org/xlings-install.ps1.txt | iex
+          $xlingsBin = "$env:USERPROFILE\.xlings\subos\default\bin"
+          $env:PATH = "$xlingsBin;$env:PATH"
+          $xlingsBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          xlings install mcpp -y
+
+      - name: Cache mcpp toolchains and dependency cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.mcpp/registry
+            ~/.mcpp/build-cache
+          key: mcpp-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mcpp.toml', '**/mcpp.toml', '**/mcpp.lock') }}
+          restore-keys: |
+            mcpp-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web console
+        run: |
+          npm ci --prefix web
+          npm run build --prefix web
+
+      - name: Build release binaries
+        run: |
+          mcpp build -p core --release
+          mcpp build -p cli --release
+
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq patchelf
+
+      - name: Package release assets
+        env:
+          VERSION: ${{ needs.check-release.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCHIVE_TYPE: ${{ matrix.archive_type }}
+        run: |
+          set -euo pipefail
+          package="literouter-${VERSION}-${PLATFORM}"
+          staging="staging/$package"
+          mkdir -p "$staging" dist-release
+
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            binary="$(find cli/target -type f -name literouter.exe | head -n 1)"
+            cp "$binary" "$staging/literouter.exe"
+            cp "$binary" "dist-release/$package.exe"
+          else
+            binary="$(find cli/target -type f -name literouter | head -n 1)"
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              python3 scripts/patch_elf_interp.py "$binary"
+              patchelf --set-rpath '$ORIGIN' "$binary" 2>/dev/null || true
+            fi
+            cp "$binary" "$staging/literouter"
+            chmod 0755 "$staging/literouter"
+            cp "$binary" "dist-release/$package"
+            cp "$binary" "dist-release/literouter-$PLATFORM"
+          fi
+
+          cp README.md README_en.md LICENSE "$staging/"
+          cp NOTICE THIRD_PARTY_NOTICES.md "$staging/" 2>/dev/null || true
+          if [ "$ARCHIVE_TYPE" = "zip" ]; then
+            (cd staging && 7z a -tzip "../dist-release/$package.zip" "$package")
+          else
+            (cd staging && tar -czf "../dist-release/$package.tar.gz" "$package")
+          fi
+          (cd dist-release && for file in *; do
+            [ -f "$file" ] || continue
+            (sha256sum "$file" 2>/dev/null || shasum -a 256 "$file") > "$file.sha256"
+          done)
+          ls -lh dist-release
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.platform }}
+          path: dist-release/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [check-release, build-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check-release.outputs.version }}
+          NOTES: ${{ needs.check-release.outputs.release_notes }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" release-assets/* \
+            --title "literouter $TAG" \
+            --notes "$NOTES"

@@ -8,12 +8,12 @@
 
 | 方式 | 文件 | 适用 |
 |---|---|---|
-| 直接跑二进制 | `mcpp build -p cli --release` | 从源码构建后直接运行；适合个人本地使用 |
+| 直接跑二进制 | `scripts/install.sh` | Linux 机器；从 GitHub Release 下载并校验二进制，可选安装 systemd 单元 |
 | systemd 服务 | `deploy/literouter.service` | 用发行版自带的服务管理；独立账户、`ProtectSystem=strict`、`SIGTERM` 优雅停机 |
 | Docker | `Dockerfile` | 容器化主机。多阶段构建，运行镜像只装 `ca-certificates` 与一个二进制，以 uid 8787 非 root 运行 |
 | Docker Compose | `docker-compose.yml` | 需要把配置与状态分开持久化的场景 |
 
-仓库不提供公开 Release、预编译下载包或一键下载安装脚本。需要直接运行时，请在本机从源码构建 CLI，然后使用生成的 `literouter`；长期运行可配合 systemd，或使用 Docker / Compose。
+每个人都可以独立运行自己的 `literouter` 实例。仓库提供跨平台 GitHub Release；Linux 用户可以用安装脚本下载并校验二进制，或从源码构建。
 
 ```bash
 mcpp build -p core --release
@@ -21,6 +21,23 @@ mcpp build -p cli --release
 ./cli/target/*/*/bin/literouter config init
 ./cli/target/*/*/bin/literouter serve
 ```
+
+直接安装最新 Linux 版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | bash
+```
+
+## 发布新版本
+
+在 GitHub 的 **Actions → release → Run workflow** 中填写版本号（例如 `v0.2.0`）即可手动发布。也可以使用 GitHub CLI：
+
+```bash
+gh workflow run release.yml -f version=v0.2.0
+gh run watch
+```
+
+工作流会在 Linux、macOS 和 Windows 上构建包含 Web 控制台的二进制，生成 SHA-256 校验文件，并创建 GitHub Release。提交新的 `CHANGELOG.md` 或 `docs/release-notes/*.md` 到 `main` 也会按文件名或最新版本号自动触发发布。
 
 **Windows 上的配置路径是一条普通路径，没有前缀。** 构建用的是 MinGW GCC，从不把路径写成 `\\?\` 长路径形式，也没有随包提供 `longPathAware` 清单，因此路径仍受 Windows 对普通路径施加的 `MAX_PATH` 规则约束。把配置留在默认位置 `%APPDATA%\literouter\`（路径天然很短）就永远不会碰到这个问题。万一系统确实拒绝了某个路径，失败是响亮而无害的，不会静默：保存会报 `cannot write config …` 并以非零码退出，且不会动到原文件——新内容先写到临时名，落盘之后才会被改名覆盖旧文件。
 
