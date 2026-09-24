@@ -157,13 +157,20 @@ void testUtf8Hygiene() {
     // `path::string()`. It never throws and never returns invalid UTF-8.
     LR_CHECK_EQ(literouter::pathToUtf8(std::filesystem::path{"/tmp/plain.json"}),
                 "/tmp/plain.json");
-    LR_CHECK_EQ(literouter::pathToUtf8(std::filesystem::path{"/tmp/配置/config.json"}),
-                "/tmp/配置/config.json");
+    const auto unicodePath =
+#if defined(_WIN32)
+        std::filesystem::path{L"/tmp/配置/config.json"};
+#else
+        std::filesystem::path{"/tmp/配置/config.json"};
+#endif
+    LR_CHECK_EQ(literouter::pathToUtf8(unicodePath), "/tmp/配置/config.json");
+#if !defined(_WIN32)
     const std::string gbk = std::string{"/tmp/"} + "\xC4\xE3\xBA\xC3" + "/config.json";
     const std::string repaired = literouter::pathToUtf8(std::filesystem::path{gbk});
     LR_CHECK(literouter::isValidUtf8(repaired));
     LR_CHECK(repaired.find("config.json") != std::string::npos);
     LR_CHECK(repaired.find('\xEF') != std::string::npos);
+#endif
 }
 
 // A working directory that no longer exists must not abort the process.
