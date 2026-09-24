@@ -19,6 +19,7 @@ import literouter.core;
 import nlohmann.json;
 
 #include "cli_core.hpp"
+#include "cli_json.hpp"
 
 namespace lrcli {
 namespace {
@@ -81,7 +82,8 @@ void runReplay(Context &ctx, const ReplayOptions &opts) {
     if (!opts.provider.empty()) {
         provider = config.provider(opts.provider);
         if (provider == nullptr) {
-            printError(std::format("no relay `{}` in {}", opts.provider, configPathFor(ctx).string()));
+            printError(std::format("no relay `{}` in {}", opts.provider,
+                                   literouter::pathToUtf8(configPathFor(ctx))));
             ctx.exitCode = kExitConfig;
             return;
         }
@@ -109,7 +111,7 @@ void runReplay(Context &ctx, const ReplayOptions &opts) {
     json upstream_body = body;
     upstream_body["model"] = upstream_model;
     const std::string payload =
-        literouter::adaptChatRequest(*provider, upstream_model, upstream_body.dump(),
+        literouter::adaptChatRequest(*provider, upstream_model, dumpJson(upstream_body),
                                      /*stream=*/false);
     const std::string path = literouter::resolveChatPath(*provider, upstream_model,
                                                         /*stream=*/false);
@@ -135,16 +137,16 @@ void runReplay(Context &ctx, const ReplayOptions &opts) {
                                                  usage.tokens_prompt, usage.tokens_completion);
 
     if (opts.json) {
-        std::println("{}", json{{"provider", provider->id},
-                                {"upstream_model", upstream_model},
-                                {"status", result.status},
-                                {"latency_ms", result.latency_ms},
-                                {"bytes", result.body.size()},
-                                {"prompt_tokens", usage.tokens_prompt},
-                                {"completion_tokens", usage.tokens_completion},
-                                {"cost_usd", cost},
-                                {"body", opts.show ? json(result.body) : json()}}
-                            .dump(2));
+        const json payload{{"provider", provider->id},
+                            {"upstream_model", upstream_model},
+                            {"status", result.status},
+                            {"latency_ms", result.latency_ms},
+                            {"bytes", result.body.size()},
+                            {"prompt_tokens", usage.tokens_prompt},
+                            {"completion_tokens", usage.tokens_completion},
+                            {"cost_usd", cost},
+                            {"body", opts.show ? json(result.body) : json()}};
+        std::println("{}", dumpJson(payload, 2));
         if (result.status < 200 || result.status >= 300) {
             ctx.exitCode = kExitFail;
         }
@@ -184,14 +186,15 @@ void register_replay(CLI::App &root, Context &ctx) {
     auto opts = std::make_shared<ReplayOptions>();
     CLI::App *sub = root.add_subcommand(
         "replay", std::string(literouter::i18n::tr("Send a saved request body to one relay")));
-    sub->add_option("--file", opts->file, "Request body to replay (OpenAI chat JSON)");
+    sub->add_option("--file", opts->file, lrcli::tr("Request body to replay (OpenAI chat JSON)"));
     sub->add_option("--provider", opts->provider,
-                    "Relay to send it to (default: the first the policy would try)");
-    sub->add_option("--model", opts->model, "Model to ask for (default: the body's own)");
+                    lrcli::tr("Relay to send it to (default: the first the policy would try)"));
+    sub->add_option("--model", opts->model,
+                    lrcli::tr("Model to ask for (default: the body's own)"));
     sub->add_option("--timeout", opts->timeout,
-                    "Per-request timeout in seconds (default: the relay's own)");
-    sub->add_flag("--show", opts->show, "Print the answer body");
-    sub->add_flag("--json", opts->json, "Print the outcome as JSON");
+                    lrcli::tr("Per-request timeout in seconds (default: the relay's own)"));
+    sub->add_flag("--show", opts->show, lrcli::tr("Print the answer body"));
+    sub->add_flag("--json", opts->json, lrcli::tr("Print the outcome as JSON"));
     sub->fallthrough();
     sub->callback([&ctx, opts] { runReplay(ctx, *opts); });
 }

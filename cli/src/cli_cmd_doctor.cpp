@@ -9,6 +9,7 @@ import literouter.core;
 import nlohmann.json;
 
 #include "cli_core.hpp"
+#include "cli_json.hpp"
 
 namespace lrcli {
 namespace {
@@ -80,18 +81,19 @@ void runDoctor(Context &ctx) {
         std::error_code ec;
         if (!std::filesystem::exists(path, ec)) {
             step.status = StepStatus::Warn;
-            step.detail = std::format("`{}` does not exist", path.string());
+            step.detail = std::format("`{}` does not exist", literouter::pathToUtf8(path));
             step.hints.push_back("run `literouter config init` to write the seed");
         } else if (auto loaded = literouter::ConfigStore::load(path); !loaded) {
             step.status = StepStatus::Fail;
-            step.detail = std::format("`{}` did not load: {}", path.string(), loaded.error());
+            step.detail = std::format("`{}` did not load: {}", literouter::pathToUtf8(path),
+                                      loaded.error());
             step.hints.push_back(
                 std::format("fix the JSON, or rewrite it with `literouter config init --force`"));
         } else {
             config = loaded->config();
             haveConfig = true;
             step.status = StepStatus::Pass;
-            step.detail = std::format("`{}` parsed", path.string());
+            step.detail = std::format("`{}` parsed", literouter::pathToUtf8(path));
         }
         steps.push_back(std::move(step));
     }
@@ -152,7 +154,7 @@ void runDoctor(Context &ctx) {
                 step.lines.push_back(colorLevel("error", "error") + " $" + name + " is not set");
             }
             step.hints.push_back(std::format(
-                "export the variable(s), or change the key in `{}`", path.string()));
+                "export the variable(s), or change the key in `{}`", literouter::pathToUtf8(path)));
         } else {
             step.status = StepStatus::Pass;
             step.detail = "every `${VAR}` key resolves";
@@ -290,8 +292,8 @@ void runDoctor(Context &ctx) {
             step.detail =
                 std::format("something that is not literouter answered at {}: {}", url, status.error);
             step.hints.push_back(std::format(
-                "change `server.port` in `{}`, or stop the process on port {}", path.string(),
-                config.server.port));
+                "change `server.port` in `{}`, or stop the process on port {}",
+                literouter::pathToUtf8(path), config.server.port));
         } else {
             step.status = StepStatus::Pass;
             step.detail = std::format("nothing is listening at {} ({}) — the port is free", url,
@@ -318,11 +320,12 @@ void runDoctor(Context &ctx) {
         }
         json root = json::object();
         root["ok"] = !anyFail;
-        root["path"] = path.string();
+        root["path"] = literouter::pathToUtf8(path);
         root["steps"] = std::move(array);
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
     } else {
-        std::println("{}", bold(std::format("literouter doctor — {}", path.string())));
+        std::println("{}",
+                     bold(std::format("literouter doctor — {}", literouter::pathToUtf8(path))));
         std::println("");
         for (const auto &step : steps) {
             if (step.status == StepStatus::Fail) {

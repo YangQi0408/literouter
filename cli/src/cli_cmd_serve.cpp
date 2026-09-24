@@ -73,7 +73,7 @@ void runServe(Context &ctx, const ServeOptions &opts) {
 
     if (!store.existsOnDisk()) {
         printWarn(std::format("config `{}` does not exist; running with the built-in seed",
-                              path.string()));
+                              literouter::pathToUtf8(path)));
         printNote("  create it with `literouter config init` once you have a relay to point at.",
                   ctx.quiet);
     }
@@ -84,7 +84,7 @@ void runServe(Context &ctx, const ServeOptions &opts) {
     }
     if (!report.ok() && !opts.force) {
         printError(std::format("config `{}` did not pass validation ({}); refusing to serve",
-                               path.string(), report.summary()));
+                               literouter::pathToUtf8(path), report.summary()));
         printHint("fix the issues above, or run `literouter serve --force` to start anyway");
         ctx.exitCode = kExitConfig;
         return;
@@ -96,20 +96,20 @@ void runServe(Context &ctx, const ServeOptions &opts) {
     }
 
     if (opts.check) {
-        printInfo(std::format("{}: {} — {}", path.string(), report.summary(),
+        printInfo(std::format("{}: {} — {}", literouter::pathToUtf8(path), report.summary(),
                               report.ok() ? paint("ok", "32") : paint("errors", "31")));
         std::println("listen would be {}", baseUrlOf(config));
         return;
     }
 
     literouter::ProxyServer server;
-    server.setConfigPath(path.string());
+    server.setConfigPath(literouter::pathToUtf8(path));
     if (auto started = server.start(config); !started) {
         printError(std::format("cannot start the proxy on {}: {}", baseUrlOf(config),
                                literouter::i18n::tr(started.error())));
         printHint(std::format("check for another process on that port, or change `server.port` "
                               "in {}",
-                              path.string()));
+                              literouter::pathToUtf8(path)));
         ctx.exitCode = kExitFail;
         return;
     }
@@ -121,7 +121,7 @@ void runServe(Context &ctx, const ServeOptions &opts) {
     KeyValues info;
     info.add("listen", address);
     info.add("client base", std::format("{}/v1", address));
-    info.add("config", path.string());
+    info.add("config", literouter::pathToUtf8(path));
     info.add("relays", std::format("{} enabled of {}", enabledRelays(config),
                                    config.providers.size()));
     info.print();
@@ -135,8 +135,19 @@ void runServe(Context &ctx, const ServeOptions &opts) {
     g_stop_requested.store(false);
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
+    // Closing the console window is not a signal on Windows; without this the
+    // process is killed with the telemetry of the last interval unwritten.
+    installConsoleStopHandler(&g_stop_requested);
 
-    while (!g_stop_requested.load()) {
+    // Two ways to stop, and both have to end the loop. `g_stop_requested` is
+    // Ctrl-C and, on Windows, a console close. `server.running()` going false is
+    // the other one: `POST /__literouter/shutdown` — the console's own button —
+    // stops the listener from a handler thread, and with only the flag here the
+    // process kept waiting on a signal that was never coming. The port was
+    // closed, the health endpoint gone, and the pid file still there, which is
+    // exactly what a hung proxy looks like; the documented "gracefully … and
+    // terminates the proxy process" did not happen.
+    while (!g_stop_requested.load() && server.running()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
@@ -154,28 +165,29 @@ void register_serve(CLI::App &root, Context &ctx) {
     auto opts = std::make_shared<ServeOptions>();
     CLI::App *sub = root.add_subcommand(
         "serve", std::string(literouter::i18n::tr("Run the proxy in the foreground")));
-    sub->add_option("--host", opts->host, "Override server.host for this run only");
-    sub->add_option("--port", opts->port, "Override server.port for this run only");
+    sub->add_option("--host", opts->host, lrcli::tr("Override server.host for this run only"));
+    sub->add_option("--port", opts->port, lrcli::tr("Override server.port for this run only"));
     sub->add_option("--tls-cert", opts->tlsCertFile,
         std::string(literouter::i18n::tr("PEM certificate chain absolute path for HTTPS")));
     sub->add_option("--tls-key", opts->tlsKeyFile,
         std::string(literouter::i18n::tr("Unencrypted PEM private key absolute path for HTTPS")));
     CLI::Option *no_web_ui =
         sub->add_flag("--no-web-ui", opts->webUiOff,
-                      "Do not serve the built-in console at /ui for this run only");
+                      lrcli::tr("Do not serve the built-in console at /ui for this run only"));
     sub->add_flag("--web-ui", opts->webUiOn,
-                  "Serve the built-in console at /ui for this run only")
+                  lrcli::tr("Serve the built-in console at /ui for this run only"))
         ->excludes(no_web_ui);
     CLI::Option *no_persist =
         sub->add_flag("--no-persist", opts->persistOff,
-                      "Do not persist counters and the request log for this run only");
+                      lrcli::tr("Do not persist counters and the request log for this run only"));
     sub->add_flag("--persist", opts->persistOn,
-                  "Persist counters and the request log for this run only")
+                  lrcli::tr("Persist counters and the request log for this run only"))
         ->excludes(no_persist);
-    sub->add_flag("--force", opts->force, "Run even when validate() reports errors");
+    sub->add_flag("--force", opts->force, lrcli::tr("Run even when validate() reports errors"));
     sub->add_flag("--print-config", opts->printConfig,
-                  "Dump the effective config JSON and exit");
-    sub->add_flag("--check", opts->check, "Load and validate, then exit without binding");
+                  lrcli::tr("Dump the effective config JSON and exit"));
+    sub->add_flag("--check", opts->check,
+                  lrcli::tr("Load and validate, then exit without binding"));
     sub->fallthrough();
     sub->callback([&ctx, opts] { runServe(ctx, *opts); });
 }

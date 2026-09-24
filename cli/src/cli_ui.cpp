@@ -259,7 +259,9 @@ void KeyValues::add(std::string key, std::string value) {
     items_.push_back(Item{.isSection = false, .key = std::move(key), .value = std::move(value)});
 }
 
-void KeyValues::print() const {
+void KeyValues::print() const { print(std::cout); }
+
+void KeyValues::print(std::ostream &out) const {
     std::size_t width = 0;
     for (const auto &item : items_) {
         if (!item.isSection) {
@@ -270,16 +272,16 @@ void KeyValues::print() const {
     for (const auto &item : items_) {
         if (item.isSection) {
             if (!firstSection) {
-                std::cout << "\n";
+                out << "\n";
             }
             firstSection = false;
-            std::cout << bold(item.key) << "\n";
+            out << bold(item.key) << "\n";
             continue;
         }
         std::string key{};
         key.append(item.key);
         key.append(width - visibleWidth(item.key), ' ');
-        std::cout << "  " << dim(key) << "  " << item.value << "\n";
+        out << "  " << dim(key) << "  " << item.value << "\n";
     }
 }
 

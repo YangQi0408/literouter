@@ -7,6 +7,7 @@ import literouter.core;
 import nlohmann.json;
 
 #include "cli_core.hpp"
+#include "cli_json.hpp"
 
 namespace lrcli {
 namespace {
@@ -109,7 +110,7 @@ void runStatus(Context &ctx) {
         if (!status.reachable) {
             root["error"] = status.error;
         }
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         if (!status.reachable) {
             ctx.exitCode = kExitUnreachable;
         }
@@ -120,7 +121,7 @@ void runStatus(Context &ctx) {
         printError(std::format("no literouter instance answered at {} ({})", url, status.error));
         printHint(std::format("start one with `literouter serve`, or pass --config pointing at "
                               "the file it uses (currently `{}`)",
-                              storeOpt->path().string()));
+                              literouter::pathToUtf8(storeOpt->path())));
         ctx.exitCode = kExitUnreachable;
         return;
     }

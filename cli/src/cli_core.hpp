@@ -9,6 +9,14 @@
 
 namespace lrcli {
 
+// The core `tr()` returns a view, and CLI11 wants a `std::string` for every
+// description, so without this every call site carries a `std::string(...)`.
+// Returns by value for that reason; the fallback for a string the dictionary
+// does not know is the string itself, which is what rule 8 is about.
+inline std::string tr(std::string_view text) {
+    return std::string{literouter::i18n::tr(text)};
+}
+
 struct Context;
 
 // --config when given, otherwise literouter::defaultConfigPath(). Honours

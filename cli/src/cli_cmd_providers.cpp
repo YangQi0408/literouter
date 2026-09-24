@@ -9,6 +9,7 @@ import literouter.core;
 import nlohmann.json;
 
 #include "cli_core.hpp"
+#include "cli_json.hpp"
 
 namespace lrcli {
 namespace {
@@ -85,7 +86,8 @@ json providerJson(const literouter::ProviderConfig &provider) {
 bool saveOrFail(Context &ctx, const literouter::ConfigStore &store) {
     if (auto saved = store.save(); !saved) {
         printError(
-            std::format("cannot write config `{}`: {}", store.path().string(), saved.error()));
+            std::format("cannot write config `{}`: {}", literouter::pathToUtf8(store.path()),
+                        saved.error()));
         ctx.exitCode = kExitFail;
         return false;
     }
@@ -122,14 +124,15 @@ void runList(Context &ctx) {
             array.push_back(providerJson(provider));
         }
         json root = json::object();
-        root["path"] = storeOpt->path().string();
+        root["path"] = literouter::pathToUtf8(storeOpt->path());
         root["providers"] = std::move(array);
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         return;
     }
 
     if (config.providers.empty()) {
-        printInfo(std::format("no relays configured in {}", storeOpt->path().string()));
+        printInfo(std::format("no relays configured in {}",
+                              literouter::pathToUtf8(storeOpt->path())));
         printHint("add one with `literouter providers add <id> --base-url https://…/v1`");
         return;
     }
@@ -166,7 +169,7 @@ void runAdd(Context &ctx, const AddOptions &opts) {
     literouter::AppConfig &config = storeOpt->config();
     if (config.provider(opts.id) != nullptr) {
         printError(std::format("relay `{}` already exists in {}", opts.id,
-                               storeOpt->path().string()));
+                               literouter::pathToUtf8(storeOpt->path())));
         printHint(std::format("remove it first with `literouter providers remove {}`", opts.id));
         ctx.exitCode = kExitConfig;
         return;
@@ -210,6 +213,12 @@ void runAdd(Context &ctx, const AddOptions &opts) {
             ctx.exitCode = kExitFail;
             return;
         }
+        // getline keeps the CR of a CRLF line ending, and on Windows a key
+        // piped in from `echo %KEY%` or read out of a CRLF file arrives with
+        // one. It would then be written to the config file verbatim.
+        if (line.ends_with('\r')) {
+            line.pop_back();
+        }
         provider.api_key = line;
     }
 
@@ -240,9 +249,9 @@ void runAdd(Context &ctx, const AddOptions &opts) {
     if (ctx.json) {
         json root = json::object();
         root["changed"] = "provider-added";
-        root["path"] = storeOpt->path().string();
+        root["path"] = literouter::pathToUtf8(storeOpt->path());
         root["provider"] = providerJson(provider);
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         return;
     }
 
@@ -254,7 +263,7 @@ void runAdd(Context &ctx, const AddOptions &opts) {
     info.add("key", describeApiKey(provider.api_key));
     info.add("models", provider.models.empty() ? "(none advertised)"
                                                : std::format("{}", provider.models.size()));
-    info.add("saved to", storeOpt->path().string());
+    info.add("saved to", literouter::pathToUtf8(storeOpt->path()));
     info.print();
     printNote(std::format("  test it with `literouter providers test {}`", provider.id), ctx.quiet);
 }
@@ -269,7 +278,7 @@ void runRemove(Context &ctx, const RemoveOptions &opts) {
     literouter::AppConfig &config = storeOpt->config();
     if (config.provider(opts.id) == nullptr) {
         printError(
-            std::format("no relay `{}` in {}", opts.id, storeOpt->path().string()));
+            std::format("no relay `{}` in {}", opts.id, literouter::pathToUtf8(storeOpt->path())));
         ctx.exitCode = kExitConfig;
         return;
     }
@@ -295,15 +304,15 @@ void runRemove(Context &ctx, const RemoveOptions &opts) {
     if (ctx.json) {
         json root = json::object();
         root["changed"] = "provider-removed";
-        root["path"] = storeOpt->path().string();
+        root["path"] = literouter::pathToUtf8(storeOpt->path());
         root["id"] = opts.id;
         root["providers_before"] = before;
         root["providers_after"] = config.providers.size();
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         return;
     }
     printInfo(std::format("removed relay `{}` from {} ({} relay(s) remain)", opts.id,
-                          storeOpt->path().string(), config.providers.size()));
+                          literouter::pathToUtf8(storeOpt->path()), config.providers.size()));
 }
 
 void runToggle(Context &ctx, const ToggleOptions &opts, bool enable) {
@@ -316,7 +325,8 @@ void runToggle(Context &ctx, const ToggleOptions &opts, bool enable) {
     literouter::AppConfig &config = storeOpt->config();
     literouter::ProviderConfig *provider = config.provider(opts.id);
     if (provider == nullptr) {
-        printError(std::format("no relay `{}` in {}", opts.id, storeOpt->path().string()));
+        printError(std::format("no relay `{}` in {}", opts.id,
+                               literouter::pathToUtf8(storeOpt->path())));
         ctx.exitCode = kExitConfig;
         return;
     }
@@ -328,14 +338,14 @@ void runToggle(Context &ctx, const ToggleOptions &opts, bool enable) {
     if (ctx.json) {
         json root = json::object();
         root["changed"] = enable ? "provider-enabled" : "provider-disabled";
-        root["path"] = storeOpt->path().string();
+        root["path"] = literouter::pathToUtf8(storeOpt->path());
         root["id"] = opts.id;
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         return;
     }
     printInfo(std::format("relay `{}` is now {} in {}",
                           opts.id, colorEnabled(enable, enable ? "enabled" : "disabled"),
-                          storeOpt->path().string()));
+                          literouter::pathToUtf8(storeOpt->path())));
 }
 
 void runTest(Context &ctx, const TestOptions &opts) {
@@ -355,7 +365,8 @@ void runTest(Context &ctx, const TestOptions &opts) {
             }
         }
         if (selected.empty()) {
-            printError(std::format("no enabled relay in {} to test", storeOpt->path().string()));
+            printError(std::format("no enabled relay in {} to test",
+                                   literouter::pathToUtf8(storeOpt->path())));
             printHint("enable one with `literouter providers enable <id>` or name it explicitly");
             ctx.exitCode = kExitFail;
             return;
@@ -364,7 +375,8 @@ void runTest(Context &ctx, const TestOptions &opts) {
         for (const auto &id : opts.ids) {
             const literouter::ProviderConfig *provider = config.provider(id);
             if (provider == nullptr) {
-                printError(std::format("no relay `{}` in {}", id, storeOpt->path().string()));
+                printError(std::format("no relay `{}` in {}", id,
+                                       literouter::pathToUtf8(storeOpt->path())));
                 ctx.exitCode = kExitConfig;
                 return;
             }
@@ -427,7 +439,7 @@ void runTest(Context &ctx, const TestOptions &opts) {
         json root = json::object();
         root["failures"] = failures;
         root["probes"] = std::move(array);
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
     } else {
         table.print();
         if (failures > 0) {
@@ -443,69 +455,81 @@ void runTest(Context &ctx, const TestOptions &opts) {
 }
 
 void registerList(CLI::App &parent, Context &ctx) {
-    CLI::App *sub = parent.add_subcommand("list", "List configured relays");
+    CLI::App *sub = parent.add_subcommand("list", lrcli::tr("List configured relays"));
     sub->fallthrough();
     sub->callback([&ctx] { runList(ctx); });
 }
 
 void registerAdd(CLI::App &parent, Context &ctx) {
     auto opts = std::make_shared<AddOptions>();
-    CLI::App *sub = parent.add_subcommand("add", "Add a relay to the config file");
-    sub->add_option("id", opts->id, "Relay id (used by routes and logs)")->required();
-    sub->add_option("--base-url", opts->baseUrl, "Upstream root, e.g. https://api.openai.com/v1")
+    CLI::App *sub = parent.add_subcommand("add", lrcli::tr("Add a relay to the config file"));
+    sub->add_option("id", opts->id, lrcli::tr("Relay id (used by routes and logs)"))->required();
+    sub->add_option("--base-url", opts->baseUrl,
+                    lrcli::tr("Upstream root, e.g. https://api.openai.com/v1"))
         ->required();
-    sub->add_option("--name", opts->name, "Human label (defaults to the id)");
-    CLI::Option *key = sub->add_option("--key", opts->key, "Literal API key");
+    sub->add_option("--name", opts->name, lrcli::tr("Human label (defaults to the id)"));
+    CLI::Option *key = sub->add_option("--key", opts->key, lrcli::tr("Literal API key"));
     CLI::Option *keyEnv =
-        sub->add_option("--key-env", opts->keyEnv, "Store ${VAR}; the key is read at request time");
-    CLI::Option *keyStdin = sub->add_flag("--key-stdin", opts->keyStdin, "Read one line from stdin");
+        sub->add_option("--key-env", opts->keyEnv,
+                        lrcli::tr("Store ${VAR}; the key is read at request time"));
+    CLI::Option *keyStdin = sub->add_flag("--key-stdin", opts->keyStdin,
+                                          lrcli::tr("Read one line from stdin"));
     key->excludes(keyEnv)->excludes(keyStdin);
     keyEnv->excludes(keyStdin);
-    sub->add_option("--priority", opts->priority, "Lower wins (default 100)");
-    sub->add_option("--weight", opts->weight, "Tie-break weight within a priority (default 1)");
-    sub->add_option("--timeout", opts->timeout, "Per-request timeout in seconds (default 120)");
+    sub->add_option("--priority", opts->priority, lrcli::tr("Lower wins (default 100)"));
+    sub->add_option("--weight", opts->weight,
+                    lrcli::tr("Tie-break weight within a priority (default 1)"));
+    sub->add_option("--timeout", opts->timeout,
+                    lrcli::tr("Per-request timeout in seconds (default 120)"));
     sub->add_option("--price-in", opts->priceIn,
-                    "Input price in dollars per million tokens (0 = unknown)");
+                    lrcli::tr("Input price in dollars per million tokens (0 = unknown)"));
     sub->add_option("--price-out", opts->priceOut,
-                    "Output price in dollars per million tokens (0 = unknown)");
-    sub->add_option("--model", opts->models, "A model id this relay advertises (repeatable)");
-    sub->add_option("--header", opts->headers, "Extra upstream header, `Name: value` (repeatable)");
-    sub->add_flag("--enable,!--no-enable", opts->enabled, "Enable the relay (default)")
+                    lrcli::tr("Output price in dollars per million tokens (0 = unknown)"));
+    sub->add_option("--model", opts->models,
+                    lrcli::tr("A model id this relay advertises (repeatable)"));
+    sub->add_option("--header", opts->headers,
+                    lrcli::tr("Extra upstream header, `Name: value` (repeatable)"));
+    sub->add_flag("--enable,!--no-enable", opts->enabled, lrcli::tr("Enable the relay (default)"))
         ->default_val(true);
-    sub->add_option("--chat-path", opts->chatPath, "Chat completions path (default /chat/completions)");
+    sub->add_option("--chat-path", opts->chatPath,
+                    lrcli::tr("Chat completions path (default /chat/completions)"));
     sub->add_option("--embeddings-path", opts->embeddingsPath,
-                    "Embeddings path (default /embeddings)");
+                    lrcli::tr("Embeddings path (default /embeddings)"));
     sub->add_option("--protocol", opts->protocol,
-                    "Upstream API protocol: openai, anthropic, gemini, openai_responses, "
-                    "azure, vertex, bedrock, ollama (default openai)");
+                    lrcli::tr("Upstream API protocol: openai, anthropic, gemini, openai_responses, "
+                    "azure, vertex, bedrock, ollama (default openai)"));
     sub->add_option("--api-version", opts->apiVersion,
-                    "Azure: the api-version query; Vertex: the API version segment");
+                    lrcli::tr("Azure: the api-version query; Vertex: the API version segment"));
     sub->add_option("--region", opts->region,
-                    "Bedrock region (required there), or the Vertex location");
-    sub->add_option("--project", opts->project, "Vertex project id");
+                    lrcli::tr("Bedrock region (required there), or the Vertex location"));
+    sub->add_option("--project", opts->project, lrcli::tr("Vertex project id"));
     sub->add_option("--credentials-file", opts->credentialsFile,
-                    "Vertex service-account JSON key path");
+                    lrcli::tr("Vertex service-account JSON key path"));
     sub->add_option("--aws-access-key", opts->awsAccessKey,
-                    "Bedrock SigV4 access key id (a ${VAR} reference is stored as written)");
-    sub->add_option("--aws-secret-key", opts->awsSecretKey, "Bedrock SigV4 secret access key");
+                    lrcli::tr("Bedrock SigV4 access key id (a ${VAR} reference is stored as "
+                              "written)"));
+    sub->add_option("--aws-secret-key", opts->awsSecretKey,
+                    lrcli::tr("Bedrock SigV4 secret access key"));
     sub->add_option("--aws-session-token", opts->awsSessionToken,
-                    "Bedrock STS session token, for temporary credentials");
+                    lrcli::tr("Bedrock STS session token, for temporary credentials"));
     sub->add_option("--max-concurrent", opts->maxConcurrent,
-                    "Most requests literouter sends this relay at once; 0 is unlimited")
+                    lrcli::tr("Most requests literouter sends this relay at once; 0 is unlimited"))
         ->check(CLI::NonNegativeNumber);
     sub->add_option("--rpm", opts->rpm,
-                    "Most requests literouter starts on this relay per minute; 0 is unlimited")
+                    lrcli::tr("Most requests literouter starts on this relay per minute; "
+                              "0 is unlimited"))
         ->check(CLI::NonNegativeNumber);
-    sub->add_option("--note", opts->note, "Free-form note");
+    sub->add_option("--note", opts->note, lrcli::tr("Free-form note"));
     sub->fallthrough();
     sub->callback([&ctx, opts] { runAdd(ctx, *opts); });
 }
 
 void registerRemove(CLI::App &parent, Context &ctx) {
     auto opts = std::make_shared<RemoveOptions>();
-    CLI::App *sub = parent.add_subcommand("remove", "Remove a relay from the config file");
-    sub->add_option("id", opts->id, "Relay id")->required();
-    sub->add_flag("--force", opts->force, "Remove even while a route still targets it");
+    CLI::App *sub = parent.add_subcommand("remove",
+                                          lrcli::tr("Remove a relay from the config file"));
+    sub->add_option("id", opts->id, lrcli::tr("Relay id"))->required();
+    sub->add_flag("--force", opts->force, lrcli::tr("Remove even while a route still targets it"));
     sub->fallthrough();
     sub->callback([&ctx, opts] { runRemove(ctx, *opts); });
 }
@@ -514,17 +538,18 @@ void registerToggle(CLI::App &parent, Context &ctx, bool enable) {
     auto opts = std::make_shared<ToggleOptions>();
     const std::string name = enable ? "enable" : "disable";
     CLI::App *sub = parent.add_subcommand(
-        name, enable ? "Mark a relay enabled" : "Mark a relay disabled");
-    sub->add_option("id", opts->id, "Relay id")->required();
+        name, lrcli::tr(enable ? "Mark a relay enabled" : "Mark a relay disabled"));
+    sub->add_option("id", opts->id, lrcli::tr("Relay id"))->required();
     sub->fallthrough();
     sub->callback([&ctx, opts, enable] { runToggle(ctx, *opts, enable); });
 }
 
 void registerTest(CLI::App &parent, Context &ctx) {
     auto opts = std::make_shared<TestOptions>();
-    CLI::App *sub = parent.add_subcommand("test", "Probe relays with GET {base_url}/models");
+    CLI::App *sub = parent.add_subcommand("test",
+                                          lrcli::tr("Probe relays with GET {base_url}/models"));
     sub->add_option("ids", opts->ids,
-                    "Relay ids to probe (default: every enabled relay)");
+                    lrcli::tr("Relay ids to probe (default: every enabled relay)"));
     sub->fallthrough();
     sub->callback([&ctx, opts] { runTest(ctx, *opts); });
 }

@@ -8,6 +8,9 @@
 import literouter.core;
 
 int main(int argc, char **argv) {
+    // First, because everything after this can print: the code page decides how
+    // the UTF-8 the CLI writes is decoded by a Windows console.
+    lrcli::configureConsoleEncoding();
     literouter::ensureLocalTimezone();
     std::string explicitLang;
     for (int i = 1; i < argc; ++i) {

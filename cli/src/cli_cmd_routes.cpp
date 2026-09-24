@@ -7,6 +7,7 @@ import literouter.core;
 import nlohmann.json;
 
 #include "cli_core.hpp"
+#include "cli_json.hpp"
 
 namespace lrcli {
 namespace {
@@ -47,7 +48,8 @@ std::string renderTargets(const literouter::RouteConfig &route,
 bool saveOrFail(Context &ctx, const literouter::ConfigStore &store) {
     if (auto saved = store.save(); !saved) {
         printError(
-            std::format("cannot write config `{}`: {}", store.path().string(), saved.error()));
+            std::format("cannot write config `{}`: {}", literouter::pathToUtf8(store.path()),
+                        saved.error()));
         ctx.exitCode = kExitFail;
         return false;
     }
@@ -82,14 +84,15 @@ void runList(Context &ctx) {
             array.push_back(std::move(node));
         }
         json root = json::object();
-        root["path"] = storeOpt->path().string();
+        root["path"] = literouter::pathToUtf8(storeOpt->path());
         root["routes"] = std::move(array);
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         return;
     }
 
     if (config.routes.empty()) {
-        printInfo(std::format("no routes configured in {}", storeOpt->path().string()));
+        printInfo(std::format("no routes configured in {}",
+                              literouter::pathToUtf8(storeOpt->path())));
         printHint("add one with `literouter routes add <model> --target <relay>`");
         return;
     }
@@ -147,7 +150,7 @@ void runAdd(Context &ctx, const AddOptions &opts) {
         }
         if (config.provider(target.provider) == nullptr) {
             printError(std::format("--target `{}` names relay `{}`, which is not in {}", spec,
-                                   target.provider, storeOpt->path().string()));
+                                   target.provider, literouter::pathToUtf8(storeOpt->path())));
             printHint(std::format("add it first with `literouter providers add {} --base-url …`",
                                   target.provider));
             ctx.exitCode = kExitConfig;
@@ -180,13 +183,13 @@ void runAdd(Context &ctx, const AddOptions &opts) {
         }
         json root = json::object();
         root["changed"] = created ? "route-added" : "route-extended";
-        root["path"] = storeOpt->path().string();
+        root["path"] = literouter::pathToUtf8(storeOpt->path());
         root["model"] = saved.model;
         root["enabled"] = saved.enabled;
         root["hops_added"] = added;
         root["hops_skipped"] = skipped;
         root["targets"] = std::move(targets);
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         return;
     }
 
@@ -198,7 +201,7 @@ void runAdd(Context &ctx, const AddOptions &opts) {
     }
     info.add("state", colorEnabled(saved.enabled, saved.enabled ? "enabled" : "disabled"));
     info.add("chain", renderTargets(saved, config));
-    info.add("saved to", storeOpt->path().string());
+    info.add("saved to", literouter::pathToUtf8(storeOpt->path()));
     info.print();
 }
 
@@ -212,7 +215,8 @@ void runRemove(Context &ctx, const ToggleOptions &opts) {
     literouter::AppConfig &config = storeOpt->config();
     if (config.route(opts.model) == nullptr) {
         printError(
-            std::format("no route `{}` in {}", opts.model, storeOpt->path().string()));
+            std::format("no route `{}` in {}", opts.model,
+                        literouter::pathToUtf8(storeOpt->path())));
         ctx.exitCode = kExitConfig;
         return;
     }
@@ -225,13 +229,13 @@ void runRemove(Context &ctx, const ToggleOptions &opts) {
     if (ctx.json) {
         json root = json::object();
         root["changed"] = "route-removed";
-        root["path"] = storeOpt->path().string();
+        root["path"] = literouter::pathToUtf8(storeOpt->path());
         root["model"] = opts.model;
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         return;
     }
     printInfo(std::format("removed route `{}` from {} ({} route(s) remain)", opts.model,
-                          storeOpt->path().string(), config.routes.size()));
+                          literouter::pathToUtf8(storeOpt->path()), config.routes.size()));
 }
 
 void runToggle(Context &ctx, const ToggleOptions &opts, bool enable) {
@@ -250,7 +254,8 @@ void runToggle(Context &ctx, const ToggleOptions &opts, bool enable) {
         }
     }
     if (route == nullptr) {
-        printError(std::format("no route `{}` in {}", opts.model, storeOpt->path().string()));
+        printError(std::format("no route `{}` in {}", opts.model,
+                               literouter::pathToUtf8(storeOpt->path())));
         ctx.exitCode = kExitConfig;
         return;
     }
@@ -262,18 +267,18 @@ void runToggle(Context &ctx, const ToggleOptions &opts, bool enable) {
     if (ctx.json) {
         json root = json::object();
         root["changed"] = enable ? "route-enabled" : "route-disabled";
-        root["path"] = storeOpt->path().string();
+        root["path"] = literouter::pathToUtf8(storeOpt->path());
         root["model"] = opts.model;
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         return;
     }
     printInfo(std::format("route `{}` is now {} in {}", opts.model,
                           colorEnabled(enable, enable ? "enabled" : "disabled"),
-                          storeOpt->path().string()));
+                          literouter::pathToUtf8(storeOpt->path())));
 }
 
 void registerList(CLI::App &parent, Context &ctx) {
-    CLI::App *sub = parent.add_subcommand("list", "List the route table");
+    CLI::App *sub = parent.add_subcommand("list", lrcli::tr("List the route table"));
     sub->fallthrough();
     sub->callback([&ctx] { runList(ctx); });
 }
@@ -281,21 +286,21 @@ void registerList(CLI::App &parent, Context &ctx) {
 void registerAdd(CLI::App &parent, Context &ctx) {
     auto opts = std::make_shared<AddOptions>();
     CLI::App *sub = parent.add_subcommand(
-        "add", "Add a route, or append hops to an existing one");
-    sub->add_option("model", opts->model, "The model name a client sends")->required();
+        "add", lrcli::tr("Add a route, or append hops to an existing one"));
+    sub->add_option("model", opts->model, lrcli::tr("The model name a client sends"))->required();
     sub->add_option("--target", opts->targets,
-                    "provider[:upstream-model] (repeatable, order = failover order)")
+                    lrcli::tr("provider[:upstream-model] (repeatable, order = failover order)"))
         ->required()
         ->expected(-1);
-    sub->add_flag("--no-enable", opts->noEnable, "Add the route disabled");
+    sub->add_flag("--no-enable", opts->noEnable, lrcli::tr("Add the route disabled"));
     sub->fallthrough();
     sub->callback([&ctx, opts] { runAdd(ctx, *opts); });
 }
 
 void registerRemove(CLI::App &parent, Context &ctx) {
     auto opts = std::make_shared<ToggleOptions>();
-    CLI::App *sub = parent.add_subcommand("remove", "Remove a route");
-    sub->add_option("model", opts->model, "The route's model name")->required();
+    CLI::App *sub = parent.add_subcommand("remove", lrcli::tr("Remove a route"));
+    sub->add_option("model", opts->model, lrcli::tr("The route's model name"))->required();
     sub->fallthrough();
     sub->callback([&ctx, opts] { runRemove(ctx, *opts); });
 }
@@ -304,8 +309,8 @@ void registerToggle(CLI::App &parent, Context &ctx, bool enable) {
     auto opts = std::make_shared<ToggleOptions>();
     const std::string name = enable ? "enable" : "disable";
     CLI::App *sub =
-        parent.add_subcommand(name, enable ? "Enable a route" : "Disable a route");
-    sub->add_option("model", opts->model, "The route's model name")->required();
+        parent.add_subcommand(name, lrcli::tr(enable ? "Enable a route" : "Disable a route"));
+    sub->add_option("model", opts->model, lrcli::tr("The route's model name"))->required();
     sub->fallthrough();
     sub->callback([&ctx, opts, enable] { runToggle(ctx, *opts, enable); });
 }

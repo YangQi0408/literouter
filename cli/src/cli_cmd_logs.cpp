@@ -10,6 +10,7 @@ import literouter.core;
 import nlohmann.json;
 
 #include "cli_core.hpp"
+#include "cli_json.hpp"
 
 namespace lrcli {
 namespace {
@@ -99,7 +100,7 @@ void reportUnreachable(Context &ctx, const literouter::AdminLogs &page, const st
         root["reachable"] = false;
         root["url"] = url;
         root["error"] = page.error;
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
     } else {
         printError(std::format("cannot read the log from {} ({})", url, page.error));
         printHint(std::format("start it with `literouter serve`, or pass --config pointing at the "
@@ -123,7 +124,7 @@ void runLogs(Context &ctx, const LogsOptions &opts) {
         const literouter::AdminLogs page =
             literouter::fetchLogs(url, opts.since, opts.limit, apiKey);
         if (!page.reachable) {
-            reportUnreachable(ctx, page, url, storeOpt->path().string());
+            reportUnreachable(ctx, page, url, literouter::pathToUtf8(storeOpt->path()));
             return;
         }
         const auto entries = filterByLevel(page.entries, opts.level);
@@ -131,7 +132,7 @@ void runLogs(Context &ctx, const LogsOptions &opts) {
             json root = json::object();
             root["seq"] = page.seq;
             root["entries"] = entriesJson(entries);
-            std::println("{}", root.dump(2));
+            std::println("{}", dumpJson(root, 2));
         } else {
             renderEntries(entries);
         }
@@ -146,6 +147,7 @@ void runLogs(Context &ctx, const LogsOptions &opts) {
     g_stop_requested.store(false);
     std::signal(SIGINT, handleLogsSignal);
     std::signal(SIGTERM, handleLogsSignal);
+    installConsoleStopHandler(&g_stop_requested);
 
     std::uint64_t since = opts.since;
     bool first = true;
@@ -190,11 +192,13 @@ void register_logs(CLI::App &root, Context &ctx) {
     auto opts = std::make_shared<LogsOptions>();
     CLI::App *sub = root.add_subcommand(
         "logs", std::string(literouter::i18n::tr("Read (and optionally follow) the request log")));
-    sub->add_option("--limit", opts->limit, "Maximum entries to fetch (default 50)")
+    sub->add_option("--limit", opts->limit, lrcli::tr("Maximum entries to fetch (default 50)"))
         ->default_val(50);
-    sub->add_option("--since", opts->since, "Start after this sequence number (0 = newest)");
-    sub->add_flag("--follow", opts->follow, "Poll every 250ms and print new entries until Ctrl-C");
-    sub->add_option("--level", opts->level, "Only entries at this level")
+    sub->add_option("--since", opts->since,
+                    lrcli::tr("Start after this sequence number (0 = newest)"));
+    sub->add_flag("--follow", opts->follow,
+                  lrcli::tr("Poll every 250ms and print new entries until Ctrl-C"));
+    sub->add_option("--level", opts->level, lrcli::tr("Only entries at this level"))
         ->check(CLI::IsMember({"info", "warn", "error"}));
     sub->fallthrough();
     sub->callback([&ctx, opts] { runLogs(ctx, *opts); });

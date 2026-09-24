@@ -7,6 +7,7 @@ import literouter.core;
 import nlohmann.json;
 
 #include "cli_core.hpp"
+#include "cli_json.hpp"
 
 namespace lrcli {
 namespace {
@@ -121,7 +122,7 @@ void runModels(Context &ctx, bool showAll = false) {
         }
         json root = json::object();
         root["models"] = std::move(array);
-        std::println("{}", root.dump(2));
+        std::println("{}", dumpJson(root, 2));
         return;
     }
 
@@ -151,7 +152,8 @@ void register_models(CLI::App &root, Context &ctx) {
     auto opts = std::make_shared<ModelsOptions>();
     CLI::App *sub = root.add_subcommand(
         "models", std::string(literouter::i18n::tr("List every logical model and the ordered relays that can serve it")));
-    sub->add_flag("-a,--all", opts->all, "Include unrouted provider models in pass-through mode");
+    sub->add_flag("-a,--all", opts->all,
+                  lrcli::tr("Include unrouted provider models in pass-through mode"));
     sub->fallthrough();
     sub->callback([&ctx, opts] { runModels(ctx, opts->all); });
 }

@@ -5,8 +5,8 @@
 // It reaches upstream directly (through core's single-hop caller) rather than
 // through the proxy, because the point is to compare the relays and not the
 // routing decision — `replay` is the command for the other question. These are
-// real requests against real accounts, which is why the command says so before
-// it starts.
+// real requests against real relays, which is why the command says so before it
+// starts.
 #include <CLI/CLI.hpp>
 
 #include "cli_context.hpp"
@@ -19,6 +19,7 @@ import literouter.core;
 import nlohmann.json;
 
 #include "cli_core.hpp"
+#include "cli_json.hpp"
 
 namespace lrcli {
 namespace {
@@ -54,7 +55,7 @@ std::string benchBody(const std::string &model, const std::string &prompt, int m
     body["model"] = model;
     body["max_tokens"] = maxTokens;
     body["messages"] = json::array({{{"role", "user"}, {"content", prompt}}});
-    return body.dump();
+    return dumpJson(body);
 }
 
 BenchRow runBench(const literouter::ProviderConfig &provider, const literouter::Candidate &candidate,
@@ -148,7 +149,8 @@ void runBench(Context &ctx, const BenchOptions &opts) {
                             {"cost_usd", row.cost},
                             {"error", row.error}});
         }
-        std::println("{}", json{{"model", opts.model}, {"runs", opts.runs}, {"results", rows}}.dump(2));
+        const json summary{{"model", opts.model}, {"runs", opts.runs}, {"results", rows}};
+        std::println("{}", dumpJson(summary, 2));
         return;
     }
 
@@ -228,11 +230,14 @@ void register_bench(CLI::App &root, Context &ctx) {
     CLI::App *sub = root.add_subcommand(
         "bench", std::string(literouter::i18n::tr("Ask every relay that serves a model the same "
                                                   "question")));
-    sub->add_option("--model", opts->model, "Model to benchmark (required)");
-    sub->add_option("--prompt", opts->prompt, "Prompt to send (default: a one-word request)");
-    sub->add_option("--runs", opts->runs, "Requests per relay (default 1)");
-    sub->add_option("--timeout", opts->timeout, "Per-request timeout in seconds (default 30)");
-    sub->add_option("--max-tokens", opts->maxTokens, "max_tokens to ask for (default 16)");
+    sub->add_option("--model", opts->model, lrcli::tr("Model to benchmark (required)"));
+    sub->add_option("--prompt", opts->prompt,
+                    lrcli::tr("Prompt to send (default: a one-word request)"));
+    sub->add_option("--runs", opts->runs, lrcli::tr("Requests per relay (default 1)"));
+    sub->add_option("--timeout", opts->timeout,
+                    lrcli::tr("Per-request timeout in seconds (default 30)"));
+    sub->add_option("--max-tokens", opts->maxTokens,
+                    lrcli::tr("max_tokens to ask for (default 16)"));
     sub->fallthrough();
     sub->callback([&ctx, opts] { runBench(ctx, *opts); });
 }

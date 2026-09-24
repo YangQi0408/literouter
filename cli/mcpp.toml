@@ -21,3 +21,11 @@ CLI11 = { workspace = true }
 bmi_schedule = "on"
 jobs = "auto"
 
+# `cli/tests/*.cpp` includes `cli/src/cli_ui.hpp` to reach the pure helpers the
+# CLI's own output goes through (visibleWidth, stripAnsi, the table renderer),
+# and `core/tests/lr_test_check.h` for the assertion macros. Both are on the
+# include path rather than spelled as relative paths in every file, and the
+# assertion header is the core one rather than a copy — a second copy would
+# drift the moment either side gained a macro.
+include_dirs = ["src", "../core/tests"]
+

@@ -17,10 +17,11 @@ std::filesystem::path configPathFor(const Context &ctx) {
 std::optional<literouter::ConfigStore> loadStoreAt(const std::filesystem::path &path) {
     auto loaded = literouter::ConfigStore::load(path);
     if (!loaded) {
-        printError(std::format("cannot use config `{}`: {}", path.string(), loaded.error()));
+        printError(std::format("cannot use config `{}`: {}", literouter::pathToUtf8(path),
+                               loaded.error()));
         printHint(std::format("fix the file, or rewrite it with `literouter config init --force "
                               "--config {}`",
-                              path.string()));
+                              literouter::pathToUtf8(path)));
         return std::nullopt;
     }
     return std::move(*loaded);
