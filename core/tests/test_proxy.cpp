@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fstream>
+#include <iterator>
 #include <thread>
 
 #include "lr_test_check.h"
@@ -1892,6 +1894,75 @@ void group10Restart(literouter::ProxyServer &proxy, const literouter::AppConfig 
                  "the listener still answers after stop()");
 }
 
+// `POST /__literouter/shutdown` — the console's power button — has to leave the
+// object in the state a supervisor can notice. It always stopped the listener,
+// but the CLI's `serve` loop only ever watched its SIGINT flag, so the process
+// stayed alive with the port closed and the pid file still on disk: a hung proxy
+// that no signal was coming for, while the documented behaviour is "gracefully
+// drains connections and terminates the proxy process".
+//
+// The loop now also watches `running()`, so this pins the property it reads:
+// after the endpoint answers, the listener is gone, `running()` is false, and
+// the pid file that marks the instance is removed — all without a signal.
+void group34ShutdownEndpoint(StubRelay &relay) {
+    LR_GROUP("34. POST /__literouter/shutdown stops the listener, not just the port");
+
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0; // the pid file is then named by the port actually bound
+    config.server.pass_through_unknown = false;
+    literouter::ProviderConfig provider;
+    provider.id = "solo";
+    provider.base_url = relay.baseUrl();
+    provider.timeout_sec = 4;
+    provider.connect_timeout_sec = 2;
+    config.providers = {provider};
+    literouter::RouteConfig route;
+    route.model = "m";
+    route.targets = {literouter::RouteTarget{.provider = "solo", .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    const int port = proxy.boundPort();
+    LR_CHECK_MSG(waitForHealth(port), "the proxy never answered /health");
+    const std::filesystem::path pid_file = literouter::defaultPidPath(port);
+    LR_CHECK_MSG(std::filesystem::exists(pid_file), "a running instance has no pid file");
+
+    const Hit asked = postJson(port, "/__literouter/shutdown", "{}");
+    LR_CHECK_EQ(asked.status, 200);
+
+    // The handler stops off the request thread after a short delay, so wait for
+    // the state rather than assuming it changed before the reply came back.
+    bool stopped = false;
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        if (!proxy.running()) {
+            stopped = true;
+            break;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    LR_CHECK_MSG(stopped, "the shutdown endpoint answered but the proxy is still running");
+
+    // The listener has to be gone, not merely flagged: a supervisor that only
+    // read the flag would leave a process nothing can reach.
+    const Hit dead = getPath(port, "/health");
+    LR_CHECK_MSG(!dead.transport_ok || dead.status != 200,
+                 "the listener still answers /health after the shutdown endpoint");
+
+    // And the record of the instance goes with it, or a later start on the same
+    // port reads a pid file for a process that is not there.
+    LR_CHECK_MSG(!std::filesystem::exists(pid_file),
+                 "the shutdown endpoint left the pid file behind");
+
+    proxy.stop(); // idempotent on top of the handler's own stop
+    LR_CHECK(!proxy.running());
+}
+
 // A ProxyServer that is constructed and destroyed without ever having been
 // started. This was a real crash, not a hypothetical one: the console builds one
 // at startup and only creates its listener when the user presses Start, so
@@ -2587,6 +2658,88 @@ void group15WebConsole(StubRelay &relay_a, literouter::ProxyServer &proxy) {
 
     const Hit missing = getPath(port, "/ui/does-not-exist.js");
     LR_CHECK_EQ(missing.status, 404);
+
+    // What the binary serves must be the build in web/dist, byte for byte. The
+    // embedded copy is what a release actually ships — the directory is not
+    // installed beside it — so a stale `web/dist` that was never rebuilt is a
+    // console that silently differs from its own source, and nothing else in
+    // the suite compares the two. Skipped when the checkout has no `web/dist`
+    // (a build from a source tarball), and on the `$LITEROUTER_WEB_DIR` path,
+    // where the assets come from disk by construction.
+    {
+        const auto asset_matches = [&](const std::string &url, const std::filesystem::path &file) {
+            std::ifstream in{file, std::ios::binary};
+            if (!in) {
+                return true; // no dist to compare against
+            }
+            const std::string on_disk{std::istreambuf_iterator<char>{in},
+                                      std::istreambuf_iterator<char>{}};
+            const Hit hit = getPath(port, url);
+            if (hit.status != 200 || hit.body != on_disk) {
+                LR_NOTE(std::format("{} does not match {}", url, file.string()));
+                return false;
+            }
+            return true;
+        };
+        LR_CHECK_MSG(asset_matches("/ui/", "web/dist/index.html"),
+                     "the embedded index.html differs from web/dist");
+        LR_CHECK_MSG(asset_matches("/ui/app.css", "web/dist/app.css"),
+                     "the embedded app.css differs from web/dist");
+        LR_CHECK_MSG(asset_matches("/ui/app.js", "web/dist/app.js"),
+                     "the embedded app.js differs from web/dist");
+        LR_CHECK_MSG(asset_matches("/ui/favicon.svg", "web/dist/favicon.svg"),
+                     "the embedded favicon.svg differs from web/dist");
+    }
+
+    // The console shell is either embedded in the binary or read from
+    // $LITEROUTER_WEB_DIR, and the two builds must both answer without ever
+    // producing a 200 that carries no body. That empty 200 was the bug on the
+    // fallback path: the handler ignored serveWebAsset()'s false, so a build
+    // without the assets and without the variable served a blank page, which a
+    // browser reports as a broken script rather than as a missing directory.
+    //
+    // Both builds are covered by one check because the branch is a compile-time
+    // one. Embedded: the variable is irrelevant and both requests return the
+    // real shell. Fallback: unset is an actionable 500, and a variable pointing
+    // at the real web/dist serves the file on disk byte for byte.
+    {
+        const lr_test::EnvGuard webDirEnv{"LITEROUTER_WEB_DIR"};
+        webDirEnv.clear();
+        const Hit without = getPath(port, "/ui/");
+        const Hit withDist = getPath(port, "/ui/");
+
+        LR_CHECK_MSG(without.status == 200 || without.status == 500,
+                     "the console shell answered with an unexpected status");
+
+        if (without.status == 200) {
+            // Embedded build: the shell is in the binary, so it is served
+            // whether or not the variable is set.
+            LR_CHECK_MSG(!without.body.empty(), "a 200 console shell carried no body");
+            LR_CHECK_MSG(without.body.find("literouter console") != std::string::npos,
+                         "the embedded shell is not the console page");
+            LR_CHECK_EQ(withDist.status, 200);
+        } else {
+            // Fallback build with no variable: the failure has to be reported.
+            LR_CHECK_MSG(without.body.find("LITEROUTER_WEB_DIR") != std::string::npos,
+                         "the 500 does not name the variable that would fix it");
+            webDirEnv.assign("web/dist");
+            const Hit configured = getPath(port, "/ui/");
+            LR_CHECK_EQ(configured.status, 200);
+            LR_CHECK_MSG(!configured.body.empty(), "a configured web dir served no body");
+            std::ifstream onDisk{"web/dist/index.html", std::ios::binary};
+            LR_CHECK_MSG(static_cast<bool>(onDisk), "web/dist/index.html is missing");
+            if (onDisk) {
+                const std::string expected{std::istreambuf_iterator<char>{onDisk},
+                                           std::istreambuf_iterator<char>{}};
+                LR_CHECK_EQ(configured.body, expected);
+            }
+            // The script too, so the shell is not the only file that resolves.
+            const Hit scriptFromDisk = getPath(port, "/ui/app.js");
+            LR_CHECK_EQ(scriptFromDisk.status, 200);
+            LR_CHECK_MSG(scriptFromDisk.body.find("/__literouter/status") != std::string::npos,
+                         "app.js from $LITEROUTER_WEB_DIR is not the console script");
+        }
+    }
 
     // `/` redirects rather than duplicating the page, so a bookmark on either
     // spelling keeps working.
@@ -3470,6 +3623,10 @@ int main() {
         // Last, and inside the summary: it exercises lifecycle edges that are
         // only interesting once the ordinary paths are known good.
         group13NeverStarted(relay_a);
+
+        // Last of all: it deliberately stops the server, and the group above
+        // has already finished with the shared fixture.
+        group34ShutdownEndpoint(relay_a);
 
         result = LR_SUMMARY("test_proxy");
     }

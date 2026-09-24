@@ -11,6 +11,8 @@ module literouter.core;
 import std;
 import nlohmann.json;
 
+#include "lr_dump.h"
+
 namespace literouter {
 
 namespace {
@@ -285,9 +287,11 @@ std::string adaptChatRequest(const ProviderConfig &provider,
                         json tool_res = json::object();
                         tool_res["type"] = "tool_result";
                         tool_res["tool_use_id"] = m.value("tool_call_id", m.value("name", "call_0"));
-                        tool_res["content"] = m.contains("content")
-                            ? (m["content"].is_string() ? m["content"].get<std::string>() : m["content"].dump())
-                            : "";
+                        tool_res["content"] =
+                            m.contains("content")
+                                ? (m["content"].is_string() ? m["content"].get<std::string>()
+                                                            : dumpJson(m["content"]))
+                                : "";
                         content_arr.push_back(tool_res);
                         msg["content"] = content_arr;
                     } else if (role == "assistant" && m.contains("tool_calls") && m["tool_calls"].is_array() &&
@@ -410,7 +414,7 @@ std::string adaptChatRequest(const ProviderConfig &provider,
                 anthropic["tools"] = tools;
             }
         }
-        return anthropic.dump();
+        return dumpJson(anthropic);
     }
 
     if (shape == WireShape::Gemini) {
@@ -462,7 +466,7 @@ std::string adaptChatRequest(const ProviderConfig &provider,
         if (!gen_config.empty()) {
             gemini["generationConfig"] = gen_config;
         }
-        return gemini.dump();
+        return dumpJson(gemini);
     }
 
     if (shape == WireShape::Responses) {
@@ -474,7 +478,7 @@ std::string adaptChatRequest(const ProviderConfig &provider,
         }
         if (req.contains("temperature")) resp["temperature"] = req["temperature"];
         if (req.contains("max_tokens")) resp["max_output_tokens"] = req["max_tokens"];
-        return resp.dump();
+        return dumpJson(resp);
     }
 
     if (shape == WireShape::Ollama) {
@@ -526,7 +530,7 @@ std::string adaptChatRequest(const ProviderConfig &provider,
         // Ollama's tool schema is already OpenAI's, so this is a pass-through
         // rather than a translation.
         if (req.contains("tools")) out["tools"] = req["tools"];
-        return out.dump();
+        return dumpJson(out);
     }
 
     if (shape == WireShape::Bedrock) {
@@ -633,7 +637,7 @@ std::string adaptChatRequest(const ProviderConfig &provider,
             }
             if (!tools.empty()) out["toolConfig"] = {{"tools", std::move(tools)}};
         }
-        return out.dump();
+        return dumpJson(out);
     }
 
     // Default OpenAI format
@@ -646,7 +650,7 @@ std::string adaptChatRequest(const ProviderConfig &provider,
     if (stream || req.contains("stream")) {
         out["stream"] = stream;
     }
-    return out.dump();
+    return dumpJson(out);
 }
 
 std::string adaptChatResponse(const ProviderConfig &provider,
@@ -691,7 +695,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
                     call["function"]["arguments"] =
                         fn.contains("arguments") && fn["arguments"].is_string()
                             ? fn["arguments"].get<std::string>()
-                            : fn.value("arguments", json::object()).dump();
+                            : dumpJson(fn.value("arguments", json::object()));
                     tool_calls.push_back(std::move(call));
                 }
             }
@@ -719,7 +723,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
         out["usage"]["prompt_tokens"] = prompt;
         out["usage"]["completion_tokens"] = completion;
         out["usage"]["total_tokens"] = prompt + completion;
-        return out.dump();
+        return dumpJson(out);
     }
 
     if (shape == WireShape::Bedrock) {
@@ -752,7 +756,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
                         call["function"] = json::object();
                         call["function"]["name"] = use.value("name", "");
                         call["function"]["arguments"] =
-                            use.contains("input") ? use["input"].dump() : std::string{"{}"};
+                            use.contains("input") ? dumpJson(use["input"]) : std::string{"{}"};
                         tool_calls.push_back(std::move(call));
                     }
                 }
@@ -786,7 +790,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
         out["usage"]["prompt_tokens"] = prompt;
         out["usage"]["completion_tokens"] = completion;
         out["usage"]["total_tokens"] = prompt + completion;
-        return out.dump();
+        return dumpJson(out);
     }
 
     if (shape == WireShape::Anthropic) {
@@ -816,7 +820,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
                     tc["type"] = "function";
                     json fn = json::object();
                     fn["name"] = block.value("name", "");
-                    fn["arguments"] = block.contains("input") ? block["input"].dump() : "{}";
+                    fn["arguments"] = block.contains("input") ? dumpJson(block["input"]) : "{}";
                     tc["function"] = fn;
                     tool_calls.push_back(tc);
                 }
@@ -855,7 +859,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
             {"completion_tokens", out_tokens},
             {"total_tokens", in_tokens + out_tokens}
         };
-        return out.dump();
+        return dumpJson(out);
     }
 
     if (shape == WireShape::Gemini) {
@@ -914,7 +918,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
             {"completion_tokens", cand_tokens},
             {"total_tokens", prompt_tokens + cand_tokens}
         };
-        return out.dump();
+        return dumpJson(out);
     }
 
     if (shape == WireShape::Responses) {
@@ -971,7 +975,7 @@ std::string adaptChatResponse(const ProviderConfig &provider,
         if (root.contains("usage")) {
             out["usage"] = root["usage"];
         }
-        return out.dump();
+        return dumpJson(out);
     }
 
     return std::string{upstream_response};
@@ -998,7 +1002,7 @@ std::string adaptResponsesToChat(std::string_view responses_request_json) {
     chat["messages"] = msgs;
     if (req.contains("temperature")) chat["temperature"] = req["temperature"];
     if (req.contains("max_output_tokens")) chat["max_tokens"] = req["max_output_tokens"];
-    return chat.dump();
+    return dumpJson(chat);
 }
 
 std::string adaptChatToResponses(std::string_view chat_completion_response_json,
@@ -1052,7 +1056,7 @@ std::string adaptChatToResponses(std::string_view chat_completion_response_json,
     if (root.contains("usage")) {
         resp["usage"] = root["usage"];
     }
-    return resp.dump();
+    return dumpJson(resp);
 }
 
 std::string adaptAnthropicToChat(std::string_view anthropic_request_json) {
@@ -1118,9 +1122,12 @@ std::string adaptAnthropicToChat(std::string_view anthropic_request_json) {
                                 tc["type"] = "function";
                                 json fn = json::object();
                                 fn["name"] = block.value("name", "");
-                                fn["arguments"] = block.contains("input")
-                                    ? (block["input"].is_string() ? block["input"].get<std::string>() : block["input"].dump())
-                                    : "{}";
+                                fn["arguments"] =
+                                    block.contains("input")
+                                        ? (block["input"].is_string()
+                                               ? block["input"].get<std::string>()
+                                               : dumpJson(block["input"]))
+                                        : "{}";
                                 tc["function"] = fn;
                                 tool_calls.push_back(tc);
                             }
@@ -1150,7 +1157,7 @@ std::string adaptAnthropicToChat(std::string_view anthropic_request_json) {
                                 if (block.contains("content")) {
                                     tool_msg["content"] = block["content"].is_string()
                                         ? block["content"].get<std::string>()
-                                        : block["content"].dump();
+                                        : dumpJson(block["content"]);
                                 } else {
                                     tool_msg["content"] = "";
                                 }
@@ -1202,7 +1209,7 @@ std::string adaptAnthropicToChat(std::string_view anthropic_request_json) {
         }
     }
 
-    return chat.dump();
+    return dumpJson(chat);
 }
 
 std::string adaptGeminiToChat(std::string_view gemini_request_json, std::string_view model) {
@@ -1252,7 +1259,7 @@ std::string adaptGeminiToChat(std::string_view gemini_request_json, std::string_
                         tc["type"] = "function";
                         json fn = json::object();
                         fn["name"] = fc.value("name", "");
-                        fn["arguments"] = fc.contains("args") ? fc["args"].dump() : "{}";
+                        fn["arguments"] = fc.contains("args") ? dumpJson(fc["args"]) : "{}";
                         tc["function"] = fn;
                         tool_calls.push_back(tc);
                     } else if (p.contains("functionResponse")) {
@@ -1261,7 +1268,8 @@ std::string adaptGeminiToChat(std::string_view gemini_request_json, std::string_
                         tool_msg["role"] = "tool";
                         tool_msg["tool_call_id"] = "call_0";
                         tool_msg["name"] = fr.value("name", "");
-                        tool_msg["content"] = fr.contains("response") ? fr["response"].dump() : "{}";
+                        tool_msg["content"] =
+                            fr.contains("response") ? dumpJson(fr["response"]) : "{}";
                         msgs.push_back(tool_msg);
                     }
                 }
@@ -1286,7 +1294,7 @@ std::string adaptGeminiToChat(std::string_view gemini_request_json, std::string_
         if (gc.contains("maxOutputTokens")) chat["max_tokens"] = gc["maxOutputTokens"];
     }
 
-    return chat.dump();
+    return dumpJson(chat);
 }
 
 std::string adaptChatToAnthropic(std::string_view chat_completion_response_json,
@@ -1361,7 +1369,7 @@ std::string adaptChatToAnthropic(std::string_view chat_completion_response_json,
         {"output_tokens", out_tokens}
     };
 
-    return anthropic.dump();
+    return dumpJson(anthropic);
 }
 
 std::string adaptChatToGemini(std::string_view chat_completion_response_json,
@@ -1435,7 +1443,7 @@ std::string adaptChatToGemini(std::string_view chat_completion_response_json,
     };
     gemini["modelVersion"] = std::string{requested_model};
 
-    return gemini.dump();
+    return dumpJson(gemini);
 }
 
 // ── StreamProtocolAdapter ───────────────────────────────────────────────────
@@ -1548,7 +1556,7 @@ public:
                                 call["function"]["arguments"] =
                                     fn.contains("arguments") && fn["arguments"].is_string()
                                         ? fn["arguments"].get<std::string>()
-                                        : fn.value("arguments", json::object()).dump();
+                                        : dumpJson(fn.value("arguments", json::object()));
                                 tool_calls_delta.push_back(std::move(call));
                             }
                         }
@@ -1748,7 +1756,7 @@ public:
                             {"finish_reason", nullptr}
                         }
                     });
-                    out += "data: " + chunk_obj.dump() + "\n\n";
+                    out += "data: " + dumpJson(chunk_obj) + "\n\n";
                 }
                 if (!reasoning_delta.empty()) {
                     json chunk_obj = json::object();
@@ -1763,7 +1771,7 @@ public:
                             {"finish_reason", nullptr}
                         }
                     });
-                    out += "data: " + chunk_obj.dump() + "\n\n";
+                    out += "data: " + dumpJson(chunk_obj) + "\n\n";
                 }
                 if (!text_delta.empty()) {
                     json chunk_obj = json::object();
@@ -1778,7 +1786,7 @@ public:
                             {"finish_reason", nullptr}
                         }
                     });
-                    out += "data: " + chunk_obj.dump() + "\n\n";
+                    out += "data: " + dumpJson(chunk_obj) + "\n\n";
                 }
                 if (!tool_calls_delta.empty()) {
                     json chunk_obj = json::object();
@@ -1793,7 +1801,7 @@ public:
                             {"finish_reason", nullptr}
                         }
                     });
-                    out += "data: " + chunk_obj.dump() + "\n\n";
+                    out += "data: " + dumpJson(chunk_obj) + "\n\n";
                 }
                 if (!finish_reason.empty()) {
                     json chunk_obj = json::object();
@@ -1808,7 +1816,7 @@ public:
                             {"finish_reason", finish_reason}
                         }
                     });
-                    out += "data: " + chunk_obj.dump() + "\n\n";
+                    out += "data: " + dumpJson(chunk_obj) + "\n\n";
                 }
                 if (is_done) {
                     out += "data: [DONE]\n\n";
@@ -1831,7 +1839,7 @@ public:
                              {"usage", {{"input_tokens", in_tokens}, {"output_tokens", 1}}},
                          }},
                     };
-                    out += "event: message_start\ndata: " + msg_start.dump() + "\n\n";
+                    out += "event: message_start\ndata: " + dumpJson(msg_start) + "\n\n";
                 }
                 // Blocks are opened lazily and closed in order, because a
                 // reasoning delta and a text delta can arrive in either order
@@ -1843,7 +1851,7 @@ public:
                 const auto close_block = [&out, this] {
                     json block_stop = {{"type", "content_block_stop"},
                                        {"index", anthropic_index_}};
-                    out += "event: content_block_stop\ndata: " + block_stop.dump() + "\n\n";
+                    out += "event: content_block_stop\ndata: " + dumpJson(block_stop) + "\n\n";
                     ++anthropic_index_;
                     anthropic_block_open_ = false;
                     anthropic_block_is_thinking_ = false;
@@ -1859,7 +1867,7 @@ public:
                         block_start["content_block"] = {{"type", "text"}, {"text", ""}};
                         anthropic_block_is_thinking_ = false;
                     }
-                    out += "event: content_block_start\ndata: " + block_start.dump() + "\n\n";
+                    out += "event: content_block_start\ndata: " + dumpJson(block_start) + "\n\n";
                     anthropic_block_open_ = true;
                     anthropic_any_block_ = true;
                 };
@@ -1878,7 +1886,7 @@ public:
                         {"index", anthropic_index_},
                         {"delta", {{"type", "thinking_delta"}, {"thinking", reasoning_delta}}},
                     };
-                    out += "event: content_block_delta\ndata: " + block_delta.dump() + "\n\n";
+                    out += "event: content_block_delta\ndata: " + dumpJson(block_delta) + "\n\n";
                 }
                 if (!text_delta.empty()) {
                     if (anthropic_block_open_ && anthropic_block_is_thinking_) {
@@ -1892,7 +1900,7 @@ public:
                         {"index", anthropic_index_},
                         {"delta", {{"type", "text_delta"}, {"text", text_delta}}},
                     };
-                    out += "event: content_block_delta\ndata: " + block_delta.dump() + "\n\n";
+                    out += "event: content_block_delta\ndata: " + dumpJson(block_delta) + "\n\n";
                 }
                 if (is_done || !finish_reason.empty()) {
                     if (!anthropic_any_block_) {
@@ -1910,9 +1918,9 @@ public:
                         {"delta", {{"stop_reason", stop}, {"stop_sequence", nullptr}}},
                         {"usage", {{"output_tokens", out_tokens}}},
                     };
-                    out += "event: message_delta\ndata: " + msg_delta.dump() + "\n\n";
+                    out += "event: message_delta\ndata: " + dumpJson(msg_delta) + "\n\n";
                     json msg_stop = {{"type", "message_stop"}};
-                    out += "event: message_stop\ndata: " + msg_stop.dump() + "\n\n";
+                    out += "event: message_stop\ndata: " + dumpJson(msg_stop) + "\n\n";
                     finished_ = true;
                 }
             } else if (to_proto_ == "openai_responses") {
@@ -1933,22 +1941,22 @@ public:
                             {"output", json::array()}
                         }}
                     };
-                    out += "event: response.created\ndata: " + created.dump() + "\n\n";
+                    out += "event: response.created\ndata: " + dumpJson(created) + "\n\n";
                 }
                 if (!reasoning_delta.empty()) {
                     json event = {
                         {"type", "response.reasoning_summary_text.delta"},
                         {"delta", reasoning_delta}
                     };
-                    out += "event: response.reasoning_summary_text.delta\ndata: " + event.dump() +
-                           "\n\n";
+                    out += "event: response.reasoning_summary_text.delta\ndata: " +
+                           dumpJson(event) + "\n\n";
                 }
                 if (!text_delta.empty()) {
                     json event = {
                         {"type", "response.output_text.delta"},
                         {"delta", text_delta}
                     };
-                    out += "event: response.output_text.delta\ndata: " + event.dump() + "\n\n";
+                    out += "event: response.output_text.delta\ndata: " + dumpJson(event) + "\n\n";
                 }
                 if (is_done || !finish_reason.empty()) {
                     json completed = {
@@ -1961,7 +1969,7 @@ public:
                             {"usage", {{"input_tokens", in_tokens}, {"output_tokens", out_tokens}}}
                         }}
                     };
-                    out += "event: response.completed\ndata: " + completed.dump() + "\n\n";
+                    out += "event: response.completed\ndata: " + dumpJson(completed) + "\n\n";
                     finished_ = true;
                 }
             } else if (to_proto_ == "gemini") {
@@ -1974,7 +1982,7 @@ public:
                             }
                         })}
                     };
-                    out += "data: " + gem.dump() + "\n\n";
+                    out += "data: " + dumpJson(gem) + "\n\n";
                 }
                 if (is_done || !finish_reason.empty()) {
                     std::string fr = (finish_reason == "length") ? "MAX_TOKENS" : "STOP";
@@ -1987,7 +1995,7 @@ public:
                             }
                         })}
                     };
-                    out += "data: " + gem.dump() + "\n\n";
+                    out += "data: " + dumpJson(gem) + "\n\n";
                     finished_ = true;
                 }
             }
@@ -2011,7 +2019,7 @@ public:
                 }}
             };
             finished_ = true;
-            return "event: response.completed\ndata: " + completed.dump() + "\n\n";
+            return "event: response.completed\ndata: " + dumpJson(completed) + "\n\n";
         }
         if (from_proto_ == to_proto_) {
             return {};

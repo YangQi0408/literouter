@@ -1,3 +1,15 @@
+module;
+
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#endif
+
 module literouter.core;
 
 import std;
@@ -113,6 +125,176 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
     {"breakers", "熔断器"},
     // ── provider editor, protocol pane ───────────────────────────────────
     {"Vertex project id", "Vertex 项目 ID"},
+
+    // ── CLI option descriptions ─────────────────────────────────────────────
+    {"A model id this relay advertises (repeatable)",
+     "该中转站对外声明的模型 ID（可重复）"},
+    {"Add a relay to the config file",
+     "向配置文件添加中转站"},
+    {"Add a route, or append hops to an existing one",
+     "新增路由，或为已有路由追加候选链路"},
+    {"Add the route disabled",
+     "新增时先禁用该路由"},
+    {"Ask every relay that serves a model the same question",
+     "向所有可提供该模型的中转站发送同一个问题"},
+    {"Azure: the api-version query; Vertex: the API version segment",
+     "Azure：api-version 查询参数；Vertex：API 版本路径段"},
+    {"Bedrock STS session token, for temporary credentials",
+     "Bedrock STS 会话令牌，用于临时凭证"},
+    {"Bedrock SigV4 access key id (a ${VAR} reference is stored as written)",
+     "Bedrock SigV4 访问密钥 ID（${VAR} 引用按原样存储）"},
+    {"Bedrock SigV4 secret access key",
+     "Bedrock SigV4 私密访问密钥"},
+    {"Bedrock region (required there), or the Vertex location",
+     "Bedrock 区域（该协议必填），或 Vertex 位置"},
+    {"Chat completions path (default /chat/completions)",
+     "Chat completions 路径（默认 /chat/completions）"},
+    {"Destination file; omit or `-` for stdout",
+     "目标文件；省略或写 `-` 则输出到标准输出"},
+    {"Disable a route",
+     "禁用一条路由"},
+    {"Do not persist counters and the request log for this run only",
+     "仅本次运行不持久化计数器与请求日志"},
+    {"Do not serve the built-in console at /ui for this run only",
+     "仅本次运行不提供 /ui 内置控制台"},
+    {"Dump the effective config JSON and exit",
+     "输出生效后的配置 JSON 并退出"},
+    {"Embeddings path (default /embeddings)",
+     "Embeddings 路径（默认 /embeddings）"},
+    {"Enable a route",
+     "启用一条路由"},
+    {"Enable the relay (default)",
+     "启用该中转站（默认）"},
+    {"Extra upstream header, `Name: value` (repeatable)",
+     "附加的上游请求头，`名称: 值`（可重复）"},
+    {"Free-form note",
+     "自由备注"},
+    {"Human label (defaults to the id)",
+     "显示名称（默认与 id 相同）"},
+    {"Include unrouted provider models in pass-through mode",
+     "在透传模式下包含未配置路由的中转站模型"},
+    {"Input price in dollars per million tokens (0 = unknown)",
+     "输入价格，美元/百万 Token（0 表示未知）"},
+    {"List configured relays",
+     "列出已配置的中转站"},
+    {"List the route table",
+     "列出路由表"},
+    {"Literal API key",
+     "直接填写 API 密钥"},
+    {"Load a whole config, or merge named entries into the current one",
+     "加载整份配置，或把文件中点名的条目合并进当前配置"},
+    {"Load and validate, then exit without binding",
+     "加载并校验后退出，不绑定端口"},
+    {"Lower wins (default 100)",
+     "数值越小优先级越高（默认 100）"},
+    {"Mark a relay disabled",
+     "禁用该中转站"},
+    {"Mark a relay enabled",
+     "启用该中转站"},
+    {"Maximum entries to fetch (default 50)",
+     "最多获取的条目数（默认 50）"},
+    {"Model to ask for (default: the body's own)",
+     "请求使用的模型（默认沿用请求体中的）"},
+    {"Model to benchmark (required)",
+     "要压测的模型（必填）"},
+    {"Most requests literouter sends this relay at once; 0 is unlimited",
+     "literouter 同时发往该中转站的请求上限；0 表示不限"},
+    {"Most requests literouter starts on this relay per minute; 0 is unlimited",
+     "literouter 每分钟在该中转站发起的请求上限；0 表示不限"},
+    {"Only entries at this level",
+     "仅显示该级别的条目"},
+    {"Output price in dollars per million tokens (0 = unknown)",
+     "输出价格，美元/百万 Token（0 表示未知）"},
+    {"Override server.host for this run only",
+     "仅本次运行覆盖 server.host"},
+    {"Override server.port for this run only",
+     "仅本次运行覆盖 server.port"},
+    {"Overwrite an existing file",
+     "覆盖已存在的文件"},
+    {"Path to the config file (default: $LITEROUTER_CONFIG, else ~/.config/literouter/config.json)",
+     "配置文件路径（默认取 $LITEROUTER_CONFIG，否则 ~/.config/literouter/config.json）"},
+    {"Per-request timeout in seconds (default 120)",
+     "单次请求超时秒数（默认 120）"},
+    {"Per-request timeout in seconds (default 30)",
+     "单次请求超时秒数（默认 30）"},
+    {"Per-request timeout in seconds (default: the relay's own)",
+     "单次请求超时秒数（默认沿用中转站自身的设置）"},
+    {"Persist counters and the request log for this run only",
+     "仅本次运行持久化计数器与请求日志"},
+    {"Poll every 250ms and print new entries until Ctrl-C",
+     "每 250ms 轮询并打印新条目，直到按 Ctrl-C"},
+    {"Print the answer body",
+     "打印响应正文"},
+    {"Print the config file as it is on disk",
+     "原样打印磁盘上的配置文件"},
+    {"Print the outcome as JSON",
+     "以 JSON 格式输出结果"},
+    {"Print the resolved config path",
+     "打印解析后的配置路径"},
+    {"Print the whole config, or write it to a file",
+     "打印整份配置，或写入文件"},
+    {"Probe relays with GET {base_url}/models",
+     "用 GET {base_url}/models 探测中转站"},
+    {"Prompt to send (default: a one-word request)",
+     "发送的提示词（默认是一个单词的请求）"},
+    {"Read one line from stdin",
+     "从标准输入读取一行"},
+    {"Relay id",
+     "中转站 id"},
+    {"Relay id (used by routes and logs)",
+     "中转站 id（供路由与日志引用）"},
+    {"Relay ids to probe (default: every enabled relay)",
+     "要探测的中转站 id（默认探测所有已启用的）"},
+    {"Relay to send it to (default: the first the policy would try)",
+     "发送目标中转站（默认取路由策略的首选）"},
+    {"Remove a relay from the config file",
+     "从配置文件中删除中转站"},
+    {"Remove a route",
+     "删除路由"},
+    {"Remove even while a route still targets it",
+     "即使仍有路由指向它也强制删除"},
+    {"Replace only the relays and routes the file names",
+     "只替换文件中点名的中转站与路由"},
+    {"Request body to replay (OpenAI chat JSON)",
+     "要重放的请求体（OpenAI chat JSON）"},
+    {"Requests per relay (default 1)",
+     "每个中转站的请求次数（默认 1）"},
+    {"Rewrite an older config onto this build's schema",
+     "把旧版配置改写到当前构建的 schema"},
+    {"Run even when validate() reports errors",
+     "即使 validate() 报错也照常运行"},
+    {"Serve the built-in console at /ui for this run only",
+     "仅本次运行在 /ui 提供内置控制台"},
+    {"Source file; `-` reads standard input",
+     "源文件；写 `-` 表示从标准输入读取"},
+    {"Start after this sequence number (0 = newest)",
+     "从该序号之后开始（0 表示最新）"},
+    {"Store ${VAR}; the key is read at request time",
+     "存为 ${VAR}；请求时再读取密钥"},
+    {"The model name a client sends",
+     "客户端发送的模型名称"},
+    {"The route's model name",
+     "路由的模型名称"},
+    {"Tie-break weight within a priority (default 1)",
+     "同一优先级内的权重（默认 1）"},
+    {"Upstream API protocol: openai, anthropic, gemini, openai_responses, azure, vertex, "
+     "bedrock, ollama (default openai)",
+     "上游 API 协议：openai、anthropic、gemini、openai_responses、azure、vertex、bedrock、"
+     "ollama（默认 openai）"},
+    {"Upstream root, e.g. https://api.openai.com/v1",
+     "上游根地址，例如 https://api.openai.com/v1"},
+    {"Validate and report without writing",
+     "只校验并报告，不写入"},
+    {"Validate the config and print every issue",
+     "校验配置并打印全部问题"},
+    {"Vertex service-account JSON key path",
+     "Vertex 服务账号 JSON 密钥路径"},
+    {"Write the seed config",
+     "写入初始配置"},
+    {"max_tokens to ask for (default 16)",
+     "请求使用的 max_tokens（默认 16）"},
+    {"provider[:upstream-model] (repeatable, order = failover order)",
+     "provider[:upstream-model]（可重复，顺序即故障转移顺序）"},
 };
 
 std::atomic<Lang> g_current_lang{Lang::Auto};
@@ -154,18 +336,55 @@ std::string_view langDisplayName(Lang lang) {
     return "Auto (System)";
 }
 
+namespace {
+
+// "zh-CN", "zh_CN.UTF-8", "ZH" — anything whose primary subtag is the one we
+// know. Returns Auto for a language this build has no dictionary for, so the
+// caller can keep looking rather than settling on English.
+Lang langFromTag(std::string_view tag) {
+    if (tag.starts_with("zh") || tag.starts_with("ZH")) {
+        return Lang::Zh;
+    }
+    if (tag.starts_with("en") || tag.starts_with("EN")) {
+        return Lang::En;
+    }
+    return Lang::Auto;
+}
+
+#if defined(_WIN32)
+// The locale a Windows user actually configured. The POSIX variables below are
+// not set there — a shell may export LANG, but nothing else does — so without
+// this branch `--lang auto` is always English on Windows, which is not what
+// docs/environment.md promises.
+//
+// GetUserDefaultUILanguage() is the display language of the user's account and
+// is the closest match to "what language does this person read"; the lower ten
+// bits are the LANGID, and 0x0804 is zh-CN, 0x0404 zh-TW, 0x0C04 zh-HK, 0x1004
+// zh-SG — every Chinese LANGID has 0x04 as its primary language.
+Lang detectWindowsLang() {
+    const LANGID langid = GetUserDefaultUILanguage();
+    if (PRIMARYLANGID(langid) == LANG_CHINESE) {
+        return Lang::Zh;
+    }
+    return Lang::Auto;
+}
+#endif
+
+} // namespace
+
 Lang detectSystemLang() {
     for (const char* var : {"LC_ALL", "LC_MESSAGES", "LANG"}) {
         if (const char* val = std::getenv(var); val != nullptr && *val != '\0') {
-            std::string_view s{val};
-            if (s.starts_with("zh") || s.starts_with("ZH")) {
-                return Lang::Zh;
-            }
-            if (s.starts_with("en") || s.starts_with("EN")) {
-                return Lang::En;
+            if (const Lang found = langFromTag(val); found != Lang::Auto) {
+                return found;
             }
         }
     }
+#if defined(_WIN32)
+    if (const Lang found = detectWindowsLang(); found != Lang::Auto) {
+        return found;
+    }
+#endif
     return Lang::En;
 }
 

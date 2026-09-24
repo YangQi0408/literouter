@@ -197,6 +197,9 @@ void configure(h::Client &client, const ProviderConfig &provider) {
     // and resolveCaBundle() covers the far more common case of mcpp's
     // source-built OpenSSL not knowing where this machine keeps its roots.
     if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
+        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
+        // which opens the file through the C library's narrow-path call — the
+        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
         client.set_ca_cert_path(bundle.string());
         client.enable_server_certificate_verification(true);
     }

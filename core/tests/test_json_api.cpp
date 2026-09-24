@@ -276,6 +276,72 @@ void testProviderProbeJson() {
     LR_CHECK_EQ(static_cast<long long>(failedParsed.at("models").size()), 0);
 }
 
+// The regression the UTF-8 pass exists for. A `config_path` that is not valid
+// UTF-8 — what a Windows `path::string()` yields under a DBCS code page — used
+// to reach nlohmann's strict `dump()`, which throws `type_error.316`. On the
+// serve path that throw came from the telemetry thread and from `writePidFile`
+// with no handler above either, so the process aborted. These checks are the
+// same shape as the crash: build the struct with the bad bytes, serialize it,
+// and require that it comes back rather than throws.
+void testSerializationOfInvalidUtf8() {
+    LR_GROUP("toJsonString survives a value that is not valid UTF-8");
+
+    // "你好" as cp936/GBK bytes — what a Chinese Windows user name becomes.
+    const std::string gbk_path = std::string{"/tmp/"} + "\xC4\xE3\xBA\xC3" + "/config.json";
+    LR_CHECK(!literouter::isValidUtf8(gbk_path));
+
+    literouter::Snapshot snapshot;
+    snapshot.running = true;
+    snapshot.config_path = gbk_path;
+
+    // The property under test: this call does not throw.
+    const std::string text = literouter::toJsonString(snapshot);
+    const json parsed = json::parse(text, nullptr, false);
+    LR_CHECK_MSG(!parsed.is_discarded(), "the snapshot JSON did not parse");
+    if (!parsed.is_discarded()) {
+        // The field is present and holds the repaired text, so the caller still
+        // learns which file the instance is running from.
+        const std::string path = parsed.at("config_path").get<std::string>();
+        LR_CHECK(literouter::isValidUtf8(path));
+        LR_CHECK(path.find("config.json") != std::string::npos);
+        LR_CHECK(path.find('\xEF') != std::string::npos);
+    }
+
+    // The second crash site: a logged upstream body with a stray byte. The log
+    // entry is serialized by the same chokepoint, so it gets the same
+    // guarantee — this is the shape that killed the flusher thread.
+    literouter::LogEntry entry;
+    entry.seq = 1;
+    entry.level = "info";
+    entry.message = std::string{"upstream said caf"} + "\xE9";
+    entry.response_body = std::string{"{\"content\":\"caf"} + "\xE9" + "\"}";
+    const std::string entryText = literouter::toJsonString(entry);
+    const json entryParsed = json::parse(entryText, nullptr, false);
+    LR_CHECK_MSG(!entryParsed.is_discarded(), "the log entry JSON did not parse");
+    if (!entryParsed.is_discarded()) {
+        LR_CHECK(literouter::isValidUtf8(entryParsed.at("message").get<std::string>()));
+        LR_CHECK(literouter::isValidUtf8(entryParsed.at("response_body").get<std::string>()));
+    }
+
+    // A ProviderProbe carries an upstream error string, which is relay-
+    // controlled text — the third of the chokepoints.
+    literouter::ProviderProbe probe;
+    probe.detail = std::string{"HTTP 502: caf"} + "\xE9";
+    probe.models = {std::string{"z-"} + "\xE9"};
+    const json probeParsed = json::parse(literouter::toJsonString(probe), nullptr, false);
+    LR_CHECK_MSG(!probeParsed.is_discarded(), "the probe JSON did not parse");
+    if (!probeParsed.is_discarded()) {
+        LR_CHECK(literouter::isValidUtf8(probeParsed.at("detail").get<std::string>()));
+        LR_CHECK(literouter::isValidUtf8(probeParsed.at("models").at(0).get<std::string>()));
+    }
+
+    // And the config document, whose path field is the fourth.
+    literouter::AppConfig config;
+    config.server.host = std::string{"127.0.0.1\xE9"};
+    const json configParsed = json::parse(literouter::toJsonString(config), nullptr, false);
+    LR_CHECK_MSG(!configParsed.is_discarded(), "the config JSON did not parse");
+}
+
 void testAccumulateUsage() {
     LR_GROUP("accumulateUsage");
     const auto promptOf = [](const literouter::ProviderStat &stat) {
@@ -405,6 +471,7 @@ int main() {
     testSnapshotJson();
     testLogEntryJson();
     testProviderProbeJson();
+    testSerializationOfInvalidUtf8();
     testAccumulateUsage();
     testSeedConfigJsonKeepsSecretReferences();
     testEnsureLocalTimezone();

@@ -4,11 +4,81 @@ module;
 
 #include <openssl/ssl.h>
 
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  include <aclapi.h>
+// SetNamedSecurityInfoW and friends live in advapi32, which is not in the
+// default link line. The pragma is what cpp-httplib itself does for ws2_32
+// (httplib.h), so this stays the one mechanism the project uses for a Windows
+// import library, and it works under clang-cl as well as cl.exe.
+#  if defined(_MSC_VER)
+#    pragma comment(lib, "advapi32.lib")
+#  endif
+#endif
+
 module literouter.core;
 
 import std;
 
 namespace literouter {
+
+namespace {
+
+#ifdef _WIN32
+// The Windows equivalent of the `0600` above, and the same intent: a config
+// with a literal key in it should be readable by its owner and by nobody else.
+//
+// `std::filesystem::permissions` cannot express this — it maps onto the
+// read-only attribute, not onto an ACL — so this replaces the file's DACL with
+// a single entry for the current user. `%APPDATA%` normally inherits a
+// user-only ACL already, so the common case is a no-op that costs one call;
+// the case this exists for is a config placed somewhere shared by hand, or a
+// directory whose inherited ACL is wider than the default.
+//
+// Deliberately best-effort: a failure here means the file is left with
+// whatever ACL it had, which is exactly the behaviour before this existed, and
+// it must not turn a successful save into a reported error.
+void restrictToOwner(const std::filesystem::path &path) {
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == FALSE) {
+        return;
+    }
+    DWORD size = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+    std::vector<unsigned char> buffer(size);
+    if (size == 0 || GetTokenInformation(token, TokenUser, buffer.data(), size, &size) == FALSE) {
+        CloseHandle(token);
+        return;
+    }
+    CloseHandle(token);
+
+    const auto *user = reinterpret_cast<const TOKEN_USER *>(buffer.data());
+    // An explicit ACL with no inheritance: one ACE, full control, the owner.
+    EXPLICIT_ACCESSW access{};
+    access.grfAccessPermissions = GENERIC_ALL;
+    access.grfAccessMode = SET_ACCESS;
+    access.grfInheritance = NO_INHERITANCE;
+    access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    access.Trustee.TrusteeType = TRUSTEE_IS_USER;
+    access.Trustee.ptstrName = static_cast<LPWSTR>(user->User.Sid);
+
+    PACL acl = nullptr;
+    if (SetEntriesInAclW(1, &access, nullptr, &acl) != ERROR_SUCCESS) {
+        return;
+    }
+    SetNamedSecurityInfoW(const_cast<LPWSTR>(path.wstring().c_str()), SE_FILE_OBJECT,
+                          DACL_SECURITY_INFORMATION, nullptr, nullptr, acl, nullptr);
+    LocalFree(acl);
+}
+#endif
+
+} // namespace
 
 AppConfig ConfigStore::seedDefault() {
     AppConfig config;
@@ -64,7 +134,7 @@ std::expected<ConfigStore, std::string> ConfigStore::load(const std::filesystem:
 
     std::ifstream input{path, std::ios::binary};
     if (!input) {
-        return std::unexpected(std::format("cannot read {}", path.string()));
+        return std::unexpected(std::format("cannot read {}", pathToUtf8(path)));
     }
     std::string text{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
     input.close();
@@ -77,10 +147,10 @@ std::expected<ConfigStore, std::string> ConfigStore::load(const std::filesystem:
     std::string rewritten;
     auto migration = migrateConfigJson(text, rewritten);
     if (!migration) {
-        return std::unexpected(std::format("{}: {}", path.string(), migration.error()));
+        return std::unexpected(std::format("{}: {}", pathToUtf8(path), migration.error()));
     }
     if (auto parsed = appConfigFromJson(rewritten); !parsed) {
-        return std::unexpected(std::format("{}: {}", path.string(), parsed.error()));
+        return std::unexpected(std::format("{}: {}", pathToUtf8(path), parsed.error()));
     } else {
         store.config_ = std::move(*parsed);
     }
@@ -124,6 +194,81 @@ std::expected<void, std::string> ConfigStore::fromJson(std::string_view text) {
     return {};
 }
 
+// Replaces `destination` with the already-written `temp` without ever leaving
+// the operator with no config file. Called only after the atomic
+// `rename` the caller tries first has been refused.
+//
+// That first attempt is the one every ordinary save takes: a rename within one
+// directory replaces in place and is atomic. It is refused when the destination
+// cannot be replaced — on Windows, `MoveFileEx` with replace-existing fails
+// while the file is open with sharing flags that forbid the delete (an editor
+// showing it, a virus scanner mid-scan, another instance reading it) — and when
+// the destination is a directory rather than a file.
+//
+// The old file is moved aside, the new one is put in place, and the old copy is
+// dropped only once the new file exists. If the new file cannot be put in
+// place, the old one is moved back. That ordering is the point: deleting the
+// destination first, which is what this used to do, put the config in a window
+// where it existed nowhere at all — and with an empty directory as the
+// destination it did not even report a failure, it reported success and left a
+// config file where the directory had been.
+//
+// A directory is refused up front rather than moved aside: `rename` means
+// something other than "replace a config file" there, and relocating whatever
+// it held would be a silent, larger change than the one that was asked for.
+//
+// `temp` is always consumed, whether this succeeds or fails.
+std::expected<void, std::string> replaceFileWithBackup(std::filesystem::path temp,
+                                                       const std::filesystem::path &path,
+                                                       const std::filesystem::path &destination) {
+    const auto discard = [&temp] {
+        std::error_code cleanup;
+        std::filesystem::remove(temp, cleanup);
+    };
+
+    std::error_code type_error;
+    if (std::filesystem::is_directory(destination, type_error) || type_error) {
+        discard();
+        return std::unexpected(
+            std::format("cannot write config {}: it is a directory, not a file", pathToUtf8(path)));
+    }
+
+    auto backup = destination;
+    backup += std::format(".old-{}", hexId(4));
+
+    std::error_code ec;
+    std::filesystem::rename(destination, backup, ec);
+    if (ec) {
+        // Nothing moved, so the old file is still exactly where the caller left
+        // it; only the new one has to be cleaned up.
+        discard();
+        return std::unexpected(
+            std::format("cannot replace {}: {}", pathToUtf8(path), ec.message()));
+    }
+
+    std::error_code put_error;
+    std::filesystem::rename(temp, destination, put_error);
+    if (put_error) {
+        std::error_code restore_error;
+        std::filesystem::rename(backup, destination, restore_error);
+        discard();
+        // If the original could not be put back it is sitting next to the
+        // destination, so say where: otherwise the message describes a lost
+        // config as if nothing had happened.
+        if (restore_error) {
+            return std::unexpected(
+                std::format("cannot replace {}: {} (the previous file is at {})", pathToUtf8(path),
+                            put_error.message(), pathToUtf8(backup)));
+        }
+        return std::unexpected(
+            std::format("cannot replace {}: {}", pathToUtf8(path), put_error.message()));
+    }
+
+    std::error_code cleanup;
+    std::filesystem::remove(backup, cleanup);
+    return {};
+}
+
 std::string ConfigStore::toJson() const {
     return toJsonString(config_);
 }
@@ -138,7 +283,8 @@ std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path
     const auto status = std::filesystem::symlink_status(path, ec);
     if (ec && ec != std::errc::no_such_file_or_directory) {
         return std::unexpected(
-            std::format("cannot inspect configuration path {}: {}", path.string(), ec.message()));
+            std::format("cannot inspect configuration path {}: {}", pathToUtf8(path),
+                        ec.message()));
     }
     if (std::filesystem::is_symlink(status)) {
         // Keep the configured link (and therefore the path the operator wrote
@@ -147,11 +293,13 @@ std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path
         destination = std::filesystem::canonical(path, ec);
         if (ec) {
             return std::unexpected(
-                std::format("cannot resolve configuration symlink {}: {}", path.string(), ec.message()));
+                std::format("cannot resolve configuration symlink {}: {}", pathToUtf8(path),
+                            ec.message()));
         }
         if (!std::filesystem::is_regular_file(destination, ec)) {
-            return std::unexpected(std::format("cannot save configuration symlink {}: {}", path.string(),
-                ec ? ec.message() : "target is not a regular file"));
+            return std::unexpected(
+                std::format("cannot save configuration symlink {}: {}", pathToUtf8(path),
+                            ec ? ec.message() : "target is not a regular file"));
         }
     }
     ec.clear();
@@ -160,7 +308,7 @@ std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path
         std::filesystem::create_directories(parent, ec);
         if (ec) {
             return std::unexpected(
-                std::format("cannot create {}: {}", parent.string(), ec.message()));
+                std::format("cannot create {}: {}", pathToUtf8(parent), ec.message()));
         }
     }
 
@@ -176,31 +324,25 @@ std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path
     {
         std::ofstream output{temp, std::ios::binary | std::ios::trunc};
         if (!output) {
-            return std::unexpected(std::format("cannot write {}", temp.string()));
+            return std::unexpected(std::format("cannot write {}", pathToUtf8(temp)));
         }
         output.write(text.data(), static_cast<std::streamsize>(text.size()));
         output.flush();
         if (!output) {
             output.close();
             std::filesystem::remove(temp, ec);
-            return std::unexpected(std::format("write to {} failed", temp.string()));
+            return std::unexpected(std::format("write to {} failed", pathToUtf8(temp)));
         }
     }
 
     std::filesystem::rename(temp, destination, ec);
     if (ec) {
-#ifdef _WIN32
-        // On Windows, rename may fail if the destination file exists with certain file sharing flags.
-        // Try remove + rename as fallback.
-        ec.clear();
-        std::filesystem::remove(destination, ec);
-        ec.clear();
-        std::filesystem::rename(temp, destination, ec);
-#endif
-        if (ec) {
-            const auto message = std::format("cannot replace {}: {}", path.string(), ec.message());
-            std::filesystem::remove(temp, ec);
-            return std::unexpected(message);
+        // The atomic replace was refused. Fall back to one that keeps the old
+        // file until the new one is in place; its message is the one that
+        // describes the state the file was left in, so it is what gets
+        // reported.
+        if (auto replaced = replaceFileWithBackup(temp, path, destination); !replaced) {
+            return std::unexpected(replaced.error());
         }
     }
 
@@ -210,6 +352,8 @@ std::expected<void, std::string> ConfigStore::saveAs(const std::filesystem::path
                                  std::filesystem::perms::owner_read |
                                      std::filesystem::perms::owner_write,
                                  std::filesystem::perm_options::replace, ec);
+#else
+    restrictToOwner(destination);
 #endif
     return {};
 }

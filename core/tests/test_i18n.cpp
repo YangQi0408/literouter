@@ -63,6 +63,22 @@ void testDetection() {
     // Explicit setting is never changed by resolution
     LR_CHECK(resolveLang(Lang::Zh) == Lang::Zh);
     LR_CHECK(resolveLang(Lang::En) == Lang::En);
+
+    // A language this build has no dictionary for is not a match: the search
+    // carries on to the next variable rather than settling on English, so
+    // LC_ALL=fr_FR with LANG=zh_CN is Chinese and not the first variable's
+    // value taken literally.
+    guardAll.assign("fr_FR.UTF-8");
+    guardLang.assign("zh_CN.UTF-8");
+    LR_CHECK(detectSystemLang() == Lang::Zh);
+    guardLang.assign("en_US.UTF-8");
+    LR_CHECK(detectSystemLang() == Lang::En);
+
+    // Nothing recognisable anywhere falls back to English, which is the
+    // language the source strings are written in.
+    guardAll.assign("de_DE.UTF-8");
+    guardLang.assign("ja_JP.UTF-8");
+    LR_CHECK(detectSystemLang() == Lang::En);
 }
 
 void testTranslations() {
@@ -160,6 +176,95 @@ void testCliTranslations() {
         "otlp_endpoint must start with http:// or https://",
         "Vertex project id",
         "credentials_file is not a readable regular file",
+        // The option descriptions every subcommand renders. They were bare
+        // string literals once, so `LITEROUTER_LANG=zh` printed English for
+        // every one of them; the list is here so the next bare literal is a
+        // failing test rather than an English line in a Chinese run.
+        "A model id this relay advertises (repeatable)",
+        "Add a relay to the config file",
+        "Add a route, or append hops to an existing one",
+        "Add the route disabled",
+        "Ask every relay that serves a model the same question",
+        "Azure: the api-version query; Vertex: the API version segment",
+        "Bedrock STS session token, for temporary credentials",
+        "Bedrock SigV4 access key id (a ${VAR} reference is stored as written)",
+        "Bedrock SigV4 secret access key",
+        "Bedrock region (required there), or the Vertex location",
+        "Chat completions path (default /chat/completions)",
+        "Destination file; omit or `-` for stdout",
+        "Disable a route",
+        "Do not persist counters and the request log for this run only",
+        "Do not serve the built-in console at /ui for this run only",
+        "Dump the effective config JSON and exit",
+        "Embeddings path (default /embeddings)",
+        "Enable a route",
+        "Enable the relay (default)",
+        "Extra upstream header, `Name: value` (repeatable)",
+        "Free-form note",
+        "Human label (defaults to the id)",
+        "Include unrouted provider models in pass-through mode",
+        "Input price in dollars per million tokens (0 = unknown)",
+        "List configured relays",
+        "List the route table",
+        "Literal API key",
+        "Load a whole config, or merge named entries into the current one",
+        "Load and validate, then exit without binding",
+        "Lower wins (default 100)",
+        "Mark a relay disabled",
+        "Mark a relay enabled",
+        "Maximum entries to fetch (default 50)",
+        "Model to ask for (default: the body's own)",
+        "Model to benchmark (required)",
+        "Most requests literouter sends this relay at once; 0 is unlimited",
+        "Most requests literouter starts on this relay per minute; 0 is unlimited",
+        "Only entries at this level",
+        "Output price in dollars per million tokens (0 = unknown)",
+        "Override server.host for this run only",
+        "Override server.port for this run only",
+        "Overwrite an existing file",
+        "Path to the config file (default: $LITEROUTER_CONFIG, else "
+        "~/.config/literouter/config.json)",
+        "Per-request timeout in seconds (default 120)",
+        "Per-request timeout in seconds (default 30)",
+        "Per-request timeout in seconds (default: the relay's own)",
+        "Persist counters and the request log for this run only",
+        "Poll every 250ms and print new entries until Ctrl-C",
+        "Print the answer body",
+        "Print the config file as it is on disk",
+        "Print the outcome as JSON",
+        "Print the resolved config path",
+        "Print the whole config, or write it to a file",
+        "Probe relays with GET {base_url}/models",
+        "Prompt to send (default: a one-word request)",
+        "Read one line from stdin",
+        "Relay id",
+        "Relay id (used by routes and logs)",
+        "Relay ids to probe (default: every enabled relay)",
+        "Relay to send it to (default: the first the policy would try)",
+        "Remove a relay from the config file",
+        "Remove a route",
+        "Remove even while a route still targets it",
+        "Replace only the relays and routes the file names",
+        "Request body to replay (OpenAI chat JSON)",
+        "Requests per relay (default 1)",
+        "Rewrite an older config onto this build's schema",
+        "Run even when validate() reports errors",
+        "Serve the built-in console at /ui for this run only",
+        "Source file; `-` reads standard input",
+        "Start after this sequence number (0 = newest)",
+        "Store ${VAR}; the key is read at request time",
+        "The model name a client sends",
+        "The route's model name",
+        "Tie-break weight within a priority (default 1)",
+        "Upstream API protocol: openai, anthropic, gemini, openai_responses, azure, vertex, "
+        "bedrock, ollama (default openai)",
+        "Upstream root, e.g. https://api.openai.com/v1",
+        "Validate and report without writing",
+        "Validate the config and print every issue",
+        "Vertex service-account JSON key path",
+        "Write the seed config",
+        "max_tokens to ask for (default 16)",
+        "provider[:upstream-model] (repeatable, order = failover order)",
     };
     for (const char* text : kCliStrings) {
         LR_CHECK_MSG(std::string_view(tr(text, Lang::Zh)) != std::string_view(text),
@@ -171,6 +276,21 @@ void testCliTranslations() {
     // which silently won because unordered_map keeps the last duplicate — the
     // CLI then printed "3 开启" for three open breakers.
     LR_CHECK_EQ(tr("open", Lang::Zh), "熔断");
+
+    // The status and bench tables' own labels. They reach the dictionary from
+    // `cli_cmd_status.cpp` and `cli_cmd_bench.cpp` rather than from an option
+    // description, so the list above does not reach them; they are asserted
+    // here for the same reason it exists — a label with no entry prints English
+    // inside an otherwise Chinese table, and nothing else would say so.
+    const char* kTableLabels[] = {
+        "requests", "tokens", "avg latency", "bytes out", "breakers",
+        "REQUESTS", "STATE", "SUCCESS", "AVG", "FAILOVER",
+        "RELAY", "STATUS", "LATENCY", "TOKENS", "COST", "BYTES", "BEST",
+    };
+    for (const char* text : kTableLabels) {
+        LR_CHECK_MSG(std::string_view(tr(text, Lang::Zh)) != std::string_view(text),
+                     std::format("`{}` has no Chinese translation", text));
+    }
 }
 
 } // namespace

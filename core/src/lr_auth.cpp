@@ -30,6 +30,8 @@ module literouter.core;
 import std;
 import nlohmann.json;
 
+#include "lr_dump.h"
+
 namespace literouter {
 
 namespace {
@@ -248,7 +250,7 @@ std::expected<std::string, std::string> mintVertexAssertion(const ProviderConfig
                       {"iat", static_cast<long long>(now_unix)},
                       {"exp", static_cast<long long>(now_unix) + 3600}};
     const std::string signing_input =
-        base64Url(header.dump()) + "." + base64Url(claims.dump());
+        base64Url(dumpJson(header)) + "." + base64Url(dumpJson(claims));
 
     const std::unique_ptr<BIO, decltype(&BIO_free)> bio{
         BIO_new_mem_buf(private_key.data(), static_cast<int>(private_key.size())), BIO_free};

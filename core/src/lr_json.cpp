@@ -19,6 +19,8 @@ module literouter.core;
 import std;
 import nlohmann.json;
 
+#include "lr_dump.h"
+
 namespace literouter {
 
 namespace {
@@ -463,7 +465,7 @@ std::string toJsonString(const AppConfig &config) {
     }
     root["routes"] = std::move(routes);
 
-    return root.dump(2);
+    return dumpJson(root, 2);
 }
 
 std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text) {
@@ -579,14 +581,14 @@ std::string toJsonString(const Snapshot &snapshot) {
     node["cache_misses"] = snapshot.cache_misses;
     node["cache_entries"] = snapshot.cache_entries;
 
-    return node.dump(2);
+    return dumpJson(node, 2);
 }
 
 // Its own overload rather than a private branch of the snapshot: the persisted
 // telemetry file needs the same shape as the admin API, and a second copy of
 // this field list is a field that will eventually be added to only one of them.
 std::string toJsonString(const ProviderStat &stat) {
-    return statToJson(stat).dump();
+    return dumpJson(statToJson(stat));
 }
 
 std::string toJsonString(const LogEntry &entry) {
@@ -619,7 +621,7 @@ std::string toJsonString(const LogEntry &entry) {
     if (!entry.response_body.empty()) {
         node["response_body"] = entry.response_body;
     }
-    return node.dump();
+    return dumpJson(node);
 }
 
 std::string toJsonString(const ProviderProbe &probe) {
@@ -629,7 +631,7 @@ std::string toJsonString(const ProviderProbe &probe) {
     node["latency_ms"] = probe.latency_ms;
     node["detail"] = probe.detail;
     node["models"] = probe.models;
-    return node.dump(2);
+    return dumpJson(node, 2);
 }
 
 // ── config schema migration ─────────────────────────────────────────────────

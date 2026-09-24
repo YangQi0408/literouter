@@ -3,6 +3,17 @@
 // the real config path (and the real home directory) is never touched.
 #include "lr_test_check.h"
 
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  include <aclapi.h>
+#endif
+
 import literouter.core;
 
 namespace {
@@ -14,6 +25,12 @@ using literouter::RouteConfig;
 using literouter::RouteTarget;
 using literouter::ValidationIssue;
 using literouter::ValidationReport;
+
+#ifdef _WIN32
+// Defined below the test that uses it; declared here so the group reads in
+// order.
+bool aclGrantsOnlyOwner(const std::filesystem::path &path);
+#endif
 
 constexpr auto kError = ValidationIssue::Level::Error;
 constexpr auto kWarning = ValidationIssue::Level::Warning;
@@ -531,8 +548,55 @@ void testLoadAndSave() {
         (perms & (std::filesystem::perms::group_read | std::filesystem::perms::others_read)) !=
         std::filesystem::perms::none;
     LR_CHECK_MSG(!othersCanRead, "the saved config is readable by other users");
+#else
+    // The same property on Windows, where it is an ACL rather than a mode:
+    // `save()` replaces the DACL with a single ACE for the current user, so no
+    // entry may remain that grants access to Everyone or to the local Users
+    // group. Before this, the file kept whatever ACL the directory gave it and
+    // nothing checked — a config on a shared directory was readable by anyone.
+    LR_CHECK_MSG(aclGrantsOnlyOwner(path), "the saved config grants access beyond its owner");
 #endif
 }
+
+#ifdef _WIN32
+// Walks the file's DACL looking for an ACE for a well-known group SID. The
+// owner's own ACE is expected and ignored.
+bool aclGrantsOnlyOwner(const std::filesystem::path &path) {
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (GetNamedSecurityInfoW(const_cast<LPWSTR>(path.wstring().c_str()), SE_FILE_OBJECT,
+                              DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr,
+                              &descriptor) != ERROR_SUCCESS) {
+        return false;
+    }
+    bool onlyOwner = true;
+    if (dacl != nullptr) {
+        for (WORD i = 0; i < dacl->AceCount && onlyOwner; ++i) {
+            LPVOID ace = nullptr;
+            if (GetAce(dacl, i, &ace) == FALSE) {
+                continue;
+            }
+            const auto *header = static_cast<const ACE_HEADER *>(ace);
+            if ((header->AceFlags & INHERIT_ONLY_ACE) != 0) {
+                continue;
+            }
+            const PSID sid =
+                const_cast<PSID>(static_cast<const void *>(
+                    &static_cast<const ACCESS_ALLOWED_ACE *>(ace)->SidStart));
+            // Everyone, and the two well-known groups a per-machine install
+            // would otherwise inherit. An explicit owner ACE is what we want.
+            if (IsWellKnownSid(sid, WinWorldSid) || IsWellKnownSid(sid, WinBuiltinUsersSid) ||
+                IsWellKnownSid(sid, WinAuthenticatedUserSid)) {
+                onlyOwner = false;
+            }
+        }
+    }
+    if (descriptor != nullptr) {
+        LocalFree(descriptor);
+    }
+    return onlyOwner;
+}
+#endif
 
 void testSaveThroughSymlink() {
 #ifndef _WIN32
@@ -599,6 +663,69 @@ void testSaveThroughSymlink() {
         }
     }
 #endif
+}
+
+void testSaveRefusesDirectoryDestination() {
+    // A config path that names a directory is a mistake the operator can make
+    // (`mkdir` where a file was meant, or a `--config` pointed one level up).
+    // It must be reported as one.
+    //
+    // The empty directory below is the case that used to go wrong silently: the
+    // replace fallback removed the destination before retrying, so `remove` on
+    // an empty directory succeeded, the second `rename` then succeeded, and
+    // `save()` returned success — having deleted a directory and left a config
+    // file in its place. The same "remove, then rename" ordering is what lets a
+    // failed save destroy a real config on Windows, so this pins the ordering
+    // from the outside.
+    LR_GROUP("saving onto a directory path is refused and destroys nothing");
+
+    TempDir dir;
+    const auto store = ConfigStore::load(dir.file("elsewhere.json"));
+    LR_CHECK(store.has_value());
+    if (!store) {
+        return;
+    }
+
+    // 1. An empty directory: the case that used to be silently replaced.
+    const auto empty = dir.file("empty.json");
+    std::filesystem::create_directories(empty);
+    const auto saved = store->saveAs(empty);
+    LR_CHECK_MSG(!saved.has_value(), "saving onto an empty directory reported success");
+    if (!saved) {
+        LR_CHECK_MSG(saved.error().find("it is a directory, not a file") != std::string::npos,
+                     "the error does not say what is wrong with the path: " + saved.error());
+        LR_CHECK_MSG(saved.error().find("empty.json") != std::string::npos,
+                     "the error does not name the path: " + saved.error());
+    }
+    LR_CHECK_MSG(std::filesystem::is_directory(empty),
+                 "the directory was replaced by a file");
+    LR_CHECK(!std::filesystem::is_regular_file(empty));
+
+    // 2. A directory with something in it: nothing inside may be disturbed.
+    const auto occupied = dir.file("occupied.json");
+    std::filesystem::create_directories(occupied);
+    const auto inner = occupied / "inner.txt";
+    writeFile(inner, "not a config");
+    const auto blocked = store->saveAs(occupied);
+    LR_CHECK_MSG(!blocked.has_value(), "saving onto an occupied directory reported success");
+    LR_CHECK(std::filesystem::is_directory(occupied));
+    LR_CHECK_EQ(readFile(inner), std::string{"not a config"});
+
+    // 3. Neither attempt may leave a scratch file next to the destination.
+    for (const auto &entry : std::filesystem::directory_iterator{dir.path()}) {
+        const auto name = entry.path().filename().string();
+        LR_CHECK_MSG(name.find(".tmp-") == std::string::npos,
+                     "a temp file was left behind: " + name);
+        LR_CHECK_MSG(name.find(".old-") == std::string::npos,
+                     "a backup file was left behind: " + name);
+    }
+
+    // 4. The same path as a regular file still saves, so the checks above are
+    //    about the directory and not about `saveAs` having been broken.
+    const auto regular = dir.file("regular.json");
+    const auto retried = store->saveAs(regular);
+    LR_CHECK_MSG(retried.has_value(), retried ? "" : retried.error());
+    LR_CHECK(std::filesystem::is_regular_file(regular));
 }
 
 void testDefaultPaths() {
@@ -1171,6 +1298,7 @@ int main() {
     testStructurallyWrongInput();
     testLoadAndSave();
     testSaveThroughSymlink();
+    testSaveRefusesDirectoryDestination();
     testDefaultPaths();
     testValidateProviders();
     testValidateServer();

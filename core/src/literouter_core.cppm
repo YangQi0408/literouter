@@ -400,7 +400,11 @@ public:
     const ConfigMigration &migration() const { return migration_; }
     bool needsMigration() const { return migration_.changed(); }
 
-    // Atomic write. Creates parent directories. `saveAs` writes the same bytes
+    // Atomic write. Creates parent directories. The file is replaced by a
+    // rename of a fully written temp file in the same directory, so a reader
+    // sees either the old bytes or the new ones and never a truncated file; a
+    // failed save leaves the previous file in place. A path that names a
+    // directory is refused rather than replaced. `saveAs` writes the same bytes
     // somewhere else without rebinding the store, which is what `--print-config`
     // style export needs; both are const because neither mutates the model.
     std::expected<void, std::string> save() const;
@@ -1120,6 +1124,18 @@ bool endsWith(std::string_view text, std::string_view suffix);
 
 // Truncates to `limit` bytes on a UTF-8 boundary and appends "…".
 std::string truncateUtf8(std::string_view text, std::size_t limit);
+
+// UTF-8 hygiene for anything that will be serialized. A `std::filesystem::path`
+// is not guaranteed to hold UTF-8 — on Windows `path::string()` narrows through
+// the ANSI code page — and nlohmann's strict `dump()` throws (and, uncaught,
+// aborts) on bytes that are not valid UTF-8.
+bool isValidUtf8(std::string_view text);
+std::string toValidUtf8(std::string_view text);
+
+// The conversion to use for a path that is about to be shown, logged or put in
+// JSON. Never throws; returns an empty string for a path that cannot be
+// expressed. Prefer this over `path.string()` everywhere.
+std::string pathToUtf8(const std::filesystem::path &path);
 
 // Masks things that look like credentials in text that is about to be kept:
 // the bodies the log stores when server.log_bodies is on, which are prompts as

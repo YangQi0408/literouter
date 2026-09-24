@@ -1,5 +1,7 @@
 // String, formatting and URL helpers from lr_util.cpp (literouter::trim and
 // friends). No sockets, no config: every check here is a pure function call.
+#include <filesystem>
+
 #include "lr_test_check.h"
 
 import literouter.core;
@@ -106,6 +108,105 @@ void testTruncateUtf8() {
     LR_CHECK_EQ(truncated, "日…");
     LR_CHECK(literouter::endsWith(truncated, "\xE2\x80\xA6"));
 }
+
+// The UTF-8 hygiene pass the JSON writers depend on. Before it existed, a path
+// or an upstream body that was not valid UTF-8 reached nlohmann's strict
+// `dump()`, which throws — from a worker thread with no handler, so the process
+// aborted. These checks pin the two halves: the validator, and the repair that
+// makes the strict dump safe.
+void testUtf8Hygiene() {
+    LR_GROUP("isValidUtf8 / toValidUtf8 / pathToUtf8");
+
+    LR_CHECK(literouter::isValidUtf8(""));
+    LR_CHECK(literouter::isValidUtf8("plain ascii"));
+    LR_CHECK(literouter::isValidUtf8("配置"));
+    LR_CHECK(literouter::isValidUtf8("\xE2\x80\xA6"));
+    LR_CHECK(literouter::isValidUtf8("\xF0\x9F\xA6\x8A"));
+
+    // The four shapes a naive "is every byte < 0x80 or >= 0xC0" check lets
+    // through, each of which nlohmann refuses.
+    LR_CHECK(!literouter::isValidUtf8("\xE9"));                 // a lone lead byte
+    LR_CHECK(!literouter::isValidUtf8("caf\xE9"));             // the byte a GBK path ends in
+    LR_CHECK(!literouter::isValidUtf8("\xE4\xBD"));            // truncated mid-sequence
+    LR_CHECK(!literouter::isValidUtf8("\xC0\xAF"));            // overlong for '/'
+    LR_CHECK(!literouter::isValidUtf8("\xED\xA0\x80"));       // a UTF-16 surrogate
+    LR_CHECK(!literouter::isValidUtf8("\xF5\x80\x80\x80"));  // past U+10FFFF
+    LR_CHECK(!literouter::isValidUtf8("\x80"));                 // a bare continuation byte
+    LR_CHECK(!literouter::isValidUtf8("\xE4\xBD\xA0\xE4"));  // good, then truncated
+
+    // A valid string comes back byte-identical, not re-encoded.
+    LR_CHECK_EQ(literouter::toValidUtf8("配置"), "配置");
+    LR_CHECK_EQ(literouter::toValidUtf8(""), "");
+
+    // Every invalid byte becomes U+FFFD, and nothing else moves.
+    LR_CHECK_EQ(literouter::toValidUtf8("caf\xE9"), "caf\xEF\xBF\xBD");
+    LR_CHECK_EQ(literouter::toValidUtf8("\xE4\xBD"), "\xEF\xBF\xBD\xEF\xBF\xBD");
+    LR_CHECK_EQ(literouter::toValidUtf8("a\x80" "b"), "a\xEF\xBF\xBD" "b");
+
+    // The whole point: whatever goes in, what comes out is decodable, so the
+    // strict dump on the other side cannot throw.
+    bool alwaysRepairable = true;
+    for (int byte = 0; byte < 256; ++byte) {
+        const std::string one(1, static_cast<char>(byte));
+        alwaysRepairable =
+            alwaysRepairable && literouter::isValidUtf8(literouter::toValidUtf8(one));
+    }
+    LR_CHECK_MSG(alwaysRepairable, "some single byte survived toValidUtf8 as invalid UTF-8");
+
+    // pathToUtf8 is the conversion the whole program uses instead of
+    // `path::string()`. It never throws and never returns invalid UTF-8.
+    LR_CHECK_EQ(literouter::pathToUtf8(std::filesystem::path{"/tmp/plain.json"}),
+                "/tmp/plain.json");
+    LR_CHECK_EQ(literouter::pathToUtf8(std::filesystem::path{"/tmp/配置/config.json"}),
+                "/tmp/配置/config.json");
+    const std::string gbk = std::string{"/tmp/"} + "\xC4\xE3\xBA\xC3" + "/config.json";
+    const std::string repaired = literouter::pathToUtf8(std::filesystem::path{gbk});
+    LR_CHECK(literouter::isValidUtf8(repaired));
+    LR_CHECK(repaired.find("config.json") != std::string::npos);
+    LR_CHECK(repaired.find('\xEF') != std::string::npos);
+}
+
+// A working directory that no longer exists must not abort the process.
+// `userHome()` fell back to the throwing `current_path()` overload whenever HOME
+// was unset, and that call sits under `defaultConfigPath()` — a ConfigStore
+// member initializer, so every command that builds a store runs it. A shell
+// whose cwd had been deleted got `terminate` out of `literouter config path`,
+// i.e. the same abort P0 describes, without needing a single unusual byte in a
+// path.
+//
+// POSIX-only: the way to make `getcwd` fail is to remove the directory the
+// process is standing in, and Windows keeps an open handle on the cwd of a
+// running process, so the removal would fail there rather than the lookup.
+#ifndef _WIN32
+void testUserHomeWithoutHomeOrCwd() {
+    LR_GROUP("userHome() answers with a path when there is no home and no cwd");
+
+    const auto original = std::filesystem::current_path();
+    const auto scratch = std::filesystem::temp_directory_path() / "literouter-userhome-probe";
+    std::filesystem::remove_all(scratch);
+    std::filesystem::create_directories(scratch);
+    std::filesystem::current_path(scratch);
+    std::filesystem::remove(scratch);
+
+    const lr_test::EnvGuard homeEnv{"HOME"};
+    homeEnv.clear();
+
+    // The property under test is that this returns at all: the throwing
+    // overload turns the missing directory into a `filesystem_error`, and
+    // nothing above here catches it.
+    const auto home = literouter::userHome();
+    LR_CHECK_MSG(home.empty(), "with no home and no cwd, userHome() invented a directory");
+
+    // The callers that run above any handler have to survive it too.
+    const auto configPath = literouter::defaultConfigPath();
+    LR_CHECK_MSG(!configPath.empty(), "the default config path resolved to nothing");
+    LR_CHECK_MSG(!literouter::defaultStateDir().empty(),
+                 "the default state dir resolved to nothing");
+
+    std::filesystem::current_path(original);
+    std::filesystem::remove_all(scratch);
+}
+#endif
 
 void testHumanCount() {
     LR_GROUP("humanCount");
@@ -386,6 +487,10 @@ int main() {
     testTrim();
     testCaseAndAffixes();
     testTruncateUtf8();
+    testUtf8Hygiene();
+#ifndef _WIN32
+    testUserHomeWithoutHomeOrCwd();
+#endif
     testHumanCount();
     testHumanMillis();
     testHumanBytes();

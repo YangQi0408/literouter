@@ -20,6 +20,8 @@ module literouter.core;
 import std;
 import nlohmann.json;
 
+#include "lr_dump.h"
+
 namespace literouter {
 
 namespace {
@@ -587,7 +589,7 @@ void sendError(h::Response &res, int status, std::string message,
                std::string type = "invalid_request_error",
                std::string code = "invalid_request") {
     res.status = status;
-    res.set_content(errorBody(std::move(message), std::move(type), std::move(code)).dump(),
+    res.set_content(dumpJson(errorBody(std::move(message), std::move(type), std::move(code))),
                     "application/json");
 }
 
@@ -710,6 +712,9 @@ std::string existingInstance(const ServerConfig &server,
     if (wildcard) target.host = (host == "::" || host == "[::]") ? "::1" : "127.0.0.1";
     h::Client client{serverBaseUrl(target)};
     if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
+        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
+        // which opens the file through the C library's narrow-path call — the
+        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
         client.set_ca_cert_path(bundle.string());
     }
     client.enable_server_certificate_verification(true);
@@ -744,23 +749,34 @@ std::string existingInstance(const ServerConfig &server,
 // which config. Written after the bind (the bound port is what identifies the
 // instance) and removed by stop().
 bool writePidFile(const std::filesystem::path &path, int port, const std::string &config_path) {
-    std::error_code ec;
-    if (!path.parent_path().empty()) {
-        std::filesystem::create_directories(path.parent_path(), ec);
+    // Called from start(), above which there is no handler: an exception here
+    // would abort a proxy that has already bound its port and is about to
+    // serve. `dumpJson` cannot throw on the bytes any more, but this stays
+    // because the file is a courtesy — the same reason the failed-open branch
+    // below returns false rather than failing the start.
+    try {
+        std::error_code ec;
+        if (!path.parent_path().empty()) {
+            std::filesystem::create_directories(path.parent_path(), ec);
+        }
+        json doc = json::object();
+        doc["pid"] = static_cast<std::int64_t>(currentProcessId());
+        doc["port"] = port;
+        doc["started_unix"] = nowUnix();
+        doc["config"] = config_path;
+        std::ofstream output{path, std::ios::binary | std::ios::trunc};
+        if (!output) {
+            return false; // a courtesy file is never a reason to refuse to listen
+        }
+        const std::string text = dumpJson(doc, 2) + "\n";
+        output.write(text.data(), static_cast<std::streamsize>(text.size()));
+        output.flush();
+        return static_cast<bool>(output);
+    } catch (const std::exception &) {
+        return false;
+    } catch (...) {
+        return false;
     }
-    json doc = json::object();
-    doc["pid"] = static_cast<std::int64_t>(currentProcessId());
-    doc["port"] = port;
-    doc["started_unix"] = nowUnix();
-    doc["config"] = config_path;
-    std::ofstream output{path, std::ios::binary | std::ios::trunc};
-    if (!output) {
-        return false; // a courtesy file is never a reason to refuse to listen
-    }
-    const std::string text = doc.dump(2) + "\n";
-    output.write(text.data(), static_cast<std::streamsize>(text.size()));
-    output.flush();
-    return static_cast<bool>(output);
 }
 
 // ── log ring ─────────────────────────────────────────────────────────────────
@@ -1313,7 +1329,7 @@ struct ProxyServer::Impl {
         }
         root["hourly"] = std::move(hours);
 
-        return root.dump(2);
+        return dumpJson(root, 2);
     }
 
     // Reported once per failure run rather than once per attempt: a full disk
@@ -1341,7 +1357,8 @@ struct ProxyServer::Impl {
         {
             std::ofstream output{temp, std::ios::binary | std::ios::trunc};
             if (!output) {
-                reportStateProblem(std::format("cannot write telemetry file {}", temp.string()));
+                reportStateProblem(
+                    std::format("cannot write telemetry file {}", pathToUtf8(temp)));
                 return;
             }
             output.write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -1349,7 +1366,8 @@ struct ProxyServer::Impl {
             if (!output) {
                 output.close();
                 std::filesystem::remove(temp, ec);
-                reportStateProblem(std::format("write to telemetry file {} failed", temp.string()));
+                reportStateProblem(
+                    std::format("write to telemetry file {} failed", pathToUtf8(temp)));
                 return;
             }
         }
@@ -1366,7 +1384,7 @@ struct ProxyServer::Impl {
             if (ec) {
                 std::filesystem::remove(temp, ec);
                 reportStateProblem(std::format("cannot replace telemetry file {}: {}",
-                                               state_path.string(), ec.message()));
+                                               pathToUtf8(state_path), ec.message()));
                 return;
             }
         }
@@ -1393,7 +1411,8 @@ struct ProxyServer::Impl {
         }
         std::ifstream input{state_path, std::ios::binary};
         if (!input) {
-            recordSystem(std::format("cannot read telemetry file {}", state_path.string()), "error");
+            recordSystem(std::format("cannot read telemetry file {}", pathToUtf8(state_path)),
+                         "error");
             return;
         }
         const std::string text{std::istreambuf_iterator<char>{input},
@@ -1401,7 +1420,7 @@ struct ProxyServer::Impl {
         const json root = json::parse(text, nullptr, false);
         if (root.is_discarded() || !root.is_object() || root.value("version", 0) != 1) {
             recordSystem(std::format("ignoring {}: not a readable literouter telemetry file",
-                                     state_path.string()),
+                                     pathToUtf8(state_path)),
                          "warning");
             return;
         }
@@ -1449,7 +1468,7 @@ struct ProxyServer::Impl {
                 next_seq = it->value("next_seq", std::uint64_t{1});
             }
         } catch (const std::exception &error) {
-            recordSystem(std::format("ignoring {}: {}", state_path.string(), error.what()),
+            recordSystem(std::format("ignoring {}: {}", pathToUtf8(state_path), error.what()),
                          "warning");
             return;
         }
@@ -1496,7 +1515,7 @@ struct ProxyServer::Impl {
             hourly = std::move(restored_hours);
         }
         recordSystem(std::format("restored {} log entries from {}", restored,
-                                 state_path.string()));
+                                 pathToUtf8(state_path)));
     }
 
     // Swaps the routing model in one place, because two callers need it: the
@@ -1610,11 +1629,21 @@ struct ProxyServer::Impl {
                 if (flush_stop.load(std::memory_order_relaxed)) {
                     return;
                 }
-                if (state_dirty.exchange(false, std::memory_order_relaxed)) {
-                    writeState();
+                // This thread owns no caller, so an escaping exception is
+                // std::terminate and takes the proxy with it. Telemetry is
+                // bookkeeping: losing one tick is always better than dropping
+                // every in-flight request.
+                try {
+                    if (state_dirty.exchange(false, std::memory_order_relaxed)) {
+                        writeState();
+                    }
+                    checkConfigFile();
+                    exportOtlp();
+                } catch (const std::exception &e) {
+                    recordSystem(std::format("telemetry flush failed: {}", e.what()), "error");
+                } catch (...) {
+                    recordSystem("telemetry flush failed: unknown error", "error");
                 }
-                checkConfigFile();
-                exportOtlp();
             }
         });
     }
@@ -1753,7 +1782,7 @@ struct ProxyServer::Impl {
                 {"scope", json{{"name", "literouter"}, {"version", std::string{kVersion}}}},
                 {"metrics", std::move(metrics)}}})}
         }});
-        return payload.dump();
+        return dumpJson(payload);
     }
 
     void exportOtlp() {
@@ -2229,7 +2258,7 @@ struct ProxyServer::Impl {
                         if (!parsed_req.is_discarded() && parsed_req.is_object()) {
                             json patched = parsed_req;
                             patched["model"] = upstream_model;
-                            payload = patched.dump();
+                            payload = dumpJson(patched);
                         } else {
                             payload = req.body;
                         }
@@ -2329,7 +2358,8 @@ struct ProxyServer::Impl {
             if (is_html_err) {
                 const std::string msg = summarizeHtmlError(provider->id, result.status,
                                                            result.headers, result.body);
-                out_body = errorBody(msg, "upstream_error", is_cf_block ? "cf_blocked" : "upstream_error").dump();
+                out_body = dumpJson(
+                errorBody(msg, "upstream_error", is_cf_block ? "cf_blocked" : "upstream_error"));
                 out_content_type = "application/json";
             } else if (good && kind != "embeddings") {
                 if (same_protocol) {
@@ -2763,14 +2793,14 @@ struct ProxyServer::Impl {
             if (is_html_err) {
                 const std::string msg = summarizeHtmlError(provider.id, status,
                                                            error_headers, body);
-                out_body = errorBody(msg, "upstream_error", is_cf_block ? "cf_blocked" : "upstream_error").dump();
+                out_body = dumpJson(
+                errorBody(msg, "upstream_error", is_cf_block ? "cf_blocked" : "upstream_error"));
                 out_content_type = "application/json";
             } else if (out_body.empty()) {
                 // A relay that failed with a bare status still owes the caller
                 // the OpenAI error shape every other failure path produces.
-                out_body = errorBody(std::format("{}", provider.id), "upstream_error",
-                                     "upstream_error")
-                               .dump();
+                out_body = dumpJson(errorBody(std::format("{}", provider.id), "upstream_error",
+                                              "upstream_error"));
                 out_content_type = "application/json";
             }
 
@@ -3428,7 +3458,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
             models.push_back(std::move(item));
         }
         res.status = 200;
-        res.set_content(json{{"models", std::move(models)}}.dump(), "application/json");
+        res.set_content(dumpJson(json{{"models", std::move(models)}}), "application/json");
     });
 
     const auto modelsListHandler = [this](const h::Request &, h::Response &res) {
@@ -3453,7 +3483,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
             data.push_back(std::move(item));
         }
         res.status = 200;
-        res.set_content(json{{"object", "list"}, {"data", std::move(data)}}.dump(),
+        res.set_content(dumpJson(json{{"object", "list"}, {"data", std::move(data)}}),
                         "application/json");
     };
     server.Get("/v1/models", modelsListHandler);
@@ -3469,8 +3499,9 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
             return;
         }
         res.status = 200;
-        res.set_content(json{{"id", name}, {"object", "model"}, {"owned_by", "literouter"}}.dump(),
-                        "application/json");
+        res.set_content(
+            dumpJson(json{{"id", name}, {"object", "model"}, {"owned_by", "literouter"}}),
+            "application/json");
     };
     server.Get(R"(/v1/models/(.+))", modelDetailHandler);
     server.Get(R"(/models/(.+))", modelDetailHandler);
@@ -3505,7 +3536,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
                                      : "the listener is not accepting requests";
         }
         res.status = ready ? 200 : 503;
-        res.set_content(body.dump(), "application/json");
+        res.set_content(dumpJson(body), "application/json");
     });
 
     // ── the built-in web console ────────────────────────────────────────────────
@@ -3538,14 +3569,29 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         res.status = 302;
         res.set_header("Location", "/ui/favicon.svg");
     });
-    server.Get("/ui", [consoleOpen](const h::Request &, h::Response &res) {
+    // The console shell. `serveWebAsset` returns false when the asset cannot be
+    // produced — which on the `$LITEROUTER_WEB_DIR` build means the variable is
+    // unset or the file is missing. Ignoring that left a 200 with an empty body:
+    // a blank page instead of an error, and the browser then reported a broken
+    // script rather than the missing directory. A 500 that names the variable is
+    // the only answer a reader can act on.
+    const auto serveShell = [](h::Response &res) {
+        if (serveWebAsset("index.html", res)) {
+            return;
+        }
+        sendError(res, 500,
+                  "the console is not embedded in this build and LITEROUTER_WEB_DIR does not "
+                  "point at web/dist",
+                  "server_error", "console_unavailable");
+    };
+    server.Get("/ui", [consoleOpen, serveShell](const h::Request &, h::Response &res) {
         if (consoleOpen(res)) {
-            serveWebAsset("index.html", res);
+            serveShell(res);
         }
     });
-    server.Get("/ui/", [consoleOpen](const h::Request &, h::Response &res) {
+    server.Get("/ui/", [consoleOpen, serveShell](const h::Request &, h::Response &res) {
         if (consoleOpen(res)) {
-            serveWebAsset("index.html", res);
+            serveShell(res);
         }
     });
     server.Get(R"(/ui/([A-Za-z0-9._-]+))", [consoleOpen](const h::Request &req, h::Response &res) {
@@ -3600,7 +3646,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         root["config"] = std::move(doc);
         root["validation"] = validationJson(validate(cfg));
         res.status = 200;
-        res.set_content(root.dump(2), "application/json");
+        res.set_content(dumpJson(root, 2), "application/json");
     });
 
     // Writes the whole config back. Editing the file's shape field by field
@@ -3622,7 +3668,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         const json doc = (nested != body.end() && nested->is_object()) ? *nested : body;
 
         const AppConfig current = impl_->snapshotConfig();
-        auto parsed = appConfigFromJson(doc.dump());
+        auto parsed = appConfigFromJson(dumpJson(doc));
         if (!parsed) {
             sendError(res, 422, parsed.error(), "invalid_config", "config_invalid");
             return;
@@ -3663,7 +3709,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
             json refused = validationJson(report);
             refused["ok"] = false;
             res.status = 422;
-            res.set_content(refused.dump(2), "application/json");
+            res.set_content(dumpJson(refused, 2), "application/json");
             return;
         }
 
@@ -3685,7 +3731,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         root["saved"] = saved;
         root["path"] = path;
         res.status = 200;
-        res.set_content(root.dump(2), "application/json");
+        res.set_content(dumpJson(root, 2), "application/json");
         impl_->recordSystem(saved ? "config written from the console"
                                   : "config updated in memory (no config path)",
                             report.count(ValidationIssue::Level::Warning) > 0 ? "warn" : "info");
@@ -3731,7 +3777,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         root["entries"] = std::move(entries);
         root["seq"] = impl_->log.next_seq > 0 ? impl_->log.next_seq - 1 : 0;
         res.status = 200;
-        res.set_content(root.dump(), "application/json");
+        res.set_content(dumpJson(root), "application/json");
     });
 
     server.Post(admin + "/reload", [this](const h::Request &, h::Response &res) {
@@ -3750,7 +3796,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
 
         json root = validationJson(report);
         res.status = report.ok() ? 200 : 422;
-        res.set_content(root.dump(2), "application/json");
+        res.set_content(dumpJson(root, 2), "application/json");
         impl_->recordSystem(report.ok() ? "config reloaded from disk"
                                         : "config reloaded with validation errors",
                             report.ok() ? "info" : "warn");
@@ -4102,6 +4148,9 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
 
     h::Client client{root};
     if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
+        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
+        // which opens the file through the C library's narrow-path call — the
+        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
         client.set_ca_cert_path(bundle.string());
     }
     client.enable_server_certificate_verification(true);
@@ -4220,6 +4269,9 @@ std::optional<h::Client> makeAdminClient(std::string_view base_url, std::string_
     }
     h::Client client{root};
     if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
+        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
+        // which opens the file through the C library's narrow-path call — the
+        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
         client.set_ca_cert_path(bundle.string());
     }
     client.enable_server_certificate_verification(true);

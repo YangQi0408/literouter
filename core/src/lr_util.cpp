@@ -48,7 +48,22 @@ std::filesystem::path userHome() {
         return std::filesystem::path{profile};
     }
 #endif
-    return std::filesystem::current_path();
+    // The error_code overload, because the throwing one is not usable here. It
+    // reports a missing current directory by throwing `filesystem_error`, and
+    // this is reached from `defaultConfigPath()`, which is a ConfigStore member
+    // initializer — so every command that constructs a store runs it, and
+    // `main()` has no handler above that. A shell whose working directory had
+    // been deleted (or a service started in a directory that later went away)
+    // got `terminate` from `literouter config path`: the same abort P0
+    // describes, reached without a single unusual byte in a path.
+    //
+    // An empty path is the honest answer when there is no home to name: the
+    // default dir becomes `.config/literouter` relative to the caller, and the
+    // file operation that follows fails with an error instead of killing the
+    // process.
+    std::error_code ec;
+    const auto cwd = std::filesystem::current_path(ec);
+    return ec ? std::filesystem::path{} : cwd;
 }
 
 std::filesystem::path defaultConfigDir() {
@@ -173,7 +188,7 @@ std::filesystem::path resolveCaBundle() {
 
 std::string caBundleSummary() {
     const auto path = resolveCaBundle();
-    return path.empty() ? std::string{} : path.string();
+    return path.empty() ? std::string{} : pathToUtf8(path);
 }
 
 // ── secrets ──────────────────────────────────────────────────────────────────
@@ -398,6 +413,110 @@ std::string truncateUtf8(std::string_view text, std::size_t limit) {
         }
     }
     return std::format("{}…", text.substr(0, cut));
+}
+
+namespace {
+
+// Byte length of the well-formed UTF-8 sequence starting at `text[i]`, or 0 when
+// the bytes there are not one. Catches the three things a naive length check
+// misses: the overlong forms, the surrogates, and anything past U+10FFFF.
+std::size_t utf8SequenceAt(std::string_view text, std::size_t i) {
+    const auto byte = [&](std::size_t k) { return static_cast<unsigned char>(text[i + k]); };
+    const unsigned char lead = byte(0);
+    if (lead < 0x80) {
+        return 1;
+    }
+    std::size_t need = 0;
+    char32_t cp = 0;
+    if ((lead & 0xE0) == 0xC0) {
+        need = 1;
+        cp = lead & 0x1FU;
+    } else if ((lead & 0xF0) == 0xE0) {
+        need = 2;
+        cp = lead & 0x0FU;
+    } else if ((lead & 0xF8) == 0xF0) {
+        need = 3;
+        cp = lead & 0x07U;
+    } else {
+        return 0; // a continuation byte or a 5/6-byte lead: never valid here
+    }
+    if (i + need >= text.size()) {
+        return 0; // truncated at the end of the string
+    }
+    for (std::size_t k = 1; k <= need; ++k) {
+        const unsigned char cont = byte(k);
+        if ((cont & 0xC0) != 0x80) {
+            return 0;
+        }
+        cp = (cp << 6) | (cont & 0x3FU);
+    }
+    const char32_t shortest = need == 1 ? 0x80U : need == 2 ? 0x800U : 0x10000U;
+    if (cp < shortest || cp > 0x10FFFFU || (cp >= 0xD800U && cp <= 0xDFFFU)) {
+        return 0;
+    }
+    return need + 1;
+}
+
+} // namespace
+
+// A `std::filesystem::path` is not guaranteed to hold UTF-8. On Windows
+// `path::string()` narrows UTF-16 through the ANSI code page, so a user name
+// outside that code page gives bytes that are not UTF-8 at all; on POSIX a file
+// name may be arbitrary bytes. Handing those to nlohmann's strict `dump()`
+// aborts the process (type_error.316), so a path bound for JSON is checked first.
+bool isValidUtf8(std::string_view text) {
+    for (std::size_t i = 0; i < text.size();) {
+        const std::size_t length = utf8SequenceAt(text, i);
+        if (length == 0) {
+            return false;
+        }
+        i += length;
+    }
+    return true;
+}
+
+// `isValidUtf8`'s repairing counterpart: every byte that cannot start or
+// continue a sequence becomes U+FFFD, so the result can go to a strict dump.
+std::string toValidUtf8(std::string_view text) {
+    if (isValidUtf8(text)) {
+        return std::string{text};
+    }
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size();) {
+        const std::size_t length = utf8SequenceAt(text, i);
+        if (length == 0) {
+            out += "\xEF\xBF\xBD";
+            ++i;
+            continue;
+        }
+        out.append(text.substr(i, length));
+        i += length;
+    }
+    return out;
+}
+
+// The path-to-text conversion the whole program should use. `path::string()` is
+// right on POSIX but is not on Windows: it narrows UTF-16 through the ANSI code
+// page, which both loses characters the code page cannot represent (the standard
+// library throws) and, when the code page is a DBCS one like cp936, succeeds
+// while producing bytes that are not UTF-8. `u8string()` asks for UTF-8
+// explicitly, and the repair pass covers a POSIX file name that is not UTF-8 at
+// all. Nothing here throws: a path that cannot be expressed returns an empty
+// string, because aborting a running proxy over a log line is never right.
+std::string pathToUtf8(const std::filesystem::path &path) {
+    std::string raw;
+    try {
+#if defined(_WIN32)
+        const std::u8string utf8 = path.u8string();
+        raw.assign(reinterpret_cast<const char *>(utf8.data()), utf8.size());
+#else
+        raw = path.string();
+#endif
+    } catch (const std::exception &) {
+        return {};
+    }
+    return toValidUtf8(raw);
 }
 
 std::string humanCount(std::uint64_t value) {
