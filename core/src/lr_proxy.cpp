@@ -952,6 +952,9 @@ struct ProxyServer::Impl {
     std::thread runner;
     std::atomic<bool> running{false};
     std::atomic<bool> stopping{false};
+    std::mutex shutdown_mutex;
+    std::thread shutdown_thread;
+    bool shutdown_scheduled = false;
     // Signed, and always released through releaseInFlight(): a counter that can
     // only be decremented is one bug away from wrapping to 4 billion.
     std::atomic<int> active_requests{0};
@@ -1082,6 +1085,33 @@ struct ProxyServer::Impl {
     std::string configPath() const {
         std::scoped_lock lock{config_mutex};
         return config_path;
+    }
+
+    void scheduleShutdown(ProxyServer *owner) {
+        std::scoped_lock lock{shutdown_mutex};
+        if (shutdown_scheduled) {
+            return;
+        }
+        shutdown_scheduled = true;
+        shutdown_thread = std::thread([owner] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            owner->stop();
+        });
+    }
+
+    void joinShutdownThread() {
+        std::thread thread;
+        {
+            std::scoped_lock lock{shutdown_mutex};
+            if (!shutdown_thread.joinable() ||
+                shutdown_thread.get_id() == std::this_thread::get_id()) {
+                return;
+            }
+            thread = std::move(shutdown_thread);
+        }
+        thread.join();
+        std::scoped_lock lock{shutdown_mutex};
+        shutdown_scheduled = false;
     }
 
     void setConfigPath(std::string path) {
@@ -3812,11 +3842,10 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         res.status = 200;
         res.set_content(R"({"ok":true,"message":"shutting down"})", "application/json");
         // Off the request thread: stop() joins the accept loop, and doing that
-        // from inside a handler is the loop waiting on itself.
-        std::thread([this] {
-            std::this_thread::sleep_for(std::chrono::milliseconds(150));
-            stop();
-        }).detach();
+        // from inside a handler is the loop waiting on itself. The owner keeps
+        // this thread joinable, so a ProxyServer cannot be destroyed while the
+        // delayed callback still holds its pointer.
+        impl_->scheduleShutdown(this);
     });
 
     // Probes a relay two ways: by id, for a configured entry the console's
@@ -3936,7 +3965,12 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
 }
 
 void ProxyServer::stop() {
-    if (!impl_ || impl_->stopping.exchange(true)) {
+    if (!impl_) {
+        return;
+    }
+    const bool shouldStop = !impl_->stopping.exchange(true);
+    if (!shouldStop) {
+        impl_->joinShutdownThread();
         return;
     }
     // A ProxyServer that was constructed but never started has no httplib Server
@@ -3951,6 +3985,7 @@ void ProxyServer::stop() {
         // the branch the destructor takes for a console that never pressed
         // Start.
         impl_->joinFlusher();
+        impl_->joinShutdownThread();
         return;
     }
 
@@ -3974,6 +4009,7 @@ void ProxyServer::stop() {
     // Last, so the entry above is part of what gets written, and so no thread is
     // still holding the document when the object goes away.
     impl_->stopFlusher();
+    impl_->joinShutdownThread();
 }
 
 void ProxyServer::updateConfig(const AppConfig &config) {
