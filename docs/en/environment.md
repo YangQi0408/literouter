@@ -51,7 +51,7 @@ Forces the terminal interface language.
 - **Values**:
   - `zh`: Simplified Chinese
   - `en`: English
-  - `auto`: Inferred from system locale (`LANG`, `LC_ALL`, or Windows locale).
+  - `auto`: Reads `LC_ALL`, `LC_MESSAGES`, `LANG` in turn; if none names a language this build has, Windows falls back to the account's display language (`GetUserDefaultUILanguage`). English is the last resort.
 
 ### 4. `LITEROUTER_CA_BUNDLE`
 Points to a custom certificate authority bundle for corporate proxies or private PKI.

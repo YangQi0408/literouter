@@ -28,7 +28,8 @@ literouter/
 │   └── tests/                  # 测试套件（test_*.cpp，每文件编译成一个独立二进制）
 │       └── lr_test_check.h     # 断言宏与 EnvGuard；命名为 .h 以免被当作测试构建
 ├── cli/                        # 命令行前端：literouter 可执行文件 (CLI11)
-│   └── src/                    # cli_main.cpp 及各类 cli_cmd_*.cpp
+│   ├── src/                    # cli_main.cpp 及各类 cli_cmd_*.cpp
+│   └── tests/                  # CLI 侧的纯函数单测（同 core/tests 的形态）
 └── web/                        # 内置 Web 控制台（React 19 + TypeScript + Vite + Tailwind + shadcn/ui）
     ├── src/                    # 前端源码（views/, components/, store.tsx 等）
     │   └── lib/*.test.ts       # 纯函数单测（vitest），与源码同目录
@@ -138,7 +139,7 @@ mcpp build -p cli
 
 ### 3.2 运行测试
 
-`mcpp` 把 `core/tests/**/*.cpp` 中每个文件编译成一个独立二进制，以退出码判定成败，因此没有外部测试框架。
+`mcpp` 把各成员 `tests/**/*.cpp` 中每个文件编译成一个独立二进制，以退出码判定成败，因此没有外部测试框架。
 
 ```bash
 # 运行 core 全部 13 个测试套件（必须全部 PASS）
@@ -152,9 +153,17 @@ mcpp test -p core test_proxy
 
 # test_proxy 会绑定真实端口并起线程，慢机器上可放宽超时（默认 300 秒）
 mcpp test -p core test_proxy --timeout 600
+
+# CLI 侧的单测（纯函数，秒级）
+mcpp test -p cli
 ```
 
-当前套件：`test_media`、`test_config`、`test_i18n`、`test_json_api`、`test_malformed`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`、`test_auth`、`test_gates`。
+当前套件：
+
+- `core/tests/`：`test_media`、`test_config`、`test_i18n`、`test_json_api`、`test_malformed`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`、`test_auth`、`test_gates`；
+- `cli/tests/`：`test_ui`。
+
+`cli/tests/` 的用例只覆盖**不需要服务端**的部分——表格与 `KeyValue` 渲染、ANSI 剥离、东亚宽度计算、`baseUrlOf` / `describeApiKey` / `tr()` 这类纯函数。断言宏复用 `core/tests/lr_test_check.h`（`cli/mcpp.toml` 的 `include_dirs` 把 `../core/tests` 加了进来），不另存一份。
 
 Web 控制台的纯函数另有一套 vitest 单测（`web/src/lib/*.test.ts`，与源码同目录）：
 
@@ -394,6 +403,7 @@ ci: unify multi-platform CI into single workflow
 任何 Agent 在声称任务完成或提交代码前，必须对照以下清单进行自查：
 
 - [ ] `mcpp test -p core` 执行无误，13 组测试套件全部通过（0 failures）；
+- [ ] 涉及 `cli/src/cli_ui.cpp`、`cli/src/cli_core.cpp` 或 `cli/tests/` 的，`mcpp test -p cli` 全部通过；
 - [ ] 涉及 `web/src/lib` 或 `store.tsx` 的，`npm --prefix web test` 全部通过；
 - [ ] `mcpp build --workspace` 执行无误，全工作区无 warning、无 error；
 - [ ] 涉及 CLI 修改的，手动运行一次对应子命令确认控制台输出无乱码、对齐正常；

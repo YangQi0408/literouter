@@ -51,7 +51,7 @@
 - **可选值**：
   - `zh`：简体中文
   - `en`：英文
-  - `auto`：根据当前系统的 `LANG`、`LC_ALL` 或 Windows 本地化语言配置自动推断。
+  - `auto`：依次读取 `LC_ALL`、`LC_MESSAGES`、`LANG`；都不含 `zh`/`en` 时，Windows 上再看账户的显示语言（`GetUserDefaultUILanguage`）。仍然无法判定时回退英文。
 
 ### 4. `LITEROUTER_CA_BUNDLE`
 在企业内网、透明代理或使用自建自签名证书的中转服务时，通过该变量注入根证书。

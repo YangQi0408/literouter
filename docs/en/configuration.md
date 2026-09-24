@@ -297,7 +297,7 @@ To guarantee maximum credential security:
 
 1. **Resolved at invocation time**: The configuration holds raw placeholder strings in memory. Secrets are resolved into plaintext by `resolveSecret()` **strictly at the moment of issuing the network request**.
 2. **Never write back plaintext**: Whenever configuration is saved to disk, through `/ui` or the CLI, `ConfigStore` **strictly preserves the original environment variable placeholders**, preventing accidental leaks into configuration files.
-3. **Hardened file permissions**: If a configuration contains literal plaintext keys, the file permissions are automatically clamped to `0600` (read/write for owner only) upon save.
+3. **Hardened file permissions**: every save clamps the file to its owner — `0600` on POSIX, and on Windows the DACL is replaced with a single ACE for the current user, since the config can hold a literal key and `%APPDATA%` is not the only place it may live.
 
 ---
 
