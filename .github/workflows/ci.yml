@@ -139,14 +139,173 @@ jobs:
           python3 scripts/check_config_docs.py --seed "$tmp/seed.json" --defaults "$tmp/defaults.json" \
             --status "$tmp/status.json" --validate-report "$tmp/validate.json"
 
+      # The engine's own suite pins the contract of POST /__literouter/shutdown,
+      # but the thing that was broken was the CLI's `serve` loop: it watched only
+      # its SIGINT flag, so the endpoint closed the port and left the process
+      # alive. Nothing below the CLI can see that, so the check has to drive the
+      # real binary. Linux-only: the step sends signals, and the Windows runner's
+      # shell makes that a different program rather than a different platform.
+      - name: CLI shutdown is graceful (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          bin="$(ls -t cli/target/*/*/bin/literouter | head -1)"
+          tmp="$(mktemp -d)"
+          port=18793
+
+          LITEROUTER_CONFIG="$tmp/config.json" "$bin" config init --force > /dev/null
+          python3 - "$tmp/config.json" "$port" <<'PY'
+          import json, sys
+          path, port = sys.argv[1], int(sys.argv[2])
+          doc = json.load(open(path))
+          doc["server"]["port"] = port
+          json.dump(doc, open(path, "w"))
+          PY
+
+          LITEROUTER_CONFIG="$tmp/config.json" LITEROUTER_STATE_DIR="$tmp/state" \
+            "$bin" serve --quiet > "$tmp/serve.log" 2>&1 &
+          serve_pid=$!
+          for _ in $(seq 1 100); do
+            curl -sf -m 1 "http://127.0.0.1:$port/health" > /dev/null && break
+            sleep 0.1
+          done
+
+          wait_for_exit() {
+            for _ in $(seq 1 60); do
+              kill -0 "$1" 2>/dev/null || return 0
+              sleep 0.25
+            done
+            return 1
+          }
+
+          # The console's own button. The reply is what the browser sees; the
+          # process going away is what an operator sees, and it is the half that
+          # regressed.
+          curl -sf -m 5 -X POST "http://127.0.0.1:$port/__literouter/shutdown" > /dev/null
+          if ! wait_for_exit "$serve_pid"; then
+            echo "the shutdown endpoint answered but the process stayed alive"
+            cat "$tmp/serve.log"
+            kill -9 "$serve_pid" 2>/dev/null || true
+            exit 1
+          fi
+          wait "$serve_pid" 2>/dev/null || true
+
+          # And the ordinary stop, so the fix above did not trade one path for
+          # the other.
+          LITEROUTER_CONFIG="$tmp/config.json" LITEROUTER_STATE_DIR="$tmp/state" \
+            "$bin" serve --quiet > "$tmp/serve2.log" 2>&1 &
+          serve_pid=$!
+          for _ in $(seq 1 100); do
+            curl -sf -m 1 "http://127.0.0.1:$port/health" > /dev/null && break
+            sleep 0.1
+          done
+          kill -TERM "$serve_pid"
+          if ! wait_for_exit "$serve_pid"; then
+            echo "SIGTERM did not stop the proxy"
+            cat "$tmp/serve2.log"
+            kill -9 "$serve_pid" 2>/dev/null || true
+            exit 1
+          fi
+          wait "$serve_pid" 2>/dev/null || true
+
       - name: Test core
         run: mcpp test -p core
+
+      - name: Test cli
+        run: mcpp test -p cli
 
       - name: CLI smoke test
         run: |
           mcpp run -p cli -- --version
-          mcpp run -p cli -- config init --force
-          mcpp run -p cli -- config validate
+
+          bin="$(ls -t cli/target/*/*/bin/literouter* | head -1)"
+          tmp="$(mktemp -d)"
+
+          # Every command below is pinned to $tmp. An unpinned `config init
+          # --force` would overwrite the real config of anyone running this
+          # script by hand, which is exactly what it used to do.
+          LITEROUTER_CONFIG="$tmp/seed.json" mcpp run -p cli -- config init --force
+          LITEROUTER_CONFIG="$tmp/seed.json" mcpp run -p cli -- config validate
+
+          # `config load -` reads standard input. It used to open /dev/stdin,
+          # which does not exist on Windows, so the command failed there while
+          # passing on the other two runners.
+          LITEROUTER_CONFIG="$tmp/load.json" "$bin" config init --force > /dev/null
+          printf '{"schema":3,"providers":[],"routes":[]}' \
+            | LITEROUTER_CONFIG="$tmp/load.json" "$bin" config load - --dry-run --json \
+            > "$tmp/load-out.json"
+          grep -q '"ok": true' "$tmp/load-out.json" || {
+            echo "config load - did not read standard input"
+            cat "$tmp/load-out.json"
+            exit 1
+          }
+
+          # A key piped in with a CRLF line ending must not keep the CR: it
+          # would be written to the config file and shown by `config show`.
+          # `printf` is what makes this the same on all three runners.
+          LITEROUTER_CONFIG="$tmp/key.json" "$bin" config init --force > /dev/null
+          printf 'sk-secret\r\n' \
+            | LITEROUTER_CONFIG="$tmp/key.json" "$bin" providers add crlf-check \
+                --base-url http://127.0.0.1:9 --key-stdin > /dev/null
+          python3 - "$tmp/key.json" <<'PY'
+          import json, sys
+          # By id, not by position: the seed config already ships two relays.
+          providers = {p["id"]: p for p in json.load(open(sys.argv[1]))["providers"]}
+          key = providers["crlf-check"]["api_key"]
+          if "\r" in key:
+              print(f"--key-stdin kept the CR: {key!r}")
+              sys.exit(1)
+          if key != "sk-secret":
+              print(f"--key-stdin stored the wrong value: {key!r}")
+              sys.exit(1)
+          PY
+
+      # The zh render path is otherwise never executed on a runner, which is how
+      # an untranslated option description stays invisible: tr() falls back to
+      # the English source text silently, so a missing dictionary entry is not a
+      # build failure and not a test failure either. Asserting a few known
+      # translations here is what makes the fallback visible in CI.
+      - name: CLI smoke test (Chinese)
+        env:
+          LITEROUTER_LANG: zh
+        run: |
+          mcpp run -p cli -- --version
+
+          # `literouter*`, because the Windows artifact is literouter.exe and
+          # the other Linux-only steps can assume the bare name.
+          bin="$(ls -t cli/target/*/*/bin/literouter* | head -1)"
+          tmp="$(mktemp -d)"
+
+          # Pinned to $tmp for the same reason as the English step: this must
+          # not touch the default config path.
+          LITEROUTER_CONFIG="$tmp/seed.json" "$bin" config init --force > /dev/null
+          LITEROUTER_CONFIG="$tmp/seed.json" mcpp run -p cli -- config validate
+          # `serve` and `providers add` carry most of the option descriptions;
+          # `--help` is where a missing entry shows up.
+          for cmd in serve providers bench replay config logs; do
+            "$bin" $cmd --help >> "$RUNNER_TEMP/zh-help.txt"
+          done
+
+          # A translation that is missing leaves the English source line in
+          # place. These are option descriptions, so they must be Chinese.
+          for english in \
+            "Override server.host for this run only" \
+            "Model to benchmark (required)" \
+            "Request body to replay (OpenAI chat JSON)" \
+            "Print the resolved config path" \
+            "Maximum entries to fetch (default 50)" \
+            "Ask every relay that serves a model the same question"; do
+            if grep -qF "$english" "$RUNNER_TEMP/zh-help.txt"; then
+              echo "untranslated in a zh run: $english"
+              exit 1
+            fi
+          done
+
+          # And the positive control: a description that is in the dictionary
+          # renders as Chinese rather than as its English source.
+          grep -qF "要压测的模型（必填）" "$RUNNER_TEMP/zh-help.txt" || {
+            echo "the zh dictionary was not applied at all"
+            exit 1
+          }
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
