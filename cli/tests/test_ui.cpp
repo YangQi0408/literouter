@@ -13,12 +13,13 @@
 #include <sstream>
 #include <string>
 
+#include "lr_test_check.h"
+
 import literouter.core;
 import nlohmann.json;
 
 #include "cli_core.hpp"
 #include "cli_json.hpp"
-#include "lr_test_check.h"
 
 namespace {
 
