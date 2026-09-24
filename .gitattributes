@@ -1,0 +1,18 @@
+# Line endings, pinned per file rather than left to `core.autocrlf`.
+#
+# A checkout on Windows with autocrlf=true rewrites every tracked text file to
+# CRLF, which breaks `scripts/install.sh` outright (`env: 'bash\r': No such file
+# or directory`) — the shebang is parsed with the CR attached. `eol=lf` in the
+# working tree makes a Windows checkout byte-identical to a Linux one, so the
+# script and the Python tools run from either.
+* text=auto
+
+*.sh   text eol=lf
+*.py   text eol=lf
+*.toml text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Git's own format, not a text file to be normalized.
+*.patch text eol=lf
+*.diff  text eol=lf
