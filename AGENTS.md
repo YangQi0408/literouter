@@ -16,12 +16,12 @@ literouter/
 ├── AGENTS.md                   # 【当前文件】Agent 操作指南；CLAUDE.md 是指向它的符号链接
 ├── README.md                   # 中文项目总览（默认）
 ├── README_en.md                # 英文项目总览
-├── CHANGELOG.md                # ⚠️ 改动会触发自动发版，见规则 7
+├── CHANGELOG.md                # 历史版本记录（不用于自动发版）
 ├── scripts/                    # 构建与校验脚本（check_config_docs.py 等）
 ├── docs/                       # 专题技术与使用文档
 │   ├── zh/                     # 中文详细文档（configuration, routing-failover, protocols-api 等）
 │   ├── en/                     # 英文详细文档
-│   └── release-notes/          # ⚠️ 新增文件会触发自动发版，见规则 7
+│   └── release-notes/          # 历史版本说明
 ├── core/                       # 核心库：literouter.core（C++23 静态库模块）
 │   ├── src/literouter_core.cppm# 唯一对外公开接口（契约层）
 │   ├── src/*.cpp               # 内部实现单元（未导出第三方依赖），分工见下表
@@ -109,9 +109,9 @@ literouter/
 - `mcpp` 会在项目的 `target/` 目录下放置编译锁和对象缓存。
 - 若有多个 Agent 正在并发修改/构建，**切勿直接在工作区根目录下并发执行构建**。应将代码复制到独立的沙盒（例如 `/tmp/lr-sandbox`）中进行编译与单测，验证全绿后再复制回本工程目录。
 
-### 规则 7：`CHANGELOG.md` 与 `docs/release-notes/` 会触发自动发版
-- `.github/workflows/release.yml` 的触发条件是 push 到 `main` 且改动 `CHANGELOG.md` 或 `docs/release-notes/**.md`，随后会**自动打 tag 并发布 GitHub Release**。
-- **未经用户明确要求发版，不要修改这两处**。顺手更新一行 changelog 就足以对外发出一个版本。
+### 规则 7：历史版本文档不参与发布
+- 仓库不提供自动发版工作流、GitHub Release 或预编译下载包。
+- `CHANGELOG.md` 与 `docs/release-notes/` 仅保留历史记录；除非用户明确要求修订历史文档，否则不要修改它们。
 - 常规的功能与修复说明写在提交信息里即可。
 
 ### 规则 8：用户可见字符串必须补齐对应字典
@@ -378,7 +378,7 @@ React 会处理 `element.click()` 派发的真实事件，不需要模拟坐标�
 2. **CLI 冒烟**：`--version` → `config init --force` → `config validate` 三连。注意 `--force` 会覆写配置文件，所以本地跑之前先设好 `LITEROUTER_CONFIG`。
 3. **配置文档校验**：仅 Linux，`scripts/check_config_docs.py` 会把 `docs/{zh,en}/configuration.md` 的样例 JSON 与字段表同 `config init` / `serve --print-config` 的真实输出逐字段比对（字段缺失、多出字段、默认值不符都会失败）。**新增或改名任何配置字段后，必须同步文档**，否则 CI 直接红——这是上一轮 `log_capacity` 文档写 400、代码是 200 之类漂移的专用护栏。
 
-`release.yml` 是独立的发版流水线，触发条件见规则 7。
+项目没有独立的发版流水线；CI 只负责构建、测试和 Web 产物同步校验。
 
 ---
 

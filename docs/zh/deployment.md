@@ -8,12 +8,19 @@
 
 | 方式 | 文件 | 适用 |
 |---|---|---|
-| 直接跑二进制 | `scripts/install.sh` | 一台长期在线的 Linux 机器；脚本会校验发布包的 SHA-256，并可选地装好 systemd 单元 |
+| 直接跑二进制 | `mcpp build -p cli --release` | 从源码构建后直接运行；适合个人本地使用 |
 | systemd 服务 | `deploy/literouter.service` | 用发行版自带的服务管理；独立账户、`ProtectSystem=strict`、`SIGTERM` 优雅停机 |
 | Docker | `Dockerfile` | 容器化主机。多阶段构建，运行镜像只装 `ca-certificates` 与一个二进制，以 uid 8787 非 root 运行 |
 | Docker Compose | `docker-compose.yml` | 需要把配置与状态分开持久化的场景 |
 
-**`scripts/install.sh` 只面向 Linux。** 它依赖 `systemctl` 与 `/etc/systemd/system`，并使用 GNU 专属的 `sha256sum` 与 `readlink -f`（macOS 只有 `shasum`），也没有发布 macOS / Windows 的产物。这两个平台请直接取发布页上的二进制；Docker 与 Compose 两种方式不受影响。
+仓库不提供公开 Release、预编译下载包或一键下载安装脚本。需要直接运行时，请在本机从源码构建 CLI，然后使用生成的 `literouter`；长期运行可配合 systemd，或使用 Docker / Compose。
+
+```bash
+mcpp build -p core --release
+mcpp build -p cli --release
+./cli/target/*/*/bin/literouter config init
+./cli/target/*/*/bin/literouter serve
+```
 
 **Windows 上的配置路径是一条普通路径，没有前缀。** 构建用的是 MinGW GCC，从不把路径写成 `\\?\` 长路径形式，也没有随包提供 `longPathAware` 清单，因此路径仍受 Windows 对普通路径施加的 `MAX_PATH` 规则约束。把配置留在默认位置 `%APPDATA%\literouter\`（路径天然很短）就永远不会碰到这个问题。万一系统确实拒绝了某个路径，失败是响亮而无害的，不会静默：保存会报 `cannot write config …` 并以非零码退出，且不会动到原文件——新内容先写到临时名，落盘之后才会被改名覆盖旧文件。
 

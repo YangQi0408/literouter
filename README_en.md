@@ -39,7 +39,7 @@ Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate
 - 🔄 **Multi-Protocol Gateway & Zero-Overhead Fast Path**: **Inbound** OpenAI, Claude Messages, Google Gemini and OpenAI Responses requests; **outbound** `openai`, `azure`, `anthropic`, `gemini`, `vertex`, `bedrock`, `ollama` and `responses` (Azure `api-version`, Vertex OAuth2 service accounts and Bedrock SigV4 signing are all implemented natively). Matching protocols enjoy **zero JSON parsing and zero-copy streaming passthrough**, while mismatched protocols are converted bi-directionally on the fly — including Ollama NDJSON and Bedrock AWS event-stream framing.
 - 📈 **Observability**: Liveness (`/health/live`) and readiness (`/health/ready`) probes are separate, Prometheus `/__literouter/metrics` exports per relay, and **OTLP metric push** to `{endpoint}/v1/metrics` is supported.
 - 🔐 **Zero-Leak Secret Placeholders**: Store `${OPENAI_API_KEY}` or `${VAR:-fallback}` placeholders in your config. Secrets are resolved in memory strictly when dispatching requests and are never written back to disk.
-- 🐳 **Ready-made Deployment**: `Dockerfile`, `docker-compose.yml`, a systemd unit and a one-shot Linux installer (`scripts/install.sh`, which verifies the release SHA-256). The container image carries one binary and a CA bundle, and runs as a non-root user.
+- 🐳 **Local Deployment**: `Dockerfile`, `docker-compose.yml`, and a systemd unit for running the personal gateway on your own machine or server. The container image carries one binary and a CA bundle, and runs as a non-root user.
 - 💻 **Two Frontends**:
   - **CLI**: Supports foreground server mode, `tail -f` live log streaming, status dashboards, and system diagnostics (`doctor`).
   - **Web Console**: `serve` carries a modern React + Vite + Tailwind + shadcn/ui `/ui` console on the same port, providing telemetry overview, provider/route management, probing, log filtering, and full config editing; assets are embedded in the binary with zero extra deployment (developing the web UI requires Node.js 22+).
@@ -143,7 +143,7 @@ Technical details are organized into topic-specific documentation:
 | 🛡️ [**Routing & Failover**](docs/en/routing-failover.md) | Candidate chain resolution, Header Gate streaming logic, circuit breaker state machine |
 | 🔄 [**Protocols & API Reference**](docs/en/protocols-api.md) | Inbound endpoints, upstream protocol adapters, fast-path streaming, and Admin APIs |
 | 💻 [**CLI Manual**](docs/en/cli.md) | Reference for every subcommand, plus the live dashboard and automation scripts |
-| 📦 [**Deployment**](docs/en/deployment.md) | Docker / systemd / installer: the ways to land this on a machine |
+| 📦 [**Deployment**](docs/en/deployment.md) | Docker / systemd: run the personal gateway on your own machine or server |
 | ⚙️ [**Environment Variables**](docs/en/environment.md) | Full environment variable reference and cross-platform path resolution |
 
 ---
