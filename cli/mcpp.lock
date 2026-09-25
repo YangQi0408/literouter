@@ -9,29 +9,29 @@ version = 2
 namespace = "compat"
 version = "2.7.2"
 source  = "index+compat@2.7.2"
-hash    = "fnv1a:6ebc4a5a82faf094"
+hash    = "fnv1a:4fc99045c0742cae"
 
 [package."compat.httplib"]
 namespace = "compat"
 version = "0.53.1"
 source  = "index+compat@0.53.1"
-hash    = "fnv1a:a9709261c13afb3b"
+hash    = "fnv1a:317e37407c67a813"
 
 [package."compat.openssl"]
 namespace = "compat"
 version = "3.5.1"
 source  = "index+compat@3.5.1"
-hash    = "fnv1a:633d79304221cf6e"
+hash    = "fnv1a:493bf976865af208"
 
 [package."compat.zlib"]
 namespace = "compat"
 version = "1.3.2"
 source  = "index+compat@1.3.2"
-hash    = "fnv1a:bb0a6ebd39272a80"
+hash    = "fnv1a:9f13dbeaae3ef4c0"
 
 [package."nlohmann.json"]
 namespace = "nlohmann"
 version = "3.12.0"
 source  = "index+nlohmann@3.12.0"
-hash    = "fnv1a:998206e0fc3907ad"
+hash    = "fnv1a:65af05f998b1b9d7"
 

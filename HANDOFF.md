@@ -41,7 +41,7 @@ python3 scripts/check_config_docs.py --seed … --defaults … --status … --va
                                              → configuration.md matches the build and protocols-api.md matches a real reply
                                                （当时的字段计数含 client / client-key，现已随分发功能移除）
 ~~python3 scripts/check_client_cli.py <bin>~~  → 脚本已删除（分发功能移除）
-literouter --version                         → 0.1.0
+literouter --version                         → 0.2.0
 literouter config init --force && config validate → exit 0
 ~~LITEROUTER_GUI_SMOKE=1 xvfb-run -a mcpp run -p gui~~ → GUI 已移除，无此项
 ```
@@ -222,7 +222,7 @@ npm --prefix web run build && mcpp build -p cli    # 顺序不能反
 
 ### 5.1 构建、测试、运行
 
-- 仓库：`/home/yangqi/literouter`；workspace 成员 `core` / `cli` + 内嵌 `web`；版本 `0.1.0`。
+- 仓库：`/home/yangqi/literouter`；workspace 成员 `core` / `cli` + 内嵌 `web`；版本 `0.2.0`。
 - 构建：`mcpp build -p <member>` / `mcpp build --workspace`；测试：`mcpp test -p core [<suite>] [--timeout 600]`；运行：`mcpp run -p cli -- …`。
 - 新增源文件（mcpp 自动 glob `src/**/*.{cppm,cpp}`）：`core/src/lr_limits.cpp`、`lr_cache.cpp`、`lr_auth.cpp`。
 - 新增测试文件（各自编译成独立二进制）：`core/tests/test_auth.cpp`、`test_gates.cpp`。

@@ -5,6 +5,20 @@
 
 ---
 
+## [0.2.0] - 2026-09-25
+
+详细说明见 [docs/release-notes/v0.2.0.md](docs/release-notes/v0.2.0.md)。
+
+### Added
+- 完整的个人本地聚合网关：Provider 路由、模型别名、故障转移、熔断、限流与本地响应缓存。
+- 内置 Web 控制台继续随服务提供，支持遥测、Provider/路由管理、探测、日志和配置编辑。
+- 支持 OpenAI、Anthropic、Gemini、Responses、Azure、Vertex、Bedrock 与 Ollama 协议组合。
+- 提供跨平台 GitHub Release、Linux 安装脚本、Docker、Compose 与 systemd 部署方式。
+
+### Changed
+- 项目定位为每个人独立运行的单用户本地聚合器，仅使用一个 `server.api_key`。
+- 移除桌面 GUI、客户端账户、按账户密钥、权限组、配额账本和每日预算等 API 分发功能。
+
 ## [0.1.0] - 2026-09-13
 
 详细说明见 [docs/release-notes/v0.1.0.md](docs/release-notes/v0.1.0.md)。

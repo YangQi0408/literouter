@@ -6,7 +6,7 @@ description = "literouter core — config model, routing/failover engine, OpenAI
 # *path* dependency on this member from outside the workspace has no workspace to
 # inherit from, and mcpp then refuses to load the manifest at all for a missing
 # package.version. Keeping core consumable standalone is worth the duplication.
-version     = "0.1.0"
+version     = "0.2.0"
 license     = "Apache-2.0"
 
 # The module root is spelled out rather than left to the `src/<pkg-tail>.cppm`

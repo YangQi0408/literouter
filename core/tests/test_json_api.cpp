@@ -30,7 +30,7 @@ void testSnapshotJson() {
     hour.cost_usd = 0.5;
     snapshot.hourly = {hour};
     snapshot.config_path = "/tmp/literouter/config.json";
-    snapshot.version = "0.1.0";
+    snapshot.version = "0.2.0";
     snapshot.total_requests = 17;
     snapshot.total_success = 15;
     snapshot.total_failure = 2;
@@ -80,7 +80,7 @@ void testSnapshotJson() {
     LR_CHECK_EQ(parsed.at("host").get<std::string>(), "127.0.0.1");
     LR_CHECK_EQ(parsed.at("port").get<int>(), 43210);
     LR_CHECK_EQ(parsed.at("base_url").get<std::string>(), "http://127.0.0.1:43210");
-    LR_CHECK_EQ(parsed.at("version").get<std::string>(), "0.1.0");
+    LR_CHECK_EQ(parsed.at("version").get<std::string>(), "0.2.0");
     LR_CHECK_EQ(parsed.at("config_path").get<std::string>(), "/tmp/literouter/config.json");
     LR_CHECK(lr_test::closeTo(parsed.at("started_unix").get<double>(), 1700000000.5));
     LR_CHECK(lr_test::closeTo(parsed.at("uptime_sec").get<double>(), 12.25));
