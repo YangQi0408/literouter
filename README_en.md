@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>High-Performance Local AI Relay Aggregator and Multi-Protocol Gateway built with C++23 and mcpp</strong><br>
-  Single Endpoint · Intelligent Retry · Header Gate · Auto-Healing Circuit Breaker · Cross-Protocol Passthrough · Zero-Leak Secrets · Native CLI & Web Console
+  Single Endpoint · Intelligent Failover · Header Gate · Auto-Healing Breaker · Cross-Protocol Fast Path · Zero-Leak Secrets · Native CLI & Embedded Web Console
 </p>
 
 <p align="center">
@@ -13,162 +13,204 @@
 
 ## What is literouter?
 
-`literouter` is a high-performance personal AI gateway. It presents a unified endpoint (default `http://127.0.0.1:8787`) to client applications while dispatching requests across multiple upstream relays and official model provider APIs according to your configurable rules.
+`literouter` is a high-performance local AI gateway designed for developers and teams. It provides a single local endpoint (default `http://127.0.0.1:8787`) to client applications while dispatching requests across multiple upstream relays and official model provider APIs according to your configurable rules.
 
-Simply point any AI tool (such as Chatbox, NextChat, Cursor, Immersive Translate, shell scripts, or standard SDKs) to `literouter`, and let it handle upstream orchestration seamlessly: **which provider offers the requested model, which node is down, which is rate-limited, and which requires model aliasing—all managed automatically in milliseconds**.
+Simply point any AI tool (such as **Cursor, Claude Desktop, VS Code (Continue/Cline/Roo Code), Chatbox, NextChat, Immersive Translate, shell scripts, or standard Python/Node.js SDKs**) to `literouter`, and let it handle upstream orchestration seamlessly in milliseconds: **which provider offers the requested model, which node is down or rate-limited, which requires model aliasing, and which is cheapest—all managed automatically in the background**.
 
 ```text
-┌──────────┐        ┌──────────────────────────────────────────┐        ┌─────────────────┐
-│ Client   │  ───▶  │  literouter :8787                        │  ───▶  │ Relay A (Main)  │
-│ (OpenAI/ │  ◀───  │                                          │  ◀───  │                 │
-│  Claude/ │        │  Protocol Adapter · Header Gate Failover │        ├─────────────────┤
-│  Gemini) │        │  Zero-Copy SSE · Model Aliasing · Metrics│  ───▶  │ Relay B (Backup)│
-└──────────┘        └──────────────────────────────────────────┘  ◀───  └─────────────────┘
+┌──────────────┐        ┌──────────────────────────────────────────────┐        ┌─────────────────────┐
+│ Client       │  ───▶  │  literouter :8787                            │  ───▶  │ Relay A (Official)  │
+│ (Cursor/     │  ◀───  │                                              │  ◀───  │                     │
+│  Claude/     │        │  Multi-Protocol Gateway · Header Gate Safety │        ├─────────────────────┤
+│  OpenAI SDK) │        │  Zero-Copy SSE · Per-Model Pricing · Telemetry│  ───▶  │ Relay B (Low-Cost)  │
+└──────────────┘        └──────────────────────────────────────────────┘  ◀───  └─────────────────────┘
 ```
 
 ---
 
-## Key Features
+## 🚀 1-Minute Quick Installation
 
-- ⚡ **Single Endpoint Aggregation**: Centralizes upstream Base URLs and API Keys into a single local port, eliminating the need to reconfigure client applications.
-- 🧠 **Local Response Cache**: Exact-match caching for **non-streaming** requests (TTL + LRU eviction). A hit is served directly with `X-Literouter-Cache: hit` and never touches the upstream — the saving is real money. Streaming responses are never cached.
-- 🚦 **Relay-side Protection**: Per-upstream **concurrency** and **requests-per-minute** ceilings. A relay that is at its limit is **skipped rather than failed** — it does not trip the breaker, and the request moves on to the next target in the chain, which avoids driving an upstream into its own rate limiter.
-- 🔒 **HTTPS and Media Endpoints**: Listener TLS plus audio transcription, translation, speech synthesis, image generation, edits and variations through existing OpenAI-compatible providers.
-- 🛡️ **Header Gate & Lossless Streaming Failover**: Novel streaming safety mechanism. Network drops, timeouts, 429 rate limits, or 5xx server errors trigger seamless failover before the first response header reaches the client. Once the first byte is emitted, the connection is locked to **strictly prevent corrupting or interweaving answers**.
-- 🔌 **Circuit Breaker with Auto-Probing**: Consecutive failures trip down relays into cooldown. Once cooldown expires, a single-request probe tests recovery automatically without overwhelming services.
-- 🔄 **Multi-Protocol Gateway & Zero-Overhead Fast Path**: **Inbound** OpenAI, Claude Messages, Google Gemini and OpenAI Responses requests; **outbound** `openai`, `azure`, `anthropic`, `gemini`, `vertex`, `bedrock`, `ollama` and `responses` (Azure `api-version`, Vertex OAuth2 service accounts and Bedrock SigV4 signing are all implemented natively). Matching protocols enjoy **zero JSON parsing and zero-copy streaming passthrough**, while mismatched protocols are converted bi-directionally on the fly — including Ollama NDJSON and Bedrock AWS event-stream framing.
-- 📈 **Observability**: Liveness (`/health/live`) and readiness (`/health/ready`) probes are separate, Prometheus `/__literouter/metrics` exports per relay, and **OTLP metric push** to `{endpoint}/v1/metrics` is supported.
-- 🔐 **Zero-Leak Secret Placeholders**: Store `${OPENAI_API_KEY}` or `${VAR:-fallback}` placeholders in your config. Secrets are resolved in memory strictly when dispatching requests and are never written back to disk.
-- 🐳 **Local Deployment**: Cross-platform GitHub Releases, a Linux installer, `Dockerfile`, `docker-compose.yml`, and a systemd unit for running each user's personal gateway on their own machine or server. The container image carries one binary and a CA bundle, and runs as a non-root user.
-- 💻 **Two Frontends**:
-  - **CLI**: Supports foreground server mode, `tail -f` live log streaming, status dashboards, and system diagnostics (`doctor`).
-  - **Web Console**: `serve` carries a modern React + Vite + Tailwind + shadcn/ui `/ui` console on the same port, providing telemetry overview, provider/route management, probing, log filtering, and full config editing; assets are embedded in the binary with zero extra deployment (developing the web UI requires Node.js 22+).
-- 🌐 **Cross-Platform**: Native support for Linux, macOS, and Windows.
+Prebuilt `literouter` binaries have zero runtime dependencies (Web Console assets are embedded into the binary at compile time):
+
+### Option 1: One-Line Installer Script (Recommended for Linux / macOS)
+```bash
+# Auto-detects architecture, downloads latest release, and installs to /usr/local/bin/literouter (requires sudo)
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | bash
+
+# Non-root installation to ~/.local/bin:
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | bash -s -- --prefix ~/.local
+
+# Install and enable as a systemd background service (Linux):
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --service -y
+```
+
+### Option 2: Prebuilt Binary Releases (Linux / macOS / Windows)
+Download the standalone binary for your platform from [GitHub Releases](https://github.com/YangQi0408/literouter/releases):
+- **Linux (x86_64)**: Extract, `chmod +x literouter`, and move to `/usr/local/bin/`;
+- **macOS (Apple Silicon / Intel)**: Extract and move to `/usr/local/bin/` or `~/.local/bin/`;
+- **Windows (x86_64)**: Extract `literouter.exe` to a permanent folder (such as `C:\Program Files\literouter\`), and add it to your system `PATH`.
+
+### Option 3: Docker / Docker Compose
+```bash
+# Run with docker compose (binds to loopback, persistent config & state)
+docker compose up -d
+```
+
+### Option 4: Build from Source (Developers)
+```bash
+# Compile entire workspace using modern mcpp build toolchain:
+mcpp build --workspace --release
+```
 
 ---
 
-## Quick Start
+## ⚡ Quickstart in 3 Steps
 
-### 1. Build from Source
-Built using modern [mcpp](https://github.com/mcpp-community/mcpp) build toolchain. Compile all components with one command:
-
+### Step 1: Start the Gateway
 ```bash
-mcpp build --workspace
+literouter serve
 ```
+> The gateway will listen on `http://127.0.0.1:8787`. On its first run, it automatically creates a default seed config file (`~/.config/literouter/config.json` on Linux/macOS, `%APPDATA%\literouter\config.json` on Windows).
 
-### 2. Initialize Config & Diagnostics
-```bash
-# Generate seed configuration template (~/.config/literouter/config.json)
-mcpp run -p cli -- config init
+### Step 2: Configure Providers in the Web Console
+Open in your browser: **`http://127.0.0.1:8787/ui/`**
 
-# Export required environment variables
-export OPENAI_API_KEY="sk-..."
+In the modern, embedded Web Console, you can:
+- ➕ **Add Providers visually**: Configure provider name, Base URL, API Key (supports `${VAR}` placeholders), and protocol (`openai`, `anthropic`, `gemini`, `azure`, `vertex`, `bedrock`, `ollama`);
+- 💰 **Set Default & Per-Model Pricing**: Configure general input/output prices and **override prices for specific models**;
+- 🔄 **Manage Routes & Aliasing**: Define primary and fallback chains for client models (e.g. `gpt-4o`);
+- 🩺 **One-Click Connectivity Probing**: Test upstream latency and check advertised model availability.
 
-# Run doctor to verify syntax, environment variables, and network connectivity
-mcpp run -p cli -- doctor
-```
+> 💡 *Command-line enthusiasts can also configure everything via CLI: `literouter providers add <id> --base-url <url> --key-env <VAR>`.*
 
-### 3. Start the Service
-```bash
-# Option A: Run CLI server in foreground
-mcpp run -p cli -- serve
-
-# (There is no second front end to start; the console is served by `serve`.)
-```
-
-### 4. Open the built-in Web Console
-Browse to `http://127.0.0.1:8787/ui/` — live metrics, per-relay health and probing, an incremental request log and a config view, with nothing extra to deploy (see [Protocols & API](docs/en/protocols-api.md#built-in-web-console)).
-
-### 5. Verify with a Request
+### Step 3: Send a Test Request
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}'
 ```
+Receiving a response confirms that `literouter` successfully routed and dispatched your request!
 
 ---
 
-## Configuration Preview
+## 🔌 Client & AI Tool Integration Guide
 
-Configuration is located by default at `~/.config/literouter/config.json` (`%APPDATA%\literouter\config.json` on Windows):
+Point your client application's API base to `http://127.0.0.1:8787` to enjoy transparent load balancing and failover.
 
-```jsonc
-{
-  "server": {
-    "host": "127.0.0.1",
-    "port": 8787,
-    "pass_through_unknown": true,
-    "circuit_failure_threshold": 3,
-    "circuit_cooldown_sec": 30
-  },
-  "providers": [
-    {
-      "id": "openai-main",
-      "name": "OpenAI Official",
-      "base_url": "https://api.openai.com/v1",
-      "api_key": "${OPENAI_API_KEY}",
-      "priority": 10,
-      "models": ["gpt-4o", "text-embedding-3-small"]
-    },
-    {
-      "id": "relay-backup",
-      "name": "Backup Relay",
-      "base_url": "https://api.relay-provider.com/v1",
-      "api_key": "${BACKUP_KEY}",
-      "priority": 20,
-      "models": ["gpt-4o"]
-    }
-  ],
-  "routes": [
-    {
-      "model": "gpt-4o",
-      "targets": [
-        { "provider": "openai-main", "model": "gpt-4o-2024-08-06" },
-        { "provider": "relay-backup" }
-      ]
-    }
-  ]
-}
+| Client / Tool | Endpoint Dialect | Base URL / Server Address | API Key Notes |
+|---|---|---|---|
+| **Cursor** | OpenAI Compatible | `http://127.0.0.1:8787/v1` | Any string or `server.api_key` |
+| **VS Code (Continue)** | OpenAI / Anthropic | `http://127.0.0.1:8787/v1` | Any string or `server.api_key` |
+| **VS Code (Cline / Roo Code)** | OpenAI Compatible | `http://127.0.0.1:8787/v1` | Any string or `server.api_key` |
+| **Claude Desktop** | Native Anthropic | `http://127.0.0.1:8787` | Passthrough `/v1/messages` |
+| **NextChat / Chatbox** | OpenAI Compatible | `http://127.0.0.1:8787` | Any string or `server.api_key` |
+| **Immersive Translate / Cherry Studio** | OpenAI Compatible | `http://127.0.0.1:8787/v1` | Any string or `server.api_key` |
+| **Python / Node.js SDK** | OpenAI Official SDK | `http://127.0.0.1:8787/v1` | See code snippet below |
+
+### Python OpenAI SDK Example
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:8787/v1",
+    api_key="none",  # Any non-empty string if server.api_key is unconfigured
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=True,
+)
+for chunk in response:
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+### Continue (VS Code Extension) `config.yaml` Example
+```yaml
+models:
+  - name: GPT-4o
+    provider: openai
+    model: gpt-4o
+    apiBase: http://127.0.0.1:8787/v1
+    apiKey: none
+  - name: Claude 3.5 Sonnet
+    provider: anthropic
+    model: claude-3-5-sonnet
+    apiBase: http://127.0.0.1:8787
+    apiKey: none
 ```
 
 ---
 
-## Documentation Directory
+## 💰 Flexible Cost Estimation & Per-Model Pricing
 
-Technical details are organized into topic-specific documentation:
+Pricing often differs significantly across providers and among different models on the same provider (e.g. `gpt-4o` vs `gpt-4o-mini`, or `claude-3-5-sonnet` vs `claude-3-5-haiku`).
+
+`literouter` provides fine-grained **provider default rates** alongside **per-model price overrides**:
+- **Provider Default Pricing**: Set `price_in_per_million` and `price_out_per_million` on a provider as baseline prices;
+- **Per-Model Overrides (`model_prices`)**: Override input/output rates for specific models; unlisted models fall back to the provider default;
+- **Cheapest Routing Policy (`routing_policy: "cheapest"`)**: Dynamically evaluates the actual price of the requested model across all candidate relays and routes to the cheapest healthy relay first;
+- **Visual Management**: Easily configure model rates in the `/ui` Web Console and monitor real-time spend across relays and models.
+
+---
+
+## 🛡️ Key Architectural Capabilities
+
+- 🛡️ **Header Gate Streaming Safety**: Proprietary streaming failover mechanism. Connection failures, timeouts, 429s, or 5xx errors trigger transparent failover before the first response header reaches the client. Once the first byte is emitted, the connection is locked to **strictly prevent corrupting or interweaving answers**.
+- 🔄 **Multi-Protocol Gateway & Zero-Copy Fast Path**: Supports inbound OpenAI, Anthropic Claude, Google Gemini, and OpenAI Responses requests, and 8 outbound provider protocols. Matching protocols enjoy **zero JSON parsing and zero-copy streaming passthrough**, while mismatched protocols are converted bi-directionally on the fly.
+- 🧠 **Local Response Cache**: Exact-match caching for **non-streaming** requests (TTL + LRU eviction). Cache hits are served directly from memory with `X-Literouter-Cache: hit` without upstream roundtrips, saving real API spend.
+- 🚦 **Relay-Side Rate Limiting & Auto-Breaker**: Set per-relay concurrency and rolling RPM limits. Saturated relays are skipped without penalizing health; failing relays trip into cooldown and auto-recover via single-request probes.
+- 🔐 **Zero-Leak Secret Placeholders**: Store `${OPENAI_API_KEY}` placeholders in your config. Secrets are resolved in memory strictly when dispatching requests and are never written back to disk.
+- 💻 **Two Frontends in Harmony**:
+  - **CLI**: Foreground server, `tail -f` live log streaming, status dashboards, and health diagnostics (`doctor`);
+  - **Web Console**: An embedded modern React + Vite + Tailwind + shadcn/ui `/ui` console served directly on the same port with zero extra deployment.
+
+---
+
+## 🛠️ Common CLI Commands
+
+```bash
+literouter serve                 # Start foreground proxy gateway (default :8787)
+literouter status                # View current status and health dashboard
+literouter logs -f               # Stream live request logs in real time
+literouter doctor                # Run end-to-end environment, network, and config health checks
+literouter models                # Inspect all exposed models and routing topology
+literouter providers list        # List all configured upstream providers
+literouter providers add <id>    # Add a new provider (supports --model-price)
+literouter routes add <model>    # Configure explicit model routing and fallback chains
+literouter bench --model gpt-4o  # Benchmark latency and cost across relays
+literouter config validate       # Deep validation of configuration syntax and security
+```
+
+---
+
+## 📚 Documentation Directory
 
 | Topic | Description |
 |---|---|
-| 📖 [**Configuration & Secrets**](docs/en/configuration.md) | Complete JSON schema, placeholder syntax, rule validation, and hot reload |
-| 🛡️ [**Routing & Failover**](docs/en/routing-failover.md) | Candidate chain resolution, Header Gate streaming logic, circuit breaker state machine |
+| 📖 [**Configuration & Secrets**](docs/en/configuration.md) | Complete JSON schema, per-model pricing, secret placeholders, and hot reload |
+| 📦 [**Deployment & Operations**](docs/en/deployment.md) | Installer script flags, systemd system/user services, macOS launchd, Docker & Nginx |
+| 🛡️ [**Routing & Failover**](docs/en/routing-failover.md) | Candidate resolution, Header Gate streaming logic, session affinity, circuit breaker |
 | 🔄 [**Protocols & API Reference**](docs/en/protocols-api.md) | Inbound endpoints, upstream protocol adapters, fast-path streaming, and Admin APIs |
-| 💻 [**CLI Manual**](docs/en/cli.md) | Reference for every subcommand, plus the live dashboard and automation scripts |
-| 📦 [**Deployment**](docs/en/deployment.md) | Releases / installer / Docker / systemd: run the personal gateway on your own machine or server |
+| 💻 [**CLI Manual**](docs/en/cli.md) | Full CLI subcommand reference, live dashboard, and automation scripts |
 | ⚙️ [**Environment Variables**](docs/en/environment.md) | Full environment variable reference and cross-platform path resolution |
 
 ---
 
-## Building and Testing
+## Building and Contributing
 
-### Prerequisites
-- OS: Linux / macOS / Windows
-- Build tool: [mcpp](https://github.com/mcpp-community/mcpp)
-- Compiler: Clang `llvm@22.1.8` with `-std=c++23` and libc++ (automatically managed by mcpp)
+Built with C++23 and [mcpp](https://github.com/mcpp-community/mcpp):
 
-### Common Commands
 ```bash
-# Run core unit test suite (all 13 test suites pass)
+# Build workspace
+mcpp build --workspace
+
+# Run core test suites (all 13 suites pass)
 mcpp test -p core
-
-# Build individual members
-mcpp build -p core
-mcpp build -p cli
+mcpp test -p cli
 ```
-
----
 
 ## License
 
-This project is licensed under the [Apache-2.0 License](LICENSE).
-Third-party components and the license terms that apply to them are listed in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Licensed under the [Apache-2.0 License](LICENSE).
+Third-party notices and licenses are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -201,7 +201,9 @@ literouter providers add <id> \
 - `--region <r>`：Bedrock 的 AWS 区域（**必填**），或 Vertex 的位置；
 - `--project <p>` / `--credentials-file <path>`：Vertex 的项目 ID 与 service-account JSON 路径（都**必填**）；
 - `--aws-access-key <k>` / `--aws-secret-key <k>` / `--aws-session-token <t>`：Bedrock 的 SigV4 凭据（前两项**必填**），支持 `${VAR}` 引用且只在签名瞬间解析；
-- `--max-concurrent <n>` / `--rpm <n>`：**中转站侧**保护上限，约束的是 literouter 自己往这个站发多少（0 表示不限）。满站会被跳过并尝试下一个候选，而不是判定为故障。
+- `--max-concurrent <n>` / `--rpm <n>`：**中转站侧**保护上限，约束的是 literouter 自己往这个站发多少（0 表示不限）。满站会被跳过并尝试下一个候选，而不是判定为故障；
+- `--price-in <n>` / `--price-out <n>`：该中转站默认的输入 / 输出每百万 token 单价（美元，0 表示不填/不计入）；
+- `--model-price <model=in:out|model=price>`：为特定模型单独设置差异化单价（可重复指定），例如 `--model-price gpt-4o=2.5:10.0 --model-price gpt-4o-mini=0.15:0.60`。未单独配置的模型回退到默认单价。
 
 > 协议专属字段不是"填了也无所谓"：校验器会检查 Vertex 的 `project`/`credentials_file` 与 Bedrock 的 `region`/AWS 凭据，缺失时直接报错——一个签不出名的请求到上游只会变成 401，而那时的报错信息指向错误的方向。
 

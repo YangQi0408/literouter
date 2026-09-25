@@ -186,15 +186,37 @@ All model, health, and `/ui/` management endpoints on the listener then use HTTP
 
 Public CA certificates use the system trust store. For a private CA, set `LITEROUTER_CA_BUNDLE=/absolute/path/ca-bundle.pem` in the CLI environment; `status`, `logs`, and management commands verify the chain and hostname. This bundle also applies to upstream requests, so include system roots when needed. Browsers and other clients must trust that CA independently. When binding `0.0.0.0` or `::`, remote clients connect using the actual service hostname covered by the certificate; CLI management can use a local config with `server.host` set to that hostname. Certificate issuance and renewal are managed externally.
 
-### Cost Estimation
+### Cost Estimation and Per-Model Pricing
 
-`price_in_per_million` / `price_out_per_million` are the per-million-token prices **you** wrote down, in USD. They are multiplied by the tokens **the relay itself reported** to give per-relay and total estimates:
+literouter supports both provider-level default pricing and **per-model pricing overrides** (`model_prices`).
 
-- only when a relay reports usage (a relay that omits `usage`, or a stream that never carries it, contributes nothing — nothing is guessed);
-- only when a price is configured, so the total is a floor on what is known rather than the whole bill;
-- accumulated at the moment of accounting, so correcting a price later does not rewrite history.
+`price_in_per_million` / `price_out_per_million` specify the default per-million-token input and output prices (USD) for a provider. Because different models hosted on the same relay often carry drastically different rates (e.g. `gpt-4o` vs `gpt-4o-mini`, or `claude-3-5-sonnet` vs `claude-3-5-haiku`), you can specify per-model price overrides using the `model_prices` object:
 
-That makes it the right tool for "which relay is dearer, and what has today cost me", not a bill to reconcile against.
+```jsonc
+{
+  "price_in_per_million": 2.5,   // fallback input price
+  "price_out_per_million": 10.0, // fallback output price
+  "model_prices": {
+    "gpt-4o-mini": {
+      "price_in_per_million": 0.15,
+      "price_out_per_million": 0.60
+    }
+  }
+}
+```
+
+Resolution and fallback order:
+1. Matches the upstream physical model name in `model_prices`;
+2. If not matched, matches the client-requested logical model name in `model_prices`;
+3. If still not matched, falls back to the relay's default `price_in_per_million` / `price_out_per_million`.
+
+Accounting rules:
+- Accumulated only when **tokens are reported**: relays omitting `usage` report 0 without guesswork.
+- Accumulated only when **prices are configured**: relays without pricing count as 0, making the total a lower bound of known spend.
+- Costs are accumulated at **request completion time** using current prices; subsequent price edits do not recalculate history.
+- When `routing_policy` is set to `cheapest`, candidate chains are dynamically sorted by the sum of input and output prices for the requested model.
+
+This makes it possible to track fine-grained spend across heterogeneous models and helps answer "which relay is dearer, and what has today cost me".
 
 ### Local Response Cache
 
@@ -248,8 +270,9 @@ Writes match the config file: a temp file in the same directory followed by an a
 | `aws_session_token` | `string` | `""` | `bedrock`: STS session token for temporary credentials; it is signed along with the rest. |
 | `max_concurrent` | `int` | `0` | **Relay-side** in-flight limit; `0` is unlimited. It bounds what literouter itself sends to this relay, not what any caller may ask for. A relay at its limit is skipped like an open breaker and the next candidate is tried (**without** counting a breaker failure); when the whole chain is full the client gets `429` with a `Retry-After`. |
 | `requests_per_minute` | `int` | `0` | **Relay-side** rolling 60-second start limit; `0` is unlimited. Every start is recorded even when no limit is set — otherwise the first minute after an operator turns a limit on would be free, which is exactly when it was wanted. |
-| `price_in_per_million` | `double` | `0` | What this relay charges for **input** tokens, in USD per million. `0` means not written down, and an unpriced relay contributes **nothing** to the cost estimate rather than being counted at zero. |
-| `price_out_per_million` | `double` | `0` | What this relay charges for **output** tokens, in USD per million. |
+| `price_in_per_million` | `double` | `0` | What this relay charges by default for **input** tokens, in USD per million. `0` means not written down, and an unpriced relay contributes **nothing** to the cost estimate rather than being counted at zero. |
+| `price_out_per_million` | `double` | `0` | What this relay charges by default for **output** tokens, in USD per million. |
+| `model_prices` | `object` | `{}` | Per-model pricing overrides for this relay. Models without an override fall back to default prices. Format: `{"model_name": {"price_in_per_million": number, "price_out_per_million": number}}`. |
 | `base_url` | `string` | Required | Root URL of the upstream service (e.g. `https://api.openai.com/v1`). Must be a valid HTTP/HTTPS URL. |
 | `api_key` | `string` | `""` | Upstream key, supporting static strings or environment variable placeholders. |
 | `enabled` | `bool` | `true` | Enable or disable this provider from request dispatching. |

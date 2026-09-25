@@ -186,15 +186,37 @@
 
 公有 CA 证书使用系统信任库。私有 CA 部署可在运行 CLI 的环境中设置 `LITEROUTER_CA_BUNDLE=/absolute/path/ca-bundle.pem`，`status`、`logs` 和管理命令会校验证书链及主机名；该 CA 包也用于上游请求，必要时包含系统根证书。浏览器和其他客户端需独立信任该 CA。绑定 `0.0.0.0` 或 `::` 时，远程客户端使用证书覆盖的实际服务域名；CLI 可使用仅将 `server.host` 改为该域名的本地管理配置。项目不会自动申请或续期证书。
 
-### 成本估算
+### 成本估算与按模型定价
 
-`price_in_per_million` / `price_out_per_million` 是**你自己填写的**每百万 token 单价（美元），literouter 用它们乘以**中转站自己上报的** token 数，得到逐站与总计的估算花费：
+literouter 支持为每个中转站设置全局默认单价，同时也支持**按模型单独配置差异化单价**（`model_prices`）。
 
+`price_in_per_million` / `price_out_per_million` 是该中转站的全局输入/输出每百万 token 单价（美元）。而在同一个中转站下，不同模型的调用成本往往天差地别（例如 `gpt-4o` 与 `gpt-4o-mini`，或 `claude-3-5-sonnet` 与 `claude-3-5-haiku`）。通过 `model_prices` 字典，可以为特定模型覆盖单独的价格：
+
+```jsonc
+{
+  "price_in_per_million": 2.5,   // 默认兜底输入单价
+  "price_out_per_million": 10.0, // 默认兜底输出单价
+  "model_prices": {
+    "gpt-4o-mini": {
+      "price_in_per_million": 0.15,
+      "price_out_per_million": 0.60
+    }
+  }
+}
+```
+
+价格匹配与回退规则：
+1. 先以发往上游的物理模型名匹配 `model_prices`；
+2. 若未匹配，再以客户端请求的逻辑模型名匹配 `model_prices`；
+3. 若仍未匹配，回退使用该中转站的全局 `price_in_per_million` / `price_out_per_million` 默认单价。
+
+计算与计费原则：
 - 只在**有 token 上报**时累计：中转站不回 `usage`（或流里不带）就计 0，不做猜测；
 - 只在**填了价格**时累计：未填价的中转站计 0，因此总计是"已知花费的下限"而非全部支出；
-- 花费在**记账时**就按当时的价格累计，事后改价格不会重算历史。
+- 花费在**记账时**就按当时的价格累计，事后改价格不会重算历史；
+- 候选链排序策略如果配置为 `cheapest`，会自动根据请求模型的实际单价之和对可用链路排序，动态优选最划算链路。
 
-因此它适合回答"哪家更贵、今天花了多少"这类相对问题，而不是当作账单核对。
+因此它既能精细反映每种模型的真实花费，也适合回答"哪家更贵、今天花了多少"这类相对问题。
 
 ### 本地应答缓存
 
@@ -248,8 +270,9 @@
 | `aws_session_token` | `string` | `""` | `bedrock`：临时凭据的 STS 会话令牌，会一并参与签名。 |
 | `max_concurrent` | `int` | `0` | **中转站侧**在途请求上限，`0` 不限制。它约束的是 literouter 自己往这个站发多少，而不是调用方能问多少。达到上限的站会像熔断一样被跳过并尝试下一个候选（**不**计熔断失败），整条链都满时返回 `429` 并带 `Retry-After`。 |
 | `requests_per_minute` | `int` | `0` | **中转站侧**滚动 60 秒启动上限，`0` 不限制。每次启动都会计入窗口，即使当时未设限——否则操作者刚打开限制的那一分钟会白送。 |
-| `price_in_per_million` | `double` | `0` | 该中转站**输入** token 的单价（美元 / 百万 token）。`0` 表示未填写：未填写的中转站**不计入**花费估算，而不是按 0 元计。 |
-| `price_out_per_million` | `double` | `0` | 该中转站**输出** token 的单价（美元 / 百万 token）。 |
+| `price_in_per_million` | `double` | `0` | 该中转站默认**输入** token 的单价（美元 / 百万 token）。`0` 表示未填写：未填写的中转站**不计入**花费估算，而不是按 0 元计。 |
+| `price_out_per_million` | `double` | `0` | 该中转站默认**输出** token 的单价（美元 / 百万 token）。 |
+| `model_prices` | `object` | `{}` | 为特定模型单独配置计费单价，未单独配置的模型回退到默认单价。格式为 `{"模型名": {"price_in_per_million": 数值, "price_out_per_million": 数值}}`。 |
 | `base_url` | `string` | 必填 | 上游服务基础地址，例如 `https://api.openai.com/v1`。必须为合法 HTTP/HTTPS URL。 |
 | `api_key` | `string` | `""` | 上游鉴权密钥，支持静态明文或环境变量占位符。 |
 | `enabled` | `bool` | `true` | 是否启用该中转站。禁用后不会参与任何请求调度。 |

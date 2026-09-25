@@ -76,9 +76,16 @@ void testVisibleWidth() {
 void testPaint() {
     LR_GROUP("paint: colour is off when it is not a TTY");
 
-    // The test binary's stdout is a pipe, so configureColor(false) turns colour
-    // off; every painter must then return its input unchanged, which is what
-    // keeps the width arithmetic above true in a redirected run.
+    lr_test::EnvGuard guard("NO_COLOR");
+#if defined(_WIN32)
+    _putenv("NO_COLOR=1");
+#else
+    setenv("NO_COLOR", "1", 1);
+#endif
+
+    // configureColor(false) with NO_COLOR turns colour off; every painter must
+    // then return its input unchanged, which is what keeps the width arithmetic
+    // above true in a redirected run.
     lrcli::configureColor(false);
     LR_CHECK(!lrcli::colorEnabled());
     LR_CHECK_EQ(lrcli::paint("x", "31"), "x");

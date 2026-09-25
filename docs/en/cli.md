@@ -195,7 +195,9 @@ literouter providers add <id> \
 - `--region <r>`: Bedrock's AWS region (**required**), or Vertex's location;
 - `--project <p>` / `--credentials-file <path>`: Vertex's project id and service-account JSON path (**both required**);
 - `--aws-access-key <k>` / `--aws-secret-key <k>` / `--aws-session-token <t>`: Bedrock's SigV4 credentials (the first two are **required**). `${VAR}` references work and are resolved only at signing time;
-- `--max-concurrent <n>` / `--rpm <n>`: **relay-side** protection, bounding what literouter itself sends to this relay (0 is unlimited). A full relay is skipped for this request and the next candidate tried, rather than being judged as failing.
+- `--max-concurrent <n>` / `--rpm <n>`: **relay-side** protection, bounding what literouter itself sends to this relay (0 is unlimited). A full relay is skipped for this request and the next candidate tried, rather than being judged as failing;
+- `--price-in <n>` / `--price-out <n>`: Default input and output price in USD per million tokens (0 = unpriced / excluded);
+- `--model-price <model=in:out|model=price>`: Per-model price override (repeatable), e.g. `--model-price gpt-4o=2.5:10.0 --model-price gpt-4o-mini=0.15:0.60`. Unspecified models fall back to default prices.
 
 > The protocol-specific fields are not optional decoration: the validator checks Vertex's `project`/`credentials_file` and Bedrock's `region`/AWS credentials and refuses the config without them. A request that cannot be signed reaches the relay as a 401, and that message points the operator in the wrong direction.
 
