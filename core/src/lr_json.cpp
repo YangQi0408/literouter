@@ -145,6 +145,17 @@ ProviderConfig providerFromJson(const json &node) {
     out.requests_per_minute = readInt(node, "requests_per_minute", 0);
     out.price_in_per_million = readDouble(node, "price_in_per_million", 0.0);
     out.price_out_per_million = readDouble(node, "price_out_per_million", 0.0);
+    if (const auto it = node.find("model_prices"); it != node.end() && it->is_object()) {
+        for (auto item_it = it->begin(); item_it != it->end(); ++item_it) {
+            const auto &val = item_it.value();
+            if (val.is_object()) {
+                ModelPricing pricing;
+                pricing.price_in_per_million = readDouble(val, "price_in_per_million", 0.0);
+                pricing.price_out_per_million = readDouble(val, "price_out_per_million", 0.0);
+                out.model_prices[item_it.key()] = pricing;
+            }
+        }
+    }
     out.note = readString(node, "note");
     if (out.name.empty()) {
         out.name = out.id;
@@ -216,6 +227,20 @@ json providerToJson(const ProviderConfig &value) {
     }
     if (value.price_out_per_million > 0.0) {
         node["price_out_per_million"] = value.price_out_per_million;
+    }
+    if (!value.model_prices.empty()) {
+        json mp = json::object();
+        for (const auto &[model, pricing] : value.model_prices) {
+            json item = json::object();
+            if (pricing.price_in_per_million > 0.0) {
+                item["price_in_per_million"] = pricing.price_in_per_million;
+            }
+            if (pricing.price_out_per_million > 0.0) {
+                item["price_out_per_million"] = pricing.price_out_per_million;
+            }
+            mp[model] = std::move(item);
+        }
+        node["model_prices"] = std::move(mp);
     }
     if (!value.note.empty()) {
         node["note"] = value.note;

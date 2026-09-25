@@ -193,6 +193,8 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
      "启用该中转站"},
     {"Maximum entries to fetch (default 50)",
      "最多获取的条目数（默认 50）"},
+    {"Model price override, `model=in:out` or `model=price` (repeatable)",
+     "模型价格覆盖，`model=in:out` 或 `model=price`（可多次指定）"},
     {"Model to ask for (default: the body's own)",
      "请求使用的模型（默认沿用请求体中的）"},
     {"Model to benchmark (required)",

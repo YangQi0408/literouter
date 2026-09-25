@@ -70,6 +70,7 @@ export const PROVIDER_DEFAULTS: ProviderConfig = {
   requests_per_minute: 0,
   price_in_per_million: 0,
   price_out_per_million: 0,
+  model_prices: {},
   note: '',
 }
 
@@ -87,12 +88,24 @@ export const normalizeProvider = (raw: Partial<ProviderConfig> | null | undefine
   return {
     ...merged,
     // A `null` in the file arrives as `null` in the JSON; merge drops it, but a
-    // wrong *type* would still reach the editors, so pin the two shapes they
+    // wrong *type* would still reach the editors, so pin the shapes they
     // iterate over.
     models: Array.isArray(merged.models) ? merged.models : [],
     headers:
       merged.headers && typeof merged.headers === 'object' && !Array.isArray(merged.headers)
         ? merged.headers
+        : {},
+    model_prices:
+      merged.model_prices && typeof merged.model_prices === 'object' && !Array.isArray(merged.model_prices)
+        ? Object.fromEntries(
+            Object.entries(merged.model_prices).map(([model, p]) => [
+              model,
+              {
+                price_in_per_million: Number(p?.price_in_per_million) || 0,
+                price_out_per_million: Number(p?.price_out_per_million) || 0,
+              },
+            ])
+          )
         : {},
   }
 }

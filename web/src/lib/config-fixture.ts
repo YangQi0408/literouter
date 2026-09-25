@@ -65,6 +65,7 @@ export function makeProvider(overrides: Partial<ProviderConfig> = {}): ProviderC
     requests_per_minute: 0,
     price_in_per_million: 0,
     price_out_per_million: 0,
+    model_prices: {},
     note: '',
     ...overrides,
   }

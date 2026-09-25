@@ -137,6 +137,7 @@ AppConfig fullyPopulated() {
     // Priced on purpose: a field only round-trips visibly when it is not zero.
     primary.price_in_per_million = 2.5;
     primary.price_out_per_million = 10.0;
+    primary.model_prices = {{"gpt-4o", {.price_in_per_million = 3.0, .price_out_per_million = 12.0}}};
     primary.priority = 7;
     primary.weight = 3;
     primary.timeout_sec = 45;
@@ -255,6 +256,7 @@ void checkProviderEqual(const ProviderConfig &actual, const ProviderConfig &expe
                  where("price_in_per_million"));
     LR_CHECK_MSG(actual.price_out_per_million == expected.price_out_per_million,
                  where("price_out_per_million"));
+    LR_CHECK_MSG(actual.model_prices == expected.model_prices, where("model_prices"));
     LR_CHECK_MSG(actual.protocol == expected.protocol, where("protocol"));
     LR_CHECK_MSG(actual.api_version == expected.api_version, where("api_version"));
     LR_CHECK_MSG(actual.region == expected.region, where("region"));
@@ -784,6 +786,10 @@ void testValidateProviders() {
         LR_CHECK(findIssue(literouter::validate(config), "providers[0].price_in_per_million",
                            kError) != nullptr);
         config.providers[0].price_in_per_million = 0.0;
+        config.providers[0].model_prices = {{"gpt-4o", {.price_in_per_million = -0.5}}};
+        LR_CHECK(findIssue(literouter::validate(config), "providers[0].model_prices[\"gpt-4o\"]",
+                           kError) != nullptr);
+        config.providers[0].model_prices.clear();
         LR_CHECK(literouter::validate(config).ok());
     }
     {
@@ -1093,6 +1099,7 @@ void testProviderReaderDefaults() {
                              actual.requests_per_minute, fallback.requests_per_minute));
     LR_CHECK(actual.models.empty());
     LR_CHECK(actual.headers.empty());
+    LR_CHECK(actual.model_prices.empty());
     // The one field the reader is allowed to fill in: a nameless relay is shown
     // by its id rather than as a blank row.
     LR_CHECK_EQ(actual.name, "bare");

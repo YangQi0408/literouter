@@ -1,8 +1,9 @@
-import { Braces, Eye, EyeOff, Layers, Network, Settings2, ShieldCheck } from 'lucide-react'
+import { Braces, Eye, EyeOff, Layers, Network, Plus, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 
 import { Field, HeadersField, LinesField, NumberField, SwitchField, TextField } from '@/components/fields'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogContent,
@@ -177,12 +178,123 @@ export function ProviderDialog({
               <Field label={t('managementStreaming')} wide><SwitchField checked={provider.supports_stream} onChange={(supports_stream) => patch({ supports_stream })} label={t('managementSupportsStreaming')} /></Field>
             </div>
             <div className="border-t pt-5">
-              <h3 className="text-sm font-semibold">{t('managementPricing')}</h3>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('hintPrice')}</p>
+              <h3 className="text-sm font-semibold">{t('managementDefaultPricing')}</h3>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('managementDefaultPricingHint')}</p>
               <div className="mt-4 grid gap-5 sm:grid-cols-2">
                 <Field label={t('managementInputPrice')}><NumberField value={provider.price_in_per_million} step={0.1} min={0} onChange={(price_in_per_million) => patch({ price_in_per_million })} /></Field>
                 <Field label={t('managementOutputPrice')}><NumberField value={provider.price_out_per_million} step={0.1} min={0} onChange={(price_out_per_million) => patch({ price_out_per_million })} /></Field>
               </div>
+            </div>
+
+            <div className="border-t pt-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold">{t('managementModelPricing')}</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('managementModelPricingHint')}</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const existing = Object.keys(provider.model_prices ?? {})
+                    const candidate = (provider.models ?? []).find((m) => !existing.includes(m)) ?? ''
+                    const nextKey = candidate || `model-${existing.length + 1}`
+                    patch({
+                      model_prices: {
+                        ...(provider.model_prices ?? {}),
+                        [nextKey]: { price_in_per_million: 0, price_out_per_million: 0 },
+                      },
+                    })
+                  }}
+                >
+                  <Plus className="size-3.5" />
+                  {t('managementAddModelPrice')}
+                </Button>
+              </div>
+
+              {Object.keys(provider.model_prices ?? {}).length === 0 ? (
+                <p className="mt-4 rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">
+                  {t('managementNoModelPrices')}
+                </p>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {Object.entries(provider.model_prices ?? {}).map(([modelName, pricing]) => (
+                    <div key={modelName} className="flex flex-col gap-2 rounded-xl border bg-muted/20 p-3 sm:flex-row sm:items-center sm:gap-3">
+                      <div className="min-w-0 flex-1">
+                        <label className="mb-1 block text-[11px] font-medium text-muted-foreground">{t('managementModelName')}</label>
+                        <Input
+                          value={modelName}
+                          placeholder="gpt-4o"
+                          className="h-9 font-mono text-xs"
+                          onChange={(e) => {
+                            const newName = e.target.value
+                            const nextPrices = { ...(provider.model_prices ?? {}) }
+                            delete nextPrices[modelName]
+                            nextPrices[newName] = pricing
+                            patch({ model_prices: nextPrices })
+                          }}
+                        />
+                      </div>
+                      <div className="w-full sm:w-32">
+                        <label className="mb-1 block text-[11px] font-medium text-muted-foreground">{t('managementInputPrice')}</label>
+                        <Input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          value={pricing.price_in_per_million}
+                          className="h-9 font-mono text-xs"
+                          onChange={(e) => {
+                            const val = Number(e.target.value) || 0
+                            patch({
+                              model_prices: {
+                                ...(provider.model_prices ?? {}),
+                                [modelName]: { ...pricing, price_in_per_million: val },
+                              },
+                            })
+                          }}
+                        />
+                      </div>
+                      <div className="w-full sm:w-32">
+                        <label className="mb-1 block text-[11px] font-medium text-muted-foreground">{t('managementOutputPrice')}</label>
+                        <Input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          value={pricing.price_out_per_million}
+                          className="h-9 font-mono text-xs"
+                          onChange={(e) => {
+                            const val = Number(e.target.value) || 0
+                            patch({
+                              model_prices: {
+                                ...(provider.model_prices ?? {}),
+                                [modelName]: { ...pricing, price_out_per_million: val },
+                              },
+                            })
+                          }}
+                        />
+                      </div>
+                      <div className="flex sm:mb-0.5 sm:self-end">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="text-muted-foreground hover:text-destructive"
+                          aria-label={t('managementRemoveModelPrice')}
+                          title={t('managementRemoveModelPrice')}
+                          onClick={() => {
+                            const nextPrices = { ...(provider.model_prices ?? {}) }
+                            delete nextPrices[modelName]
+                            patch({ model_prices: nextPrices })
+                          }}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 

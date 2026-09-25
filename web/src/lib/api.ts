@@ -148,6 +148,11 @@ export interface ModelInfo {
 /** A provider's secret as it is held in the config file: a literal, a ${VAR}
  *  reference, or empty. The console only ever sees the reference; a literal is
  *  blanked by the server and marked, and an untouched blank means "keep". */
+export interface ModelPricing {
+  price_in_per_million: number
+  price_out_per_million: number
+}
+
 export interface ProviderConfig {
   id: string
   name: string
@@ -185,6 +190,7 @@ export interface ProviderConfig {
   /** Dollars per million tokens. 0 means "not written down". */
   price_in_per_million: number
   price_out_per_million: number
+  model_prices: Record<string, ModelPricing>
   note: string
 }
 

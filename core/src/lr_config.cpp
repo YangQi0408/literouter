@@ -564,6 +564,13 @@ ValidationReport validate(const AppConfig &config) {
             addIssue(report, ValidationIssue::Level::Error, where + ".price_in_per_million",
                      "prices are dollars per million tokens and cannot be negative");
         }
+        for (const auto &[model, pricing] : entry.model_prices) {
+            if (pricing.price_in_per_million < 0.0 || pricing.price_out_per_million < 0.0) {
+                addIssue(report, ValidationIssue::Level::Error,
+                         std::format("{}.model_prices[\"{}\"]", where, model),
+                         "prices are dollars per million tokens and cannot be negative");
+            }
+        }
         if (entry.base_url.empty()) {
             addIssue(report, ValidationIssue::Level::Error, where + ".base_url",
                      std::format("relay `{}` has no base_url", label));

@@ -2133,6 +2133,26 @@ void group25CostAccounting(StubRelay &relay_a, StubRelay &relay_b) {
     LR_CHECK_MSG(std::abs(after.cost_usd - 2 * kPerAttempt) < 1e-12,
                  "the unpriced relay moved the total");
 
+    // Model-specific pricing overrides the relay's default prices when specified.
+    priced.model_prices["custom-model"] = literouter::ModelPricing{
+        .price_in_per_million = 10.0,
+        .price_out_per_million = 50.0,
+    };
+    literouter::RouteConfig custom_route;
+    custom_route.model = "custom-model";
+    custom_route.targets = {literouter::RouteTarget{.provider = "priced", .model = "custom-model"}};
+    config.routes.push_back(custom_route);
+    config.providers[0] = priced;
+    proxy.updateConfig(config);
+    proxy.resetStats();
+
+    LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest("custom-model")).status, 200);
+    constexpr double kCustomAttempt = (11.0 / 1'000'000.0) * 10.0 + (7.0 / 1'000'000.0) * 50.0;
+    const literouter::Snapshot model_snap = proxy.snapshot();
+    LR_CHECK_MSG(std::abs(model_snap.cost_usd - kCustomAttempt) < 1e-12,
+                 std::format("model-specific cost is {:.9f}, expected {:.9f}",
+                             model_snap.cost_usd, kCustomAttempt));
+
     proxy.stop();
 }
 

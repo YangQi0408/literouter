@@ -132,8 +132,8 @@ void runReplay(Context &ctx, const ReplayOptions &opts) {
 
     literouter::ProviderStat usage;
     literouter::ProxyServer::accumulateUsage(result.body, usage);
-    const double cost = literouter::estimateCost(provider->price_in_per_million,
-                                                 provider->price_out_per_million,
+    const auto [p_in, p_out] = provider->pricesFor(upstream_model, model);
+    const double cost = literouter::estimateCost(p_in, p_out,
                                                  usage.tokens_prompt, usage.tokens_completion);
 
     if (opts.json) {

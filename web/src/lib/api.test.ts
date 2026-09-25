@@ -48,6 +48,7 @@ describe('normalizeConfig', () => {
     expect(provider.protocol).toBe('openai')
     expect(provider.price_in_per_million).toBe(0)
     expect(provider.price_out_per_million).toBe(0)
+    expect(provider.model_prices).toEqual({})
     expect(provider.note).toBe('')
     expect(provider.api_version).toBe('')
     expect(provider.region).toBe('')

@@ -99,8 +99,8 @@ BenchRow runBench(const literouter::ProviderConfig &provider, const literouter::
     if (row.runs > 0) {
         row.latencyAvg = total_latency / static_cast<double>(row.runs);
     }
-    row.cost = literouter::estimateCost(provider.price_in_per_million,
-                                        provider.price_out_per_million, row.promptTokens,
+    const auto [p_in, p_out] = provider.pricesFor(opts.model);
+    row.cost = literouter::estimateCost(p_in, p_out, row.promptTokens,
                                         row.completionTokens);
     return row;
 }

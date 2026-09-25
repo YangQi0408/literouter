@@ -213,6 +213,7 @@ void testCliTranslations() {
         "Mark a relay disabled",
         "Mark a relay enabled",
         "Maximum entries to fetch (default 50)",
+        "Model price override, `model=in:out` or `model=price` (repeatable)",
         "Model to ask for (default: the body's own)",
         "Model to benchmark (required)",
         "Most requests literouter sends this relay at once; 0 is unlimited",

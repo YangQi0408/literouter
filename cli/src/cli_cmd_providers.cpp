@@ -30,6 +30,7 @@ struct AddOptions {
     // relay contributes nothing to the cost estimate.
     double priceIn = 0.0;
     double priceOut = 0.0;
+    std::vector<std::string> modelPrices;
     std::vector<std::string> models;
     std::vector<std::string> headers;
     bool enabled = true;
@@ -186,6 +187,26 @@ void runAdd(Context &ctx, const AddOptions &opts) {
     provider.timeout_sec = opts.timeout;
     provider.price_in_per_million = opts.priceIn;
     provider.price_out_per_million = opts.priceOut;
+    for (const auto &entry : opts.modelPrices) {
+        const auto eq = entry.find('=');
+        if (eq != std::string::npos && eq > 0) {
+            const std::string model = entry.substr(0, eq);
+            const std::string prices = entry.substr(eq + 1);
+            const auto colon = prices.find(':');
+            literouter::ModelPricing mp;
+            try {
+                if (colon != std::string::npos) {
+                    mp.price_in_per_million = std::stod(prices.substr(0, colon));
+                    mp.price_out_per_million = std::stod(prices.substr(colon + 1));
+                } else {
+                    double p = std::stod(prices);
+                    mp.price_in_per_million = p;
+                    mp.price_out_per_million = p;
+                }
+                provider.model_prices[model] = mp;
+            } catch (...) {}
+        }
+    }
     provider.models = opts.models;
     provider.chat_path = opts.chatPath;
     provider.embeddings_path = opts.embeddingsPath;
@@ -485,6 +506,8 @@ void registerAdd(CLI::App &parent, Context &ctx) {
                     lrcli::tr("Input price in dollars per million tokens (0 = unknown)"));
     sub->add_option("--price-out", opts->priceOut,
                     lrcli::tr("Output price in dollars per million tokens (0 = unknown)"));
+    sub->add_option("--model-price", opts->modelPrices,
+                    lrcli::tr("Model price override, `model=in:out` or `model=price` (repeatable)"));
     sub->add_option("--model", opts->models,
                     lrcli::tr("A model id this relay advertises (repeatable)"));
     sub->add_option("--header", opts->headers,

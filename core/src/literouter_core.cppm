@@ -42,6 +42,14 @@ inline constexpr int kConfigSchema = 3;
 // API key out of a file that might get synced or screenshotted.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Price per million tokens for a specific model, in US dollars.
+struct ModelPricing {
+    double price_in_per_million = 0.0;
+    double price_out_per_million = 0.0;
+
+    auto operator<=>(const ModelPricing &) const = default;
+};
+
 struct ProviderConfig {
     // Stable slug used by routes, logs and the management API. Unique.
     std::string id;
@@ -111,8 +119,29 @@ struct ProviderConfig {
     // reports usage costs nothing here.
     double price_in_per_million = 0.0;
     double price_out_per_million = 0.0;
+    // Model-specific pricing overrides. When a request matches a model here
+    // (checked by upstream model name, then by client model name), these prices
+    // take precedence over the relay's default prices above.
+    std::map<std::string, ModelPricing> model_prices;
     // Free-form note shown in the console.
     std::string note;
+
+    // Resolves the effective {input, output} prices in $/1M tokens for the given
+    // model, falling back to the provider's default prices if no override is set.
+    std::pair<double, double> pricesFor(std::string_view upstream_model,
+                                        std::string_view client_model = "") const {
+        if (!upstream_model.empty()) {
+            if (auto it = model_prices.find(std::string(upstream_model)); it != model_prices.end()) {
+                return {it->second.price_in_per_million, it->second.price_out_per_million};
+            }
+        }
+        if (!client_model.empty() && client_model != upstream_model) {
+            if (auto it = model_prices.find(std::string(client_model)); it != model_prices.end()) {
+                return {it->second.price_in_per_million, it->second.price_out_per_million};
+            }
+        }
+        return {price_in_per_million, price_out_per_million};
+    }
 };
 
 // One hop of a failover chain: "ask this relay for this upstream model id".

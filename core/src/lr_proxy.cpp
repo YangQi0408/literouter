@@ -2160,12 +2160,14 @@ struct ProxyServer::Impl {
             const auto metric_of = [&](const Candidate &candidate) -> double {
                 if (!fastest) {
                     const ProviderConfig *provider = ctx.config.provider(candidate.provider);
-                    if (provider == nullptr ||
-                        (provider->price_in_per_million <= 0.0 &&
-                         provider->price_out_per_million <= 0.0)) {
+                    if (provider == nullptr) {
+                        return -1.0;
+                    }
+                    const auto [p_in, p_out] = provider->pricesFor(candidate.model, ctx.model);
+                    if (p_in <= 0.0 && p_out <= 0.0) {
                         return -1.0; // unpriced: unknown, so it sorts last
                     }
-                    return provider->price_in_per_million + provider->price_out_per_million;
+                    return p_in + p_out;
                 }
                 // p95 rather than the average: a relay that is usually fast and
                 // occasionally terrible is not the one to try first. 0 means it
@@ -2367,9 +2369,9 @@ struct ProxyServer::Impl {
 
             ProviderStat usage;
             ProxyServer::accumulateUsage(result.body, usage);
+            const auto [p_in, p_out] = provider->pricesFor(upstream_model, ctx.model);
             const double attempt_cost =
-                estimateCost(provider->price_in_per_million, provider->price_out_per_million,
-                             usage.tokens_prompt, usage.tokens_completion);
+                estimateCost(p_in, p_out, usage.tokens_prompt, usage.tokens_completion);
             recordAttempt(provider->id,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
                           result.latency_ms, result.body.size(), usage.tokens_prompt,
@@ -2810,8 +2812,8 @@ struct ProxyServer::Impl {
             }
             ProviderStat error_usage;
             ProxyServer::accumulateUsage(body, error_usage);
-            const double error_cost = estimateCost(provider.price_in_per_million,
-                provider.price_out_per_million, error_usage.tokens_prompt, error_usage.tokens_completion);
+            const auto [p_in, p_out] = provider.pricesFor(upstream_model, ctx.model);
+            const double error_cost = estimateCost(p_in, p_out, error_usage.tokens_prompt, error_usage.tokens_completion);
             recordAttempt(provider.id,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, body.size(),
@@ -3002,8 +3004,10 @@ struct ProxyServer::Impl {
                             const auto bytes = bridge->bytes_out.load();
                             const auto tokens = usage_observer->usage();
                             const auto measured = phases(latency);
-                            const double cost = estimateCost(provider.price_in_per_million,
-                                                             provider.price_out_per_million,
+                            const auto [stream_p_in, stream_p_out] =
+                                provider.pricesFor(upstream_model, request_ctx.model);
+                            const double cost = estimateCost(stream_p_in,
+                                                             stream_p_out,
                                                              tokens.prompt, tokens.completion);
                             recordAttempt(provider_id, AttemptOutcome::Failure, latency, bytes,
                                           tokens.prompt, tokens.completion, payload_size, cost);
@@ -3055,9 +3059,11 @@ struct ProxyServer::Impl {
                         const std::pair<double, double> measured = phases(latency);
                         const double ttfb = measured.first;
                         const double streamed_for = measured.second;
+                        const auto [stream_p_in, stream_p_out] =
+                            provider.pricesFor(upstream_model, request_ctx.model);
                         const double attempt_cost =
-                            estimateCost(provider.price_in_per_million,
-                                         provider.price_out_per_million, tokens.prompt,
+                            estimateCost(stream_p_in,
+                                         stream_p_out, tokens.prompt,
                                          tokens.completion);
                         recordAttempt(provider_id,
                                       stream_ok ? AttemptOutcome::Success
