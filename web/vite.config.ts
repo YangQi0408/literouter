@@ -21,6 +21,8 @@ export default defineConfig({
     cssCodeSplit: false,
     modulePreload: false,
     sourcemap: false,
+    // The gateway embeds one JS asset; retain a size budget for that entry.
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         entryFileNames: 'app.js',

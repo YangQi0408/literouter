@@ -11,45 +11,48 @@ export interface MetricProps {
   ratio?: number
   long?: boolean
   danger?: boolean
+  tone?: 'primary' | 'green' | 'amber' | 'blue'
 }
 
-export function Metric({ icon: Icon, label, value, sub, ratio, long, danger }: MetricProps) {
+const tones = {
+  primary: 'bg-primary/10 text-primary',
+  green: 'bg-ok/10 text-ok',
+  amber: 'bg-warn/10 text-warn',
+  blue: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
+}
+
+export function Metric({ icon: Icon, label, value, sub, ratio, long, danger, tone = 'primary' }: MetricProps) {
   return (
-    <div className="group relative overflow-hidden rounded-xl border bg-card p-3.5 shadow-xs transition-all hover:-translate-y-px hover:border-border/80">
-      <span
-        className={cn(
-          'absolute inset-x-0 top-0 h-px bg-gradient-to-r to-transparent opacity-60',
-          danger ? 'from-destructive' : 'from-primary',
-        )}
-      />
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+    <div className="relative flex min-w-0 flex-col rounded-2xl border border-border/80 bg-card p-4 shadow-xs sm:p-5">
+      <div className="flex items-start justify-between gap-2">
+        <span className="pt-1 text-xs font-medium text-muted-foreground sm:text-sm">{label}</span>
         <span
           className={cn(
-            'flex size-[22px] items-center justify-center rounded-md',
-            danger ? 'bg-destructive/15 text-destructive' : 'bg-primary/15 text-primary',
+            'flex size-8 shrink-0 items-center justify-center rounded-xl sm:size-9',
+            danger ? 'bg-destructive/10 text-destructive' : tones[tone],
           )}
         >
-          <Icon className="size-3.5" />
+          <Icon className="size-4" aria-hidden="true" />
         </span>
-        <span className="truncate">{label}</span>
       </div>
       <div
         className={cn(
-          'mt-2 font-mono tracking-tight text-foreground',
-          long ? 'text-base break-all' : 'text-2xl tnum',
+          'mt-2 break-words font-semibold tracking-tight text-foreground',
+          long ? 'break-all text-base' : 'text-2xl tnum sm:text-[32px] sm:leading-10',
+          danger && 'text-destructive',
         )}
       >
         {value}
       </div>
+      {sub ? <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground sm:text-xs">{sub}</div> : null}
       {ratio !== undefined ? (
-        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted">
+        <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-ok to-primary transition-[width] duration-500"
-            style={{ width: `${Math.round(ratio * 100)}%` }}
+            className="h-full rounded-full bg-ok transition-[width] duration-500 motion-reduce:transition-none"
+            style={{ width: `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%` }}
           />
         </div>
       ) : null}
-      {sub ? <div className="mt-1.5 truncate font-mono text-[11px] text-muted-foreground">{sub}</div> : null}
     </div>
   )
 }

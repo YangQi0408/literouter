@@ -1,61 +1,60 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
-/* Dark by default — this is an admin console, and it is read at night more
-   often than in the morning. `.light` on <html> switches the palette. */
 @custom-variant dark (&:is(.dark *));
 
+/* All surfaces use semantic colors so the entire console follows the theme. */
 :root {
-  --radius: 0.8rem;
-
-  /* dark palette */
-  --background: #0a0c11;
-  --foreground: #e9edf5;
-  --card: #121620;
-  --card-foreground: #e9edf5;
-  --popover: #141924;
-  --popover-foreground: #e9edf5;
-  --primary: #5b8cff;
+  --radius: 0.875rem;
+  --background: #f7f8fa;
+  --foreground: #20232d;
+  --card: #ffffff;
+  --card-foreground: #20232d;
+  --popover: #ffffff;
+  --popover-foreground: #20232d;
+  --primary: #7060d4;
   --primary-foreground: #ffffff;
-  --secondary: #1a2030;
-  --secondary-foreground: #e9edf5;
-  --muted: #171c27;
-  --muted-foreground: #98a2b8;
-  --accent: #1e2431;
-  --accent-foreground: #e9edf5;
-  --destructive: #ff5d6c;
+  --secondary: #f0edf9;
+  --secondary-foreground: #6655bb;
+  --muted: #f1f3f6;
+  --muted-foreground: #666d7b;
+  --accent: #f0edf9;
+  --accent-foreground: #5c49b8;
+  --destructive: #cf4a60;
   --destructive-foreground: #ffffff;
-  --border: #232a38;
-  --input: #232a38;
-  --ring: #5b8cff;
-  --sidebar: #0d1017;
-  --ok: #3ddc97;
-  --warn: #f0b429;
+  --border: #e7e9ef;
+  --input: #dfe3eb;
+  --ring: #8c7be8;
+  --sidebar: #20212c;
+  --sidebar-foreground: #b5b6c5;
+  --ok: #207963;
+  --warn: #a16b16;
 }
 
-.light {
-  --background: #f4f6fb;
-  --foreground: #161c2b;
-  --card: #ffffff;
-  --card-foreground: #161c2b;
-  --popover: #ffffff;
-  --popover-foreground: #161c2b;
-  --primary: #2f6bff;
-  --primary-foreground: #ffffff;
-  --secondary: #eef2fa;
-  --secondary-foreground: #161c2b;
-  --muted: #f1f4fb;
-  --muted-foreground: #5b667e;
-  --accent: #eaeefa;
-  --accent-foreground: #161c2b;
-  --destructive: #d92b3f;
-  --destructive-foreground: #ffffff;
-  --border: #e2e8f4;
-  --input: #dde4f1;
-  --ring: #2f6bff;
-  --sidebar: #ffffff;
-  --ok: #0f9d63;
-  --warn: #b6790a;
+.dark {
+  --background: #14151c;
+  --foreground: #ebeaf1;
+  --card: #1d1e28;
+  --card-foreground: #ebeaf1;
+  --popover: #242530;
+  --popover-foreground: #ebeaf1;
+  --primary: #a89af2;
+  --primary-foreground: #1d153e;
+  --secondary: #302b44;
+  --secondary-foreground: #c5baf8;
+  --muted: #272934;
+  --muted-foreground: #a2a2b4;
+  --accent: #302b44;
+  --accent-foreground: #d3c9ff;
+  --destructive: #f18091;
+  --destructive-foreground: #201419;
+  --border: #30313e;
+  --input: #3b3c4a;
+  --ring: #a89af2;
+  --sidebar: #191a23;
+  --sidebar-foreground: #b5b6c5;
+  --ok: #69c4a2;
+  --warn: #e0b66e;
 }
 
 @theme inline {
@@ -79,81 +78,66 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans:
-    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans SC', 'PingFang SC',
-    'Microsoft YaHei', sans-serif;
-  --font-mono:
-    ui-monospace, SFMono-Regular, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono',
-    monospace;
+  --font-sans: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
 }
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  html,
-  body,
-  #root {
-    height: 100%;
-  }
+  * { @apply border-border outline-ring/50; }
+  html { min-width: 320px; scroll-behavior: smooth; scroll-padding-top: 6rem; }
+  html, body, #root { min-height: 100%; }
   body {
     @apply bg-background text-foreground;
+    margin: 0;
     font-synthesis-weight: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
   }
-  ::selection {
-    background: color-mix(in srgb, var(--primary) 28%, transparent);
+  button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+  button:not(:disabled), [role='button']:not([aria-disabled='true']) { cursor: pointer; }
+  button:focus-visible, a:focus-visible, [tabindex='0']:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 3px;
   }
-  /* Slim scrollbars; a console is mostly scroll containers. */
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
-  }
-  *::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-  *::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border: 3px solid transparent;
-    border-radius: 10px;
-    background-clip: content-box;
-  }
-  *::-webkit-scrollbar-thumb:hover {
-    background: var(--muted-foreground);
-    background-clip: content-box;
-  }
-}
+  ::selection { background: color-mix(in srgb, var(--primary) 22%, transparent); }
+  * { scrollbar-width: thin; scrollbar-color: var(--input) transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: var(--input); border: 2px solid transparent; border-radius: 8px; background-clip: content-box; }
 
-  /* Tables are plain markup in this app: one sticky header, one hover state,
-     styled once here instead of repeated in every view. */
-  table {
-    @apply w-full border-collapse text-sm;
-  }
+  /* One table treatment throughout the console; mobile views use cards. */
+  table { @apply w-full border-collapse text-sm; }
   thead th {
-    @apply sticky top-0 z-[1] border-b bg-muted/70 px-3.5 py-2 text-left text-xs font-medium text-muted-foreground backdrop-blur;
+    @apply sticky top-0 z-[1] border-b bg-muted px-5 py-3 text-left text-[11px] font-medium tracking-wide text-muted-foreground;
     white-space: nowrap;
   }
-  tbody td {
-    @apply border-b border-border/60 px-3.5 py-2.5 align-middle;
-  }
-  tbody tr:last-child td {
-    @apply border-b-0;
-  }
-
-@utility tnum {
-  font-variant-numeric: tabular-nums;
+  tbody td { @apply border-b border-border/65 px-5 py-4 align-middle; }
+  tbody tr:last-child td { @apply border-b-0; }
 }
 
-/* The sticky save bar and dialogs sit above the shell. */
+@utility tnum { font-variant-numeric: tabular-nums; }
 @utility glass {
-  background: color-mix(in srgb, var(--card) 92%, transparent);
-  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  backdrop-filter: blur(16px);
+}
+@utility page-enter { animation: page-enter 240ms ease-out both; }
+@keyframes page-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Fixed navigation and the draft bar respect phone home indicators. */
+.mobile-nav { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
+.draft-bar { bottom: calc(5.25rem + env(safe-area-inset-bottom)); }
+@media (min-width: 1024px) { .draft-bar { bottom: 1.5rem; left: calc(50% + 116px); transform: translateX(-50%); width: min(860px, calc(100vw - 296px)); } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+
+/* Keep native inputs readable and prevent focus zoom on mobile Safari. */
+@media (max-width: 640px) {
+  [data-slot="input"], [data-slot="textarea"] { font-size: 16px; }
 }

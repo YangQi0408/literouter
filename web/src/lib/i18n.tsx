@@ -1,10 +1,16 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+
+import { shellEn, shellZh } from './copy-shell'
+import { overviewEn, overviewZh } from './copy-overview'
+import { managementEn, managementZh } from './copy-management'
+import { activityEn, activityZh } from './copy-activity'
 
 export type Lang = 'en' | 'zh'
 
 type Vars = Record<string, string | number>
 
 const en: Record<string, string> = {
+  ...shellEn, ...overviewEn, ...managementEn, ...activityEn,
   saveFailed: 'Save failed: {detail}',
   showKey: "Show / hide key",
   generateKey: "Generate key",
@@ -186,6 +192,7 @@ const en: Record<string, string> = {
 }
 
 const zh: Record<string, string> = {
+  ...shellZh, ...overviewZh, ...managementZh, ...activityZh,
   saveFailed: '保存失败：{detail}',
   showKey: "显示 / 隐藏密钥",
   generateKey: "生成密钥",
@@ -377,6 +384,11 @@ function detectLang(): Lang {
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(detectLang)
+
+  useEffect(() => {
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en'
+    document.title = `literouter · ${dictionaries[lang].gatewayLabel}`
+  }, [lang])
 
   const setLang = useCallback((next: Lang) => {
     setLangState(next)

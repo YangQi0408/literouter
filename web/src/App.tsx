@@ -26,7 +26,7 @@ export function App() {
   return (
     <>
       <AppShell tab={tab} onTab={switchTab}>
-        {tab === 'overview' ? <Overview /> : null}
+        {tab === 'overview' ? <Overview onNavigate={switchTab} /> : null}
         {tab === 'providers' ? <Providers /> : null}
         {tab === 'routes' ? <Routes /> : null}
         {tab === 'logs' ? <Logs /> : null}

@@ -1,10 +1,12 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useId, useRef, useState, type ReactNode } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
+
+const FieldContext = createContext<{ id: string; description?: string } | null>(null)
 
 /** One labelled control in a config form. Labels are the config key itself —
  *  the console edits a file, so a field should name the field it writes. */
@@ -19,12 +21,16 @@ export function Field({
   wide?: boolean
   children: ReactNode
 }) {
+  const id = useId()
+  const description = hint ? `${id}-hint` : undefined
   return (
-    <div className={cn('flex min-w-0 flex-col gap-1.5', wide && 'sm:col-span-2')}>
-      <Label className="font-mono text-xs text-muted-foreground">{label}</Label>
-      {children}
-      {hint ? <p className="text-[11px] leading-snug text-muted-foreground/80">{hint}</p> : null}
-    </div>
+    <FieldContext.Provider value={{ id, description }}>
+      <div className={cn('flex min-w-0 flex-col gap-2', wide && 'sm:col-span-2')}>
+        <Label htmlFor={id} className="text-sm font-medium leading-5">{label}</Label>
+        {children}
+        {hint ? <p id={description} className="text-xs leading-relaxed text-muted-foreground">{hint}</p> : null}
+      </div>
+    </FieldContext.Provider>
   )
 }
 
@@ -43,15 +49,18 @@ export function TextField({
   type?: string
   ariaLabel?: string
 }) {
+  const field = useContext(FieldContext)
   return (
     <Input
+      id={field?.id}
       type={type}
       aria-label={ariaLabel}
-      value={value}
+      aria-describedby={field?.description}
+      value={value ?? ''}
       placeholder={placeholder}
       spellCheck={false}
       onChange={(event) => onChange(event.target.value)}
-      className={cn('h-9', mono && 'font-mono text-xs')}
+      className={cn('h-10', mono && 'font-mono text-sm')}
     />
   )
 }
@@ -69,8 +78,11 @@ export function NumberField({
   max?: number
   step?: number
 }) {
+  const field = useContext(FieldContext)
   return (
     <Input
+      id={field?.id}
+      aria-describedby={field?.description}
       type="number"
       value={Number.isFinite(value) ? value : ''}
       min={min}
@@ -80,7 +92,7 @@ export function NumberField({
         const parsed = Number(event.target.value)
         onChange(Number.isFinite(parsed) ? parsed : 0)
       }}
-      className="h-9 font-mono text-xs"
+      className="h-10 font-mono text-sm"
     />
   )
 }
@@ -126,14 +138,17 @@ export function LinesField({
   rows?: number
   ariaLabel?: string
 }) {
+  const field = useContext(FieldContext)
   // `?? []`: a missing key must not be able to take the page down, whatever the
   // caller hands over.
   const [text, setText] = useRawText((value ?? []).join('\n'), (raw) => parseLines(raw).join('\n'))
 
   return (
     <Textarea
+      id={field?.id}
       rows={rows}
       aria-label={ariaLabel}
+      aria-describedby={field?.description}
       spellCheck={false}
       placeholder={placeholder}
       value={text}
@@ -141,7 +156,7 @@ export function LinesField({
         setText(event.target.value)
         onChange(parseLines(event.target.value))
       }}
-      className="min-h-0 font-mono text-xs"
+      className="min-h-0 resize-y font-mono text-sm leading-relaxed"
     />
   )
 }
@@ -169,6 +184,7 @@ export function HeadersField({
   value: Record<string, string>
   onChange: (value: Record<string, string>) => void
 }) {
+  const field = useContext(FieldContext)
   // Same reason as LinesField: a header is only parseable once its colon is
   // typed, and echoing the parse back before that dropped the name character
   // by character as it was being written.
@@ -178,6 +194,8 @@ export function HeadersField({
 
   return (
     <Textarea
+      id={field?.id}
+      aria-describedby={field?.description}
       rows={3}
       spellCheck={false}
       placeholder="X-Title: literouter"
@@ -186,7 +204,7 @@ export function HeadersField({
         setText(event.target.value)
         onChange(parseHeaders(event.target.value))
       }}
-      className="min-h-0 font-mono text-xs"
+      className="min-h-0 resize-y font-mono text-sm leading-relaxed"
     />
   )
 }
@@ -202,10 +220,11 @@ export function SwitchField({
   label: string
   ariaLabel?: string
 }) {
+  const field = useContext(FieldContext)
   return (
-    <div className="flex h-9 items-center gap-3">
-      <Switch aria-label={ariaLabel ?? label} checked={checked} onCheckedChange={onChange} />
-      <span className="text-xs text-muted-foreground">{label}</span>
+    <div className="flex min-h-10 items-center gap-3">
+      <Switch id={field?.id} aria-describedby={field?.description} aria-label={ariaLabel ?? label} checked={checked} onCheckedChange={onChange} />
+      <span className="text-sm text-muted-foreground">{label}</span>
     </div>
   )
 }
