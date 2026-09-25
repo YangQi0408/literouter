@@ -42,6 +42,12 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 
 # 同时安装并注册为 systemd 系统自启服务（Linux）：
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --service -y
+
+# macOS 登录后自动驻留（Apple Silicon）：
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-macos.sh | bash -s -- --service
+
+# Windows 登录后自动驻留（PowerShell）：
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-windows.ps1))) -Service
 ```
 
 ### 方式 2：预编译二进制下载（Linux / macOS / Windows）

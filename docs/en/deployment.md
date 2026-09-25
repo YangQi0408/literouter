@@ -31,7 +31,7 @@ This document covers installation methods, background service setup (systemd / l
 
 ### Option A: One-Line Installer Script (Recommended for Linux / macOS)
 
-The repository provides an automated installation script that automatically detects your OS architecture (Linux x86_64, macOS Apple Silicon / Intel), downloads the latest release from GitHub Releases, and verifies its SHA-256 checksum:
+The repository provides an automated installation script for Linux x86_64 and macOS Apple Silicon. It detects the platform, downloads the latest release from GitHub Releases, and verifies its SHA-256 checksum:
 
 ```bash
 # Default install to /usr/local/bin/literouter (requires sudo)
@@ -40,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 # Non-root installation to ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | bash -s -- --prefix ~/.local
 
-# Install and register as a systemd service automatically (Linux):
+# Install and register as a systemd service automatically (Linux only):
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --service -y
 ```
 
@@ -179,8 +179,33 @@ If running on a desktop or in an environment without `sudo` privileges:
 
 On macOS, configure a `launchd` user agent for automatic background startup on login.
 
-1. Ensure `literouter` is installed in `/usr/local/bin/` or `~/.local/bin/`.
-2. Create `~/Library/LaunchAgents/com.literouter.gateway.plist`:
+The repository includes an installer that installs the binary, generates the LaunchAgent, starts it immediately, and enables it for future logins:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-macos.sh \
+  | bash -s -- --service
+```
+
+For a local binary:
+
+```bash
+bash scripts/install-macos.sh --from ./literouter --service
+```
+
+Uninstall the background service and binary while keeping configuration and state:
+
+```bash
+bash scripts/install-macos.sh --uninstall
+```
+
+Check it with:
+
+```bash
+launchctl print "gui/$(id -u)/com.literouter.gateway"
+curl http://127.0.0.1:8787/health
+```
+
+The generated `~/Library/LaunchAgents/com.literouter.gateway.plist` is equivalent to:
    ```xml
    <?xml version="1.0" encoding="UTF-8"?>
    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -206,7 +231,7 @@ On macOS, configure a `launchd` user agent for automatic background startup on l
    </dict>
    </plist>
    ```
-3. Load the service:
+Load the service manually with:
    ```bash
    launchctl load ~/Library/LaunchAgents/com.literouter.gateway.plist
    ```
@@ -216,6 +241,29 @@ On macOS, configure a `launchd` user agent for automatic background startup on l
 ### Setup 4: Windows Task Scheduler or Service
 
 On Windows:
+
+The repository includes a PowerShell installer that registers a per-user Task Scheduler entry, starts it immediately, and runs it at every login:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-windows.ps1))) -Service
+```
+
+For a checked-out repository or local binary:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -Service
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 `
+  -From 'C:\Program Files\literouter\literouter.exe' -Service
+```
+
+Check or remove it with:
+
+```powershell
+Get-ScheduledTask -TaskName literouter
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -Uninstall
+```
+
 - **Option 1: Windows Task Scheduler**:
   Create a new task triggered "At log on", action "Start a program", pointing to `literouter.exe` with arguments `serve`.
 - **Option 2: NSSM (Non-Sucking Service Manager)**:
@@ -360,4 +408,3 @@ ai.example.com {
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --uninstall
 ```
 This safely disables and removes the systemd service and binary while preserving `/etc/literouter` and `/var/lib/literouter` against accidental data loss.
-

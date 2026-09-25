@@ -184,6 +184,7 @@ jobs:
             binary="$(find cli/target -type f -name literouter.exe | head -n 1)"
             cp "$binary" "$staging/literouter.exe"
             cp "$binary" "dist-release/$package.exe"
+            cp "$binary" "dist-release/literouter-windows-x86_64.exe"
           else
             binary="$(find cli/target -type f -name literouter | head -n 1)"
             if [ "$RUNNER_OS" = "Linux" ]; then
@@ -197,6 +198,7 @@ jobs:
           fi
 
           cp README.md README_en.md LICENSE "$staging/"
+          cp scripts/install.sh scripts/install-macos.sh scripts/install-windows.ps1 "$staging/"
           cp NOTICE THIRD_PARTY_NOTICES.md "$staging/" 2>/dev/null || true
           if [ "$ARCHIVE_TYPE" = "zip" ]; then
             (cd staging && 7z a -tzip "../dist-release/$package.zip" "$package")

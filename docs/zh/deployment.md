@@ -31,7 +31,7 @@
 
 ### 方式 A：一键安装脚本（推荐，Linux / macOS）
 
-官方提供跨平台自动化安装脚本，自动识别系统架构（Linux x86_64、macOS Apple Silicon / Intel），从 GitHub Releases 下载最新稳定版本并校验 SHA-256：
+官方提供自动化安装脚本，支持 Linux x86_64 与 macOS Apple Silicon，从 GitHub Releases 下载最新稳定版本并校验 SHA-256：
 
 ```bash
 # 默认安装至 /usr/local/bin/literouter（需 sudo 权限）
@@ -40,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 # 若无 root 权限，可安装到当前用户的 ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | bash -s -- --prefix ~/.local
 
-# 同时安装并注册为 systemd 系统自启服务（Linux）：
+# 同时安装并注册为 systemd 系统自启服务（仅 Linux）：
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --service -y
 ```
 
@@ -190,8 +190,33 @@ mcpp build --workspace --release
 
 在 macOS 上，推荐使用 `launchd` 用户代理配置登录自动拉起。
 
-1. 确认已将 `literouter` 放入 `/usr/local/bin/` 或 `~/.local/bin/`。
-2. 创建 `~/Library/LaunchAgents/com.literouter.gateway.plist`：
+仓库提供了自动安装脚本。它会安装二进制、生成 LaunchAgent、立即启动，并设置为登录时自动启动：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-macos.sh \
+  | bash -s -- --service
+```
+
+本地二进制安装：
+
+```bash
+bash scripts/install-macos.sh --from ./literouter --service
+```
+
+卸载后台服务和二进制（配置与状态会保留）：
+
+```bash
+bash scripts/install-macos.sh --uninstall
+```
+
+检查服务：
+
+```bash
+launchctl print "gui/$(id -u)/com.literouter.gateway"
+curl http://127.0.0.1:8787/health
+```
+
+脚本也可以手动生成同样的 `~/Library/LaunchAgents/com.literouter.gateway.plist`，内容如下：
    ```xml
    <?xml version="1.0" encoding="UTF-8"?>
    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -217,7 +242,7 @@ mcpp build --workspace --release
    </dict>
    </plist>
    ```
-3. 注册并加载：
+手动注册并加载：
    ```bash
    launchctl load ~/Library/LaunchAgents/com.literouter.gateway.plist
    ```
@@ -231,6 +256,33 @@ mcpp build --workspace --release
 ### 方案 4：Windows 计划任务或后台运行
 
 在 Windows 上，有多种简单可靠的开机后台驻留方式：
+
+仓库提供 PowerShell 安装脚本，使用当前用户的任务计划程序注册登录自启，并立即启动：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-windows.ps1))) -Service
+```
+
+更稳妥的做法是先下载脚本，再执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -Service
+```
+
+从本地二进制安装并注册：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 `
+  -From 'C:\Program Files\literouter\literouter.exe' -Service
+```
+
+检查和卸载：
+
+```powershell
+Get-ScheduledTask -TaskName literouter
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -Uninstall
+```
 
 - **方式 1：Windows 任务计划程序 (Task Scheduler)**：
   新建任务，触发器设置为“登录时”，操作设置为“启动程序”，选择 `literouter.exe`，参数填 `serve`。
@@ -377,4 +429,3 @@ ai.example.com {
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --uninstall
 ```
 该命令会自动停止并移除 systemd 服务单元以及 `/usr/local/bin/literouter` 二进制文件，保留您的配置文件（`/etc/literouter`）与状态记录（`/var/lib/literouter`）以防误删。若需彻底删除配置与数据，可手动清理上述两个目录。
-

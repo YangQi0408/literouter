@@ -42,6 +42,12 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 
 # Install and enable as a systemd background service (Linux):
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --service -y
+
+# Keep it running after login on macOS (Apple Silicon):
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-macos.sh | bash -s -- --service
+
+# Keep it running after login on Windows (PowerShell):
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-windows.ps1))) -Service
 ```
 
 ### Option 2: Prebuilt Binary Releases (Linux / macOS / Windows)

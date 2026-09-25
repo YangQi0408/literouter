@@ -13,7 +13,7 @@
 # survive restarts.
 [Unit]
 Description=literouter — local AI relay aggregator
-Documentation=https://github.com/mcpp-community/literouter
+Documentation=https://github.com/YangQi0408/literouter
 After=network-online.target
 Wants=network-online.target
 

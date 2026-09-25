@@ -11,7 +11,7 @@ ASSUME_YES=0
 
 usage() {
     cat <<'EOF'
-Install a literouter release binary on Linux.
+Install a literouter release binary on Linux x86_64 or macOS arm64.
 
 Options:
   --prefix DIR     Install into DIR (default /usr/local)
@@ -48,12 +48,27 @@ TARGET="${BIN_DIR}/literouter"
 UNIT_PATH="/etc/systemd/system/literouter.service"
 STATE_DIR="/var/lib/literouter"
 CONFIG_DIR="/etc/literouter"
+OS="$(uname -s)"
+VERSION_REF="main"
+if [ "$VERSION" != "latest" ]; then
+    VERSION_REF="v${VERSION#v}"
+fi
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
 
 if [ "$UNINSTALL" -eq 1 ]; then
     need_root "--uninstall"
-    systemctl disable --now literouter 2>/dev/null || true
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now literouter 2>/dev/null || true
+        systemctl daemon-reload 2>/dev/null || true
+    fi
     rm -f "$UNIT_PATH" "$TARGET"
-    systemctl daemon-reload 2>/dev/null || true
     note "binary and unit removed; configuration and state were kept"
     exit 0
 fi
@@ -65,23 +80,25 @@ trap cleanup EXIT
 SOURCE_BINARY="$FROM"
 if [ -z "$SOURCE_BINARY" ]; then
     command -v curl >/dev/null 2>&1 || die "curl is required to download a release"
-    case "$(uname -m)" in
-        x86_64|amd64) PLATFORM="linux-x86_64" ;;
-        aarch64|arm64) die "no linux-arm64 release is published; build from source with mcpp" ;;
-        *) die "unsupported architecture: $(uname -m)" ;;
+    case "${OS}:$(uname -m)" in
+        Linux:x86_64|Linux:amd64) PLATFORM="linux-x86_64" ;;
+        Linux:aarch64|Linux:arm64) die "no linux-arm64 release is published; build from source with mcpp" ;;
+        Darwin:arm64|Darwin:aarch64) PLATFORM="macos-arm64" ;;
+        Darwin:x86_64|Darwin:amd64) die "no macOS x86_64 release is published; use Rosetta on Apple Silicon or build from source" ;;
+        *) die "unsupported platform: ${OS} $(uname -m)" ;;
     esac
     if [ "$VERSION" = "latest" ]; then
         URL="https://github.com/${REPO}/releases/latest/download/literouter-${PLATFORM}"
     else
         VERSION="${VERSION#v}"
-        URL="https://github.com/${REPO}/releases/download/v${VERSION}/literouter-v${VERSION}-${PLATFORM}"
+        URL="https://github.com/${REPO}/releases/download/${VERSION_REF}/literouter-${VERSION_REF}-${PLATFORM}"
     fi
     SOURCE_BINARY="$TMP_DIR/literouter"
     echo "Downloading $URL"
     curl -fL --retry 3 --connect-timeout 15 -o "$SOURCE_BINARY" "$URL" || die "download failed"
     if curl -fsL --retry 3 -o "$SOURCE_BINARY.sha256" "$URL.sha256" 2>/dev/null; then
         expected="$(awk '{print $1}' "$SOURCE_BINARY.sha256")"
-        actual="$(sha256sum "$SOURCE_BINARY" | awk '{print $1}')"
+        actual="$(sha256_of "$SOURCE_BINARY")"
         [ -n "$expected" ] && [ "$expected" = "$actual" ] || die "checksum mismatch"
         note "checksum verified"
     else
@@ -111,6 +128,7 @@ if [ "$INSTALL_SERVICE" -eq 0 ]; then
 fi
 
 need_root "--service"
+[ "$OS" = "Linux" ] || die "--service is only supported on Linux with systemd"
 command -v systemctl >/dev/null 2>&1 || die "systemctl is not available"
 if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
     printf 'Install and enable the literouter systemd service? [y/N] '
@@ -121,8 +139,17 @@ if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
     esac
 fi
 
-UNIT_SOURCE="$(cd "$(dirname "$0")/.." && pwd)/deploy/literouter.service"
-[ -f "$UNIT_SOURCE" ] || die "cannot find deploy/literouter.service"
+UNIT_SOURCE=""
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
+if [ -n "$SCRIPT_SOURCE" ] && [ -f "$SCRIPT_SOURCE" ]; then
+    UNIT_SOURCE="$(cd "$(dirname "$SCRIPT_SOURCE")/.." && pwd)/deploy/literouter.service"
+fi
+if [ ! -f "$UNIT_SOURCE" ]; then
+    UNIT_SOURCE="$TMP_DIR/literouter.service"
+    UNIT_URL="https://raw.githubusercontent.com/${REPO}/${VERSION_REF}/deploy/literouter.service"
+    curl -fsSL --retry 3 --connect-timeout 15 -o "$UNIT_SOURCE" "$UNIT_URL" || \
+        die "cannot download deploy/literouter.service from $UNIT_URL"
+fi
 if ! id literouter >/dev/null 2>&1; then
     useradd --system --no-create-home --home-dir "$STATE_DIR" --shell /usr/sbin/nologin literouter
 fi
