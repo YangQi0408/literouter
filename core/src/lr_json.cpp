@@ -626,9 +626,15 @@ std::string toJsonString(const LogEntry &entry) {
     node["level"] = entry.level;
     node["request_id"] = entry.request_id;
     node["kind"] = entry.kind;
+    node["method"] = entry.method;
+    node["path"] = entry.path;
+    node["ingress_protocol"] = entry.ingress_protocol;
+    node["client_ip"] = entry.client_ip;
+    node["user_agent"] = entry.user_agent;
     node["model"] = entry.model;
     node["provider"] = entry.provider;
     node["upstream_model"] = entry.upstream_model;
+    node["upstream_protocol"] = entry.upstream_protocol;
     node["status"] = entry.status;
     node["stream"] = entry.stream;
     node["failover"] = entry.failover;
@@ -638,7 +644,12 @@ std::string toJsonString(const LogEntry &entry) {
     node["wait_ms"] = entry.wait_ms;
     node["ttfb_ms"] = entry.ttfb_ms;
     node["stream_ms"] = entry.stream_ms;
+    node["request_bytes"] = entry.request_bytes;
     node["bytes"] = entry.bytes;
+    node["prompt_tokens"] = entry.prompt_tokens;
+    node["completion_tokens"] = entry.completion_tokens;
+    node["cost_usd"] = entry.cost_usd;
+    node["cache_status"] = entry.cache_status;
     node["message"] = entry.message;
     if (!entry.request_body.empty()) {
         node["request_body"] = entry.request_body;

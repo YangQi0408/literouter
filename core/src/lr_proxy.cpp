@@ -924,9 +924,15 @@ LogEntry logEntryFromJson(const json &item) {
     entry.level = item.value("level", std::string{"info"});
     entry.request_id = item.value("request_id", std::string{});
     entry.kind = item.value("kind", std::string{});
+    entry.method = item.value("method", std::string{});
+    entry.path = item.value("path", std::string{});
+    entry.ingress_protocol = item.value("ingress_protocol", std::string{});
+    entry.client_ip = item.value("client_ip", std::string{});
+    entry.user_agent = item.value("user_agent", std::string{});
     entry.model = item.value("model", std::string{});
     entry.provider = item.value("provider", std::string{});
     entry.upstream_model = item.value("upstream_model", std::string{});
+    entry.upstream_protocol = item.value("upstream_protocol", std::string{});
     entry.status = item.value("status", 0);
     entry.stream = item.value("stream", false);
     entry.failover = item.value("failover", false);
@@ -936,7 +942,12 @@ LogEntry logEntryFromJson(const json &item) {
     entry.wait_ms = item.value("wait_ms", 0.0);
     entry.ttfb_ms = item.value("ttfb_ms", 0.0);
     entry.stream_ms = item.value("stream_ms", 0.0);
+    entry.request_bytes = item.value("request_bytes", std::uint64_t{0});
     entry.bytes = item.value("bytes", std::uint64_t{0});
+    entry.prompt_tokens = item.value("prompt_tokens", std::uint64_t{0});
+    entry.completion_tokens = item.value("completion_tokens", std::uint64_t{0});
+    entry.cost_usd = item.value("cost_usd", 0.0);
+    entry.cache_status = item.value("cache_status", std::string{});
     entry.message = item.value("message", std::string{});
     entry.request_body = item.value("request_body", std::string{});
     entry.response_body = item.value("response_body", std::string{});
@@ -1022,6 +1033,11 @@ struct RequestContext {
     bool attempted_upstream = false;
     std::string id;
     std::string kind;
+    std::string method;
+    std::string path;
+    std::string ingress_protocol;
+    std::string client_ip;
+    std::string user_agent;
     std::string model;
     std::string body;
     // Which conversation this request belongs to, for prompt-cache affinity.
@@ -1298,6 +1314,8 @@ struct ProxyServer::Impl {
         std::uint64_t completion_tokens = 0;
         double cost_usd = 0.0;
         bool usage_reported = false;
+        std::uint64_t request_bytes = 0;
+        std::string cache_status;
         std::string message;
         // Where the time went — see LogEntry for what each of the three means.
         double wait_ms = 0.0;
@@ -1319,9 +1337,17 @@ struct ProxyServer::Impl {
         entry.level = facts.status >= 200 && facts.status < 300 ? "info" : "error";
         entry.request_id = ctx.id;
         entry.kind = ctx.kind;
+        entry.method = ctx.method;
+        entry.path = ctx.path;
+        entry.ingress_protocol = ctx.ingress_protocol;
+        entry.client_ip = ctx.client_ip;
+        entry.user_agent = ctx.user_agent;
         entry.model = ctx.model;
         entry.provider = std::move(facts.provider);
         entry.upstream_model = std::move(facts.upstream_model);
+        if (const ProviderConfig *provider = ctx.config.provider(entry.provider); provider != nullptr) {
+            entry.upstream_protocol = provider->protocol.empty() ? "openai" : provider->protocol;
+        }
         entry.status = facts.status;
         entry.stream = ctx.stream;
         entry.failover = facts.failover;
@@ -1331,7 +1357,12 @@ struct ProxyServer::Impl {
         entry.wait_ms = facts.wait_ms;
         entry.ttfb_ms = facts.ttfb_ms;
         entry.stream_ms = facts.stream_ms;
+        entry.request_bytes = facts.request_bytes > 0 ? facts.request_bytes : ctx.body.size();
         entry.bytes = facts.bytes;
+        entry.prompt_tokens = facts.prompt_tokens;
+        entry.completion_tokens = facts.completion_tokens;
+        entry.cost_usd = facts.cost_usd;
+        entry.cache_status = std::move(facts.cache_status);
         entry.message = std::move(facts.message);
         entry.response_body = std::move(facts.response_body);
         if (ctx.config.server.log_bodies) {
@@ -2073,9 +2104,18 @@ struct ProxyServer::Impl {
         entry.level = "warn";
         entry.request_id = ctx.id;
         entry.kind = ctx.kind;
+        entry.method = ctx.method;
+        entry.path = ctx.path;
+        entry.ingress_protocol = ctx.ingress_protocol;
+        entry.client_ip = ctx.client_ip;
+        entry.user_agent = ctx.user_agent;
         entry.model = ctx.model;
         entry.upstream_model = std::move(upstream_model);
         entry.provider = provider;
+        if (const ProviderConfig *selected = ctx.config.provider(provider); selected != nullptr) {
+            entry.upstream_protocol =
+                selected->protocol.empty() ? "openai" : selected->protocol;
+        }
         entry.status = status;
         entry.stream = ctx.stream;
         entry.attempt = attempt + 1;
@@ -2085,6 +2125,7 @@ struct ProxyServer::Impl {
         entry.wait_ms = wait_ms;
         // A relay that never answered spent its whole latency getting there.
         entry.ttfb_ms = latency_ms;
+        entry.request_bytes = ctx.body.size();
         entry.message = std::move(message);
         if (ctx.config.server.log_bodies) {
             entry.request_body = truncateUtf8(
@@ -2217,6 +2258,10 @@ struct ProxyServer::Impl {
         RequestContext ctx;
         ctx.id = hexId(6);
         ctx.kind = std::string{kind};
+        ctx.method = req.method;
+        ctx.path = req.path;
+        ctx.client_ip = req.remote_addr;
+        ctx.user_agent = truncateUtf8(req.get_header_value("User-Agent"), 512);
         ctx.body = multipart ? multipart->metadata() : req.body;
         ctx.started = nowUnix();
         ctx.config = snapshotConfig();
@@ -2229,6 +2274,7 @@ struct ProxyServer::Impl {
         } else if (kind == "responses") {
             ingress_protocol = "openai_responses";
         }
+        ctx.ingress_protocol = ingress_protocol;
 
         if (ingress_protocol == "gemini" && req.matches.size() > 1) {
             ctx.model = req.matches[1].str();
@@ -2311,6 +2357,7 @@ struct ProxyServer::Impl {
                 finish(ctx, {.provider = "cache",
                              .status = hit->status,
                              .bytes = hit->body.size(),
+                             .cache_status = "hit",
                              .message = std::format("{} · served from the local response cache",
                                                     ctx.model)});
                 return;
@@ -2649,6 +2696,8 @@ struct ProxyServer::Impl {
                          .completion_tokens = usage.tokens_completion,
                          .cost_usd = attempt_cost,
                          .usage_reported = tokenUsageReported(result.body),
+                         .request_bytes = payload.size(),
+                         .cache_status = cacheable && good && response_cache.enabled() ? "miss" : std::string{},
                          .message = std::format("{} → {}", ctx.model, upstream_model),
                          // A buffered answer arrives in one piece: httplib reports one
                          // number for connect-plus-answer, so that number is the relay's
@@ -3062,6 +3111,7 @@ struct ProxyServer::Impl {
                          .completion_tokens = error_usage.tokens_completion,
                          .cost_usd = error_cost,
                          .usage_reported = tokenUsageReported(body),
+                         .request_bytes = payload.size(),
                          .message = std::format(
                              "stream rejected with HTTP {} — returned verbatim", status),
                          .response_body = logged_body(ctx, out_body),
@@ -3229,6 +3279,7 @@ struct ProxyServer::Impl {
                                                  .prompt_tokens = tokens.prompt,
                                                  .completion_tokens = tokens.completion,
                                                  .cost_usd = cost,
+                                                 .request_bytes = payload_size,
                                                  .message = "upstream stream interrupted: " + transport_error,
                                                  .wait_ms = (attempt_started - request_ctx.started) * 1000.0,
                                                  .ttfb_ms = measured.first,
@@ -3295,6 +3346,7 @@ struct ProxyServer::Impl {
                                              .completion_tokens = tokens.completion,
                                              .cost_usd = attempt_cost,
                                              .usage_reported = tokens.reported,
+                                             .request_bytes = payload_size,
                                              .message = std::format("stream complete · {} · {}",
                                                                     humanBytes(bytes),
                                                                     humanMillis(latency)),
@@ -3365,6 +3417,7 @@ struct ProxyServer::Impl {
                                 .upstream_model = upstream_model,
                                 .status = 0,
                                 .bytes = bytes,
+                                .request_bytes = payload_size,
                                 .message = "client disconnected before the stream ended",
                                 .wait_ms = (attempt_started - request_ctx.started) * 1000.0,
                                 .ttfb_ms = measured.first,
@@ -3379,7 +3432,7 @@ struct ProxyServer::Impl {
                 }
             },
             [this, bridge, client, provider_id, upstream_model, request_ctx, failover,
-             attempt_number, total_attempts, provider_root = root, provider](bool) {
+             attempt_number, total_attempts, payload_size, provider_root = root, provider](bool) {
                 // This fires at the end of EVERY chunked response, not only when
                 // something went wrong, which makes it the place that decides
                 // whether the connection goes back to the pool or is retired.
@@ -3417,6 +3470,7 @@ struct ProxyServer::Impl {
                                      .upstream_model = upstream_model,
                                      .status = 0,
                                      .bytes = bridge->bytes_out.load(),
+                                     .request_bytes = payload_size,
                                      .message = "stream ended before any bytes were written",
                                      .failover = failover,
                                      .attempt = attempt_number,

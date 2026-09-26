@@ -30,7 +30,7 @@ void testSnapshotJson() {
     hour.cost_usd = 0.5;
     snapshot.hourly = {hour};
     snapshot.config_path = "/tmp/literouter/config.json";
-    snapshot.version = "0.3.0";
+    snapshot.version = "0.3.1";
     snapshot.total_requests = 17;
     snapshot.total_success = 15;
     snapshot.total_failure = 2;
@@ -80,7 +80,7 @@ void testSnapshotJson() {
     LR_CHECK_EQ(parsed.at("host").get<std::string>(), "127.0.0.1");
     LR_CHECK_EQ(parsed.at("port").get<int>(), 43210);
     LR_CHECK_EQ(parsed.at("base_url").get<std::string>(), "http://127.0.0.1:43210");
-    LR_CHECK_EQ(parsed.at("version").get<std::string>(), "0.3.0");
+    LR_CHECK_EQ(parsed.at("version").get<std::string>(), "0.3.1");
     LR_CHECK_EQ(parsed.at("config_path").get<std::string>(), "/tmp/literouter/config.json");
     LR_CHECK(lr_test::closeTo(parsed.at("started_unix").get<double>(), 1700000000.5));
     LR_CHECK(lr_test::closeTo(parsed.at("uptime_sec").get<double>(), 12.25));
@@ -172,16 +172,27 @@ void testLogEntryJson() {
     entry.level = "warn";
     entry.request_id = "abc123";
     entry.kind = "chat";
+    entry.method = "POST";
+    entry.path = "/v1/chat/completions";
+    entry.ingress_protocol = "openai";
+    entry.client_ip = "127.0.0.1";
+    entry.user_agent = "codex-test/1.0";
     entry.model = "fast";
     entry.provider = "alpha";
     entry.upstream_model = "gpt-4o-2024-08-06";
+    entry.upstream_protocol = "openai";
     entry.status = 429;
     entry.stream = true;
     entry.failover = true;
     entry.attempt = 2;
     entry.attempts_total = 3;
     entry.latency_ms = 250.5;
+    entry.request_bytes = 512;
     entry.bytes = 1024;
+    entry.prompt_tokens = 11;
+    entry.completion_tokens = 7;
+    entry.cost_usd = 0.00125;
+    entry.cache_status = "miss";
     entry.message = "HTTP 429 — failing over";
 
     const json parsed = json::parse(literouter::toJsonString(entry), nullptr, false);
@@ -194,16 +205,27 @@ void testLogEntryJson() {
     LR_CHECK_EQ(parsed.at("level").get<std::string>(), "warn");
     LR_CHECK_EQ(parsed.at("request_id").get<std::string>(), "abc123");
     LR_CHECK_EQ(parsed.at("kind").get<std::string>(), "chat");
+    LR_CHECK_EQ(parsed.at("method").get<std::string>(), "POST");
+    LR_CHECK_EQ(parsed.at("path").get<std::string>(), "/v1/chat/completions");
+    LR_CHECK_EQ(parsed.at("ingress_protocol").get<std::string>(), "openai");
+    LR_CHECK_EQ(parsed.at("client_ip").get<std::string>(), "127.0.0.1");
+    LR_CHECK_EQ(parsed.at("user_agent").get<std::string>(), "codex-test/1.0");
     LR_CHECK_EQ(parsed.at("model").get<std::string>(), "fast");
     LR_CHECK_EQ(parsed.at("provider").get<std::string>(), "alpha");
     LR_CHECK_EQ(parsed.at("upstream_model").get<std::string>(), "gpt-4o-2024-08-06");
+    LR_CHECK_EQ(parsed.at("upstream_protocol").get<std::string>(), "openai");
     LR_CHECK_EQ(parsed.at("status").get<int>(), 429);
     LR_CHECK_EQ(parsed.at("stream").get<bool>(), true);
     LR_CHECK_EQ(parsed.at("failover").get<bool>(), true);
     LR_CHECK_EQ(parsed.at("attempt").get<int>(), 2);
     LR_CHECK_EQ(parsed.at("attempts_total").get<int>(), 3);
     LR_CHECK(lr_test::closeTo(parsed.at("latency_ms").get<double>(), 250.5));
+    LR_CHECK_EQ(parsed.at("request_bytes").get<std::uint64_t>(), static_cast<std::uint64_t>(512));
     LR_CHECK_EQ(parsed.at("bytes").get<std::uint64_t>(), static_cast<std::uint64_t>(1024));
+    LR_CHECK_EQ(parsed.at("prompt_tokens").get<std::uint64_t>(), static_cast<std::uint64_t>(11));
+    LR_CHECK_EQ(parsed.at("completion_tokens").get<std::uint64_t>(), static_cast<std::uint64_t>(7));
+    LR_CHECK(lr_test::closeTo(parsed.at("cost_usd").get<double>(), 0.00125));
+    LR_CHECK_EQ(parsed.at("cache_status").get<std::string>(), "miss");
     LR_CHECK_EQ(parsed.at("message").get<std::string>(), "HTTP 429 — failing over");
 
     // Bodies are omitted unless the server was told to keep them, so a log line

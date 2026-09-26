@@ -33,9 +33,18 @@ export interface LogEntry {
   level: LogLevel
   request_id: string
   kind: LogKind
+  /** The ingress request line. `path` is what the client called, before any
+   *  protocol conversion, so a Gemini call and its OpenAI equivalent differ
+   *  here. */
+  method: string
+  path: string
+  ingress_protocol: string
+  client_ip: string
+  user_agent: string
   model: string
   provider: string
   upstream_model: string
+  upstream_protocol: string
   status: number
   stream: boolean
   failover: boolean
@@ -47,7 +56,15 @@ export interface LogEntry {
   wait_ms: number
   ttfb_ms: number
   stream_ms: number
+  /** Bytes literouter sent upstream. `bytes` below is the response size. */
+  request_bytes: number
   bytes: number
+  /** Usage the selected relay reported. Zero is real for media endpoints. */
+  prompt_tokens: number
+  completion_tokens: number
+  cost_usd: number
+  /** Local response-cache decision: "hit", "miss", or empty. */
+  cache_status: string
   message: string
   /** Redacted and size-limited by the server; omitted when body logging is off. */
   request_body?: string

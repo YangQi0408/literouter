@@ -18,8 +18,8 @@ export namespace literouter {
 // Identity
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline constexpr std::string_view kVersion = "0.3.0";
-inline constexpr std::string_view kUserAgent = "literouter/0.3.0";
+inline constexpr std::string_view kVersion = "0.3.1";
+inline constexpr std::string_view kUserAgent = "literouter/0.3.1";
 
 // The config schema this build reads and writes. Bumping it is what gives a
 // breaking rename somewhere to live: `migrateConfigJson` walks an older document
@@ -615,11 +615,21 @@ struct LogEntry {
     // "info" | "warn" | "error"
     std::string level = "info";
     std::string request_id;
-    // "chat" | "embeddings" | "audio" | "images" | "models" | "admin" | "system"
+    // "chat" | "embeddings" | "responses" | "anthropic" | "gemini" |
+    // "gemini_stream" | "audio" | "images" | "models" | "admin" | "system"
     std::string kind;
+    // The ingress request line, before any protocol conversion. Kept separate
+    // from the response fields because a request can fail before a provider is
+    // reached and still needs to say what the client asked for.
+    std::string method;
+    std::string path;
+    std::string ingress_protocol;  // "openai" | "anthropic" | "gemini" | "openai_responses"
+    std::string client_ip;
+    std::string user_agent;
     std::string model;            // as the client asked
     std::string provider;         // the relay that answered
     std::string upstream_model;   // what it was asked for
+    std::string upstream_protocol; // the selected relay's protocol
     int status = 0;
     bool stream = false;
     bool failover = false;        // at least one candidate was skipped first
@@ -638,7 +648,19 @@ struct LogEntry {
     double wait_ms = 0.0;
     double ttfb_ms = 0.0;
     double stream_ms = 0.0;
+    // Request and response sizes are different questions. `request_bytes` is
+    // what literouter sent upstream (or would have sent), while `bytes` remains
+    // the response size the console has always displayed.
+    std::uint64_t request_bytes = 0;
     std::uint64_t bytes = 0;
+    // Usage reported by the selected relay. Zero is a real value for protocols
+    // and media endpoints that do not report token usage.
+    std::uint64_t prompt_tokens = 0;
+    std::uint64_t completion_tokens = 0;
+    double cost_usd = 0.0;
+    // Local response-cache decision: "hit", "miss", or empty when this request
+    // was not eligible / the cache was disabled.
+    std::string cache_status;
     std::string message;
     std::string request_body;     // only when server.log_bodies
     std::string response_body;    // only when server.log_bodies

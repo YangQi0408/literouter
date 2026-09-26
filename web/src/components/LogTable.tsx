@@ -1,17 +1,27 @@
-import { Activity, ArrowUpRight, ChevronRight, Clock3, Search } from 'lucide-react'
+import { Activity, ArrowUpRight, ChevronRight, Clock3, Database, Search } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { LogEntry } from '@/lib/api'
-import { humanBytes, humanMillis } from '@/lib/format'
+import { humanBytes, humanCount, humanMillis } from '@/lib/format'
 import { levelBadgeClass, statusBadgeClass } from '@/lib/present'
 import { useI18n } from '@/lib/i18n'
 import { activityKindKey } from '@/lib/activity'
 
 function DetailField({ label, children }: { label: string; children: ReactNode }) {
   return <div className="min-w-0 space-y-1.5"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="break-words font-mono text-xs leading-relaxed">{children || '—'}</dd></div>
+}
+
+function tokenTotal(entry: LogEntry) {
+  return (entry.prompt_tokens || 0) + (entry.completion_tokens || 0)
+}
+
+function cacheLabel(t: (key: string) => string, status: string) {
+  if (status === 'hit') return t('activityCacheHit')
+  if (status === 'miss') return t('activityCacheMiss')
+  return t('activityCacheSkipped')
 }
 
 export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }: { entries: LogEntry[]; emptyFiltered?: boolean; onConfigureLogging: () => void }) {
@@ -50,6 +60,8 @@ export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }:
               <th>{t('colProvider')}</th>
               <th className="text-right">{t('colStatus')}</th>
               <th className="text-right">{t('colLatency')}</th>
+              <th className="text-right">{t('colTokens')}</th>
+              <th className="text-right">{t('colCost')}</th>
               <th>{t('colMessage')}</th>
               <th><span className="sr-only">{t('activityInspect')}</span></th>
             </tr>
@@ -67,9 +79,11 @@ export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }:
                     {entry.failover ? <span className="rounded bg-warn/10 px-1.5 py-0.5 text-warn">{t('activityFailover')}</span> : null}
                   </div>
                 </td>
-                <td><div className="max-w-36 truncate text-xs" title={entry.provider}>{entry.provider || '—'}</div></td>
+                <td><div className="max-w-36 truncate text-xs" title={entry.provider}>{entry.provider || '—'}</div>{entry.cache_status ? <div className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground"><Database className="size-3" />{cacheLabel(t, entry.cache_status)}</div> : null}</td>
                 <td className="text-right"><Badge variant="outline" className={statusBadgeClass(entry.status)}>{entry.status || '—'}</Badge></td>
                 <td className="whitespace-nowrap text-right font-mono text-xs tnum" title={latencyTitle(entry)}>{entry.latency_ms ? humanMillis(entry.latency_ms) : '—'}</td>
+                <td className="whitespace-nowrap text-right font-mono text-xs tnum">{tokenTotal(entry) > 0 ? humanCount(tokenTotal(entry)) : '—'}</td>
+                <td className="whitespace-nowrap text-right font-mono text-xs tnum">{entry.cost_usd > 0 ? `$${entry.cost_usd.toFixed(4)}` : '—'}</td>
                 <td className="max-w-72 text-xs leading-relaxed text-muted-foreground"><p className="line-clamp-2 break-words">{entry.message || '—'}</p></td>
                 <td className="w-10"><Button size="icon" variant="ghost" className="size-8 text-muted-foreground group-hover:text-primary" aria-label={`${t('activityInspect')} ${entry.request_id || entry.seq}`} title={t('activityInspect')} onClick={() => setSelected(entry)}><ArrowUpRight className="size-4" /></Button></td>
               </tr>
@@ -85,15 +99,19 @@ export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }:
               <div className="flex items-center gap-2"><Badge variant="outline" className={levelBadgeClass(entry.level)}>{levelName(entry.level)}</Badge><span className="font-mono text-[11px] text-muted-foreground">{entry.time}</span></div>
               <div className="flex items-center gap-1.5"><Badge variant="outline" className={statusBadgeClass(entry.status)}>{entry.status || '—'}</Badge><ChevronRight className="size-3.5 text-muted-foreground" /></div>
             </div>
-            <div className="space-y-1"><p className="truncate font-mono text-sm font-medium">{entry.model || kindName(entry.kind)}</p><p className="truncate text-xs text-muted-foreground">{entry.provider || kindName(entry.kind)}{entry.stream ? ` · ${t('activityStream')}` : ''}{entry.failover ? ` · ${t('activityFailover')}` : ''}</p></div>
+            <div className="space-y-1"><p className="truncate font-mono text-sm font-medium">{entry.model || kindName(entry.kind)}</p><p className="truncate text-xs text-muted-foreground">{entry.provider || kindName(entry.kind)}{entry.stream ? ` · ${t('activityStream')}` : ''}{entry.failover ? ` · ${t('activityFailover')}` : ''}{entry.cache_status ? ` · ${cacheLabel(t, entry.cache_status)}` : ''}</p></div>
             {entry.message ? <p className="line-clamp-2 break-words text-xs leading-relaxed text-muted-foreground">{entry.message}</p> : null}
-            {entry.latency_ms ? <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground"><Clock3 className="size-3" />{humanMillis(entry.latency_ms)}</span> : null}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted-foreground">
+              {entry.latency_ms ? <span className="flex items-center gap-1.5"><Clock3 className="size-3" />{humanMillis(entry.latency_ms)}</span> : null}
+              {tokenTotal(entry) > 0 ? <span>{t('activityTokenCount', { count: humanCount(tokenTotal(entry)) })}</span> : null}
+              {entry.cost_usd > 0 ? <span>${entry.cost_usd.toFixed(4)}</span> : null}
+            </div>
           </button>
         ))}
       </div>
 
       <Dialog open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelected(null) }}>
-        <DialogContent className="gap-6 sm:max-w-2xl">
+        <DialogContent className="gap-4 p-4 sm:max-w-2xl sm:gap-6 sm:p-6">
           <DialogHeader>
             <div className="mb-2 flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary"><Activity className="size-5" /></div>
             <DialogTitle>{t('activityDetails')}</DialogTitle>
@@ -106,17 +124,41 @@ export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }:
               <Badge variant="secondary">{kindName(selected.kind)}</Badge>
               {selected.stream ? <Badge variant="outline" className="border-primary/20 text-primary">{t('activityStream')}</Badge> : null}
               {selected.failover ? <Badge variant="outline" className="border-warn/20 text-warn">{t('activityFailover')}</Badge> : null}
+              {selected.cache_status ? <Badge variant="outline" className="border-sky-500/25 text-sky-600 dark:text-sky-400"><Database className="mr-1 size-3" />{cacheLabel(t, selected.cache_status)}</Badge> : null}
             </div>
-            <dl className="grid grid-cols-2 gap-x-5 gap-y-5 rounded-xl border bg-muted/20 p-4 sm:p-5">
-              <DetailField label={t('colTime')}>{selected.datetime || `${selected.date || ''} ${selected.time}`}</DetailField>
-              <DetailField label={t('activityRequestId')}>{selected.request_id}</DetailField>
-              <DetailField label={t('colModel')}>{selected.model}</DetailField>
-              <DetailField label={t('activityUpstream')}>{selected.upstream_model}</DetailField>
-              <DetailField label={t('colProvider')}>{selected.provider}</DetailField>
-              <DetailField label={t('activityAttempt')}>{selected.attempt > 0 ? `${selected.attempt} / ${selected.attempts_total || selected.attempt}` : '—'}</DetailField>
-              <DetailField label={t('activityPayload')}>{humanBytes(selected.bytes)}</DetailField>
-              <DetailField label={t('colLatency')}>{selected.latency_ms ? humanMillis(selected.latency_ms) : '—'}</DetailField>
-            </dl>
+            <section className="space-y-4">
+              <h3 className="text-sm font-medium">{t('activityRequest')}</h3>
+              <dl className="grid grid-cols-2 gap-x-5 gap-y-4 rounded-xl border bg-muted/20 p-4 sm:gap-y-5 sm:p-5">
+                <DetailField label={t('colTime')}>{selected.datetime || `${selected.date || ''} ${selected.time}`}</DetailField>
+                <DetailField label={t('activityRequestId')}>{selected.request_id}</DetailField>
+                <DetailField label={t('activityProtocol')}>{selected.ingress_protocol}</DetailField>
+                <DetailField label={t('activityClient')}>{selected.client_ip}</DetailField>
+                <DetailField label={t('activityUserAgent')}>{selected.user_agent}</DetailField>
+                <DetailField label={t('activityRequest')}>{selected.method && selected.path ? `${selected.method} ${selected.path}` : ''}</DetailField>
+                <DetailField label={t('activityRequestSize')}>{humanBytes(selected.request_bytes)}</DetailField>
+                <DetailField label={t('activityPayload')}>{humanBytes(selected.bytes)}</DetailField>
+              </dl>
+            </section>
+            <section className="space-y-4">
+              <h3 className="text-sm font-medium">{t('activityRouting')}</h3>
+              <dl className="grid grid-cols-2 gap-x-5 gap-y-4 rounded-xl border bg-muted/20 p-4 sm:gap-y-5 sm:p-5">
+                <DetailField label={t('colModel')}>{selected.model}</DetailField>
+                <DetailField label={t('activityUpstream')}>{selected.upstream_model}</DetailField>
+                <DetailField label={t('colProvider')}>{selected.provider}</DetailField>
+                <DetailField label={t('activityUpstreamProtocol')}>{selected.upstream_protocol}</DetailField>
+                <DetailField label={t('activityAttempt')}>{selected.attempt > 0 ? `${selected.attempt} / ${selected.attempts_total || selected.attempt}` : '—'}</DetailField>
+                <DetailField label={t('colLatency')}>{selected.latency_ms ? humanMillis(selected.latency_ms) : '—'}</DetailField>
+              </dl>
+            </section>
+            {tokenTotal(selected) > 0 || selected.cost_usd > 0 ? <section className="space-y-4">
+              <h3 className="text-sm font-medium">{t('activityUsage')}</h3>
+              <dl className="grid grid-cols-2 gap-x-5 gap-y-4 rounded-xl border bg-muted/20 p-4 sm:gap-y-5 sm:p-5">
+                <DetailField label={t('activityInputTokens')}>{humanCount(selected.prompt_tokens)}</DetailField>
+                <DetailField label={t('activityOutputTokens')}>{humanCount(selected.completion_tokens)}</DetailField>
+                <DetailField label={t('activityTotalTokens')}>{humanCount(tokenTotal(selected))}</DetailField>
+                <DetailField label={t('activityCost')}>{selected.cost_usd > 0 ? `$${selected.cost_usd.toFixed(6)}` : '—'}</DetailField>
+              </dl>
+            </section> : null}
             {selected.latency_ms > 0 ? <section>
               <h3 className="mb-3 text-sm font-medium">{t('activityTiming')}</h3>
               <div className="grid grid-cols-3 gap-2">

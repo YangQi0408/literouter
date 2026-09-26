@@ -1521,6 +1521,8 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
     alpha.base_url = relay_a.baseUrl();
     alpha.timeout_sec = 10;
     alpha.connect_timeout_sec = 2;
+    alpha.price_in_per_million = 1.0;
+    alpha.price_out_per_million = 2.0;
     literouter::ProviderConfig beta;
     beta.id = "beta";
     beta.base_url = relay_b.baseUrl();
@@ -1641,6 +1643,11 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
     bool saw_text_body = false;
     bool saw_stream = false;
     bool saw_failover = false;
+    bool saw_request_bytes = false;
+    bool saw_tokens = false;
+    bool saw_cost = false;
+    bool saw_client_metadata = false;
+    bool saw_request_shape = false;
     for (const auto &entry : entries) {
         if (entry.kind == "system") {
             // The proxy's own notes (listening, config reloaded, stopped) are not
@@ -1649,6 +1656,11 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
         }
         LR_CHECK_MSG(!entry.request_id.empty(), "LogEntry.request_id never written");
         LR_CHECK_MSG(!entry.kind.empty(), "LogEntry.kind never written");
+        LR_CHECK_MSG(entry.method == "POST", "LogEntry.method never written");
+        LR_CHECK_MSG(!entry.path.empty(), "LogEntry.path never written");
+        LR_CHECK_MSG(!entry.ingress_protocol.empty(), "LogEntry.ingress_protocol never written");
+        LR_CHECK_MSG(!entry.client_ip.empty(), "LogEntry.client_ip never written");
+        LR_CHECK_MSG(!entry.user_agent.empty(), "LogEntry.user_agent never written");
         LR_CHECK_MSG(!entry.model.empty(), "LogEntry.model never written");
         LR_CHECK_MSG(!entry.message.empty(), "LogEntry.message never written");
         LR_CHECK_MSG(entry.time_unix > 0.0, "LogEntry.time_unix never written");
@@ -1661,6 +1673,8 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
         if (entry.provider.empty()) {
             continue;
         }
+        LR_CHECK_MSG(!entry.upstream_protocol.empty(),
+                     "LogEntry.upstream_protocol never written" + where);
         LR_CHECK_MSG(entry.latency_ms > 0.0, "LogEntry.latency_ms never written" + where);
         LR_CHECK_MSG(!entry.upstream_model.empty(),
                      "LogEntry.upstream_model never written; the console draws a row for it" +
@@ -1707,6 +1721,22 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
         if (entry.failover) {
             saw_failover = true;
         }
+        if (entry.request_bytes > 0) {
+            saw_request_bytes = true;
+        }
+        if (entry.prompt_tokens > 0 && entry.completion_tokens > 0) {
+            saw_tokens = true;
+        }
+        if (entry.cost_usd > 0.0) {
+            saw_cost = true;
+        }
+        if (!entry.client_ip.empty() && !entry.user_agent.empty()) {
+            saw_client_metadata = true;
+        }
+        if (entry.method == "POST" && entry.path == "/v1/chat/completions" &&
+            entry.ingress_protocol == "openai") {
+            saw_request_shape = true;
+        }
     }
     LR_CHECK_MSG(saw_upstream_model, "the renamed upstream model never reached the log");
     LR_CHECK_MSG(saw_renamed, "the log never distinguishes what the client asked for from what "
@@ -1714,6 +1744,11 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
     LR_CHECK_MSG(saw_text_body, "LogEntry.response_body never written, with log_bodies on");
     LR_CHECK_MSG(saw_stream, "no log entry recorded a streamed request");
     LR_CHECK_MSG(saw_failover, "no log entry recorded a failover");
+    LR_CHECK_MSG(saw_request_bytes, "LogEntry.request_bytes never written");
+    LR_CHECK_MSG(saw_tokens, "LogEntry token counts never written");
+    LR_CHECK_MSG(saw_cost, "LogEntry.cost_usd never written for a priced relay");
+    LR_CHECK_MSG(saw_client_metadata, "LogEntry client metadata never written");
+    LR_CHECK_MSG(saw_request_shape, "LogEntry request shape never written");
 
     // Credentials pasted into a prompt are masked on the way into the log: a log
     // that leaks the very key it was used to debug is worse than no log.

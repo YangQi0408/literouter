@@ -7,7 +7,8 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
-import { ACTIVITY_KINDS, filterActivity } from '@/lib/activity'
+import { ACTIVITY_KINDS, activityTotals, filterActivity } from '@/lib/activity'
+import { humanCount } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 
@@ -17,15 +18,21 @@ export function Logs({ initialQuery = '', onConfigureLogging }: { initialQuery?:
   const [query, setQuery] = useState(initialQuery)
   const [level, setLevel] = useState('all')
   const [kind, setKind] = useState('all')
+  const [outcome, setOutcome] = useState('all')
   const deferredQuery = useDeferredValue(query)
-  const hasFilters = Boolean(query.trim() || level !== 'all' || kind !== 'all')
+  const hasFilters = Boolean(query.trim() || level !== 'all' || kind !== 'all' || outcome !== 'all')
 
-  const filtered = useMemo(() => filterActivity(logs, deferredQuery, level, kind), [logs, deferredQuery, level, kind])
+  const filtered = useMemo(
+    () => filterActivity(logs, deferredQuery, level, kind, outcome),
+    [logs, deferredQuery, level, kind, outcome],
+  )
+  const totals = useMemo(() => activityTotals(filtered), [filtered])
 
   function resetFilters() {
     setQuery('')
     setLevel('all')
     setKind('all')
+    setOutcome('all')
   }
 
   return (
@@ -72,6 +79,15 @@ export function Logs({ initialQuery = '', onConfigureLogging }: { initialQuery?:
                 {Object.entries(ACTIVITY_KINDS).map(([value, label]) => <SelectItem key={value} value={value}>{t(label)}</SelectItem>)}
               </SelectContent>
             </Select>
+            <Select value={outcome} onValueChange={setOutcome}>
+              <SelectTrigger aria-label={t('activityFilterOutcome')} className="h-10 min-w-0 flex-1 text-xs sm:w-36 sm:flex-none"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t('activityOutcomeAll')}</SelectItem>
+                <SelectItem value="cache">{t('activityOutcomeCache')}</SelectItem>
+                <SelectItem value="failover">{t('activityOutcomeFailover')}</SelectItem>
+                <SelectItem value="errors">{t('activityOutcomeErrors')}</SelectItem>
+              </SelectContent>
+            </Select>
             <span className="mx-1 hidden h-5 w-px bg-border sm:block" />
             <Button size="icon" variant={logsPaused ? 'secondary' : 'ghost'} aria-label={logsPaused ? t('resume') : t('pause')} title={logsPaused ? t('resume') : t('pause')} onClick={() => setLogsPaused(!logsPaused)}>
               {logsPaused ? <Play className="size-4" /> : <Pause className="size-4" />}
@@ -79,9 +95,14 @@ export function Logs({ initialQuery = '', onConfigureLogging }: { initialQuery?:
             <Button size="icon" variant="ghost" aria-label={t('activityClearView')} title={t('activityClearView')} onClick={clearLogs} disabled={!logs.length}><Trash2 className="size-4" /></Button>
           </div>
         </div>
-        <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-muted/15 px-5 py-3 text-xs text-muted-foreground">
-          <span aria-live="polite">{t('activityCount', { shown: filtered.length, total: logs.length })}</span>
-          {hasFilters ? <button type="button" className="flex items-center gap-1 text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={resetFilters}><X className="size-3" />{t('activityReset')}</button> : <span className="flex items-center gap-1.5"><ArrowDownWideNarrow className="size-3.5" />{t('activityNewest')}</span>}
+        <div className="flex min-h-12 flex-wrap items-center gap-x-5 gap-y-2 border-b border-border/70 bg-muted/15 px-5 py-3 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground" aria-live="polite">{t('activityCount', { shown: filtered.length, total: logs.length })}</span>
+          {totals.tokens > 0 ? <span><span className="font-medium text-foreground">{humanCount(totals.tokens)}</span> {t('activitySummaryTokens')}</span> : null}
+          {totals.costUsd > 0 ? <span><span className="font-medium text-foreground">${totals.costUsd.toFixed(4)}</span> {t('activitySummaryCost')}</span> : null}
+          {totals.cacheHits > 0 ? <span><span className="font-medium text-foreground">{humanCount(totals.cacheHits)}</span> {t('activitySummaryCache')}</span> : null}
+          <span className="ml-auto flex items-center gap-2">
+            {hasFilters ? <button type="button" className="flex items-center gap-1 text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={resetFilters}><X className="size-3" />{t('activityReset')}</button> : <span className="flex items-center gap-1.5"><ArrowDownWideNarrow className="size-3.5" />{t('activityNewest')}</span>}
+          </span>
         </div>
         <LogTable entries={filtered} emptyFiltered={hasFilters} onConfigureLogging={onConfigureLogging} />
       </Card>

@@ -336,7 +336,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   "traffic_bucket_count": 24,
   "traffic_bucket_sec": 3600,
   "uptime_sec": 3600.5,
-  "version": "0.3.0"
+  "version": "0.3.1"
 }
 ```
 
@@ -350,6 +350,8 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 - **Parameters**:
   - `since`: Retrieve logs strictly newer than sequence ID `id`;
   - `limit`: Maximum number of entries (default 100).
+
+  Each entry keeps the ingress and egress context of the request. `method` / `path` / `ingress_protocol` describe what the client actually called; `client_ip` / `user_agent` identify the source; `model` is the logical name the client requested, while `upstream_model` is the name actually sent after route renaming and `upstream_protocol` is the selected relay's protocol. `request_bytes` and `bytes` are the upstream request size and client response size respectively. `prompt_tokens` / `completion_tokens` / `cost_usd` come from usage the upstream reported and the locally configured prices; they are 0 for media or protocols that report no usage. `cache_status` is present only when the local response cache participated, as `hit` or `miss`.
 
   Each entry splits its latency into **three phases** (`wait_ms` / `ttfb_ms` / `stream_ms`), in the order they are spent:
 

@@ -337,7 +337,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
   "traffic_bucket_count": 24,
   "traffic_bucket_sec": 3600,
   "uptime_sec": 3600.5,
-  "version": "0.3.0"
+  "version": "0.3.1"
 }
 ```
 
@@ -352,6 +352,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
   - `since`：拉取日志 ID 大于此值的增量记录；
   - `limit`：最多返回条数（默认 100）。
 - **响应**：包含请求摘要、方法、目标模型、上游站点、HTTP 状态码、耗时（毫秒）、Token 统计等。
+
+  日志条目保留这条请求的**入站与出站上下文**：`method` / `path` / `ingress_protocol` 是客户端实际调用的接口与协议；`client_ip` / `user_agent` 标识来源；`model` 是客户端请求的逻辑模型，`upstream_model` 是路由重命名后真正发给中转站的模型，`upstream_protocol` 是所选中转站的协议。`request_bytes` 与 `bytes` 分别表示发往上游的请求大小和返回给客户端的响应大小；`prompt_tokens` / `completion_tokens` / `cost_usd` 是上游实际报告并经本地单价换算的用量，媒体或不返回 usage 的协议为 0。`cache_status` 只在本地应答缓存参与时出现，取值 `hit` / `miss`。
 
   每条日志的**耗时拆成三段**（`wait_ms` / `ttfb_ms` / `stream_ms`），按时间发生顺序：
 
