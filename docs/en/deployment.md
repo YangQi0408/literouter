@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 
 **Common Script Flags**:
 - `--prefix DIR`: Installation destination directory (default `/usr/local`);
-- `--version TAG`: Install a specific release tag (e.g. `v0.2.0`, defaults to `latest`);
+- `--version TAG`: Install a specific release tag (e.g. `v0.3.0`, defaults to `latest`);
 - `--from PATH`: Install from a local pre-downloaded binary instead of fetching from GitHub;
 - `--service`: Create a dedicated unprivileged user `literouter` and enable the systemd service (Linux);
 - `--uninstall`: Stop and remove the binary and systemd service (preserves configuration and telemetry);

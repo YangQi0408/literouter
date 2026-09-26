@@ -18,8 +18,8 @@ export namespace literouter {
 // Identity
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline constexpr std::string_view kVersion = "0.2.0";
-inline constexpr std::string_view kUserAgent = "literouter/0.2.0";
+inline constexpr std::string_view kVersion = "0.3.0";
+inline constexpr std::string_view kUserAgent = "literouter/0.3.0";
 
 // The config schema this build reads and writes. Bumping it is what gives a
 // breaking rename somewhere to live: `migrateConfigJson` walks an older document

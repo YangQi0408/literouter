@@ -336,7 +336,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   "traffic_bucket_count": 24,
   "traffic_bucket_sec": 3600,
   "uptime_sec": 3600.5,
-  "version": "0.2.0"
+  "version": "0.3.0"
 }
 ```
 

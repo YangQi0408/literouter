@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 
 **脚本常用参数**：
 - `--prefix DIR`：指定可执行文件安装目录（默认 `/usr/local`）；
-- `--version TAG`：安装指定版本（如 `v0.2.0`，默认安装最新发布版 `latest`）；
+- `--version TAG`：安装指定版本（如 `v0.3.0`，默认安装最新发布版 `latest`）；
 - `--from PATH`：从本地二进制文件安装，跳过网络下载；
 - `--service`：在 Linux 系统上自动创建专属系统用户 `literouter` 并启用 systemd 服务；
 - `--uninstall`：卸载已安装的二进制与系统服务（保留配置和遥测历史）；

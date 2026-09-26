@@ -337,7 +337,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
   "traffic_bucket_count": 24,
   "traffic_bucket_sec": 3600,
   "uptime_sec": 3600.5,
-  "version": "0.2.0"
+  "version": "0.3.0"
 }
 ```
 
