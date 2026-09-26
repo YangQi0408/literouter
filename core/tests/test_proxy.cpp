@@ -728,7 +728,7 @@ void group1PlainRequest(StubRelay &relay_a, StubRelay &relay_b, int port) {
 }
 
 void group2RateLimited(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServer &proxy) {
-    LR_GROUP("2. a 429 on the first relay fails over to the second");
+    LR_GROUP("2. a 429 falls through the first relay's models, then to the second relay");
     const int port = proxy.boundPort();
     proxy.resetStats();
     relay_a.setMode(StubRelay::Mode::RateLimit);
@@ -739,7 +739,10 @@ void group2RateLimited(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
     const Hit hit = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
     LR_CHECK_EQ(hit.status, 200);
     LR_CHECK_MSG(hit.body == relay_b.normalBody(), "the answer came from the wrong relay");
-    LR_CHECK_EQ(relay_a.chatRequests(), 1);
+    // alpha has one advertised fallback model behind the route target, so a
+    // 429 from the preferred model is followed by one attempt on that model
+    // before the chain reaches beta.
+    LR_CHECK_EQ(relay_a.chatRequests(), 2);
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
 
     const literouter::Snapshot snapshot = proxy.snapshot();
@@ -759,7 +762,7 @@ void group2RateLimited(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
         LR_CHECK_EQ(beta->successes, static_cast<std::uint64_t>(1));
     }
     const auto *alphaStat = statOf(snapshot, "alpha");
-    LR_CHECK(alphaStat != nullptr && alphaStat->failures == 1);
+    LR_CHECK(alphaStat != nullptr && alphaStat->requests == 2 && alphaStat->failures == 2);
 }
 
 void group3BadRequest(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServer &proxy) {
@@ -848,7 +851,7 @@ void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxySe
     const Hit failedOver = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true));
     LR_CHECK_EQ(failedOver.status, 200);
     LR_CHECK_EQ(failedOver.body, join(relay_b.sseChunks()));
-    LR_CHECK_EQ(relay_a.chatRequests(), 1);
+    LR_CHECK_EQ(relay_a.chatRequests(), 2);
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
     const literouter::Snapshot snapshot = proxy.snapshot();
     const auto *beta = statOf(snapshot, "beta");
@@ -1008,7 +1011,7 @@ void group8Breaker(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServ
         LR_CHECK_MSG(hit.status == 200 && hit.body == relay_b.normalBody(),
                      "every request should still be answered by the second relay");
     }
-    LR_CHECK_EQ(relay_a.chatRequests(), 3);
+    LR_CHECK_EQ(relay_a.chatRequests(), 6);
     LR_CHECK_EQ(relay_b.chatRequests(), 3);
 
     const literouter::Snapshot tripped = proxy.snapshot();
@@ -1017,8 +1020,8 @@ void group8Breaker(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServ
     LR_CHECK(alpha != nullptr && alpha->consecutive_failures >= 3);
     LR_CHECK(tripped.breakers_open >= 1);
     const auto *alphaStat = statOf(tripped, "alpha");
-    LR_CHECK(alphaStat != nullptr && alphaStat->requests == 3);
-    LR_CHECK(alphaStat != nullptr && alphaStat->failures == 3);
+    LR_CHECK(alphaStat != nullptr && alphaStat->requests == 6);
+    LR_CHECK(alphaStat != nullptr && alphaStat->failures == 6);
 
     // The fourth request never reaches the open relay.
     relay_a.resetCounters();
@@ -1029,7 +1032,7 @@ void group8Breaker(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServ
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
     const literouter::Snapshot after = proxy.snapshot();
     const auto *afterStat = statOf(after, "alpha");
-    LR_CHECK(afterStat != nullptr && afterStat->requests == 3);
+    LR_CHECK(afterStat != nullptr && afterStat->requests == 6);
 }
 
 void group9Counters(StubRelay &relay_a, literouter::ProxyServer &proxy) {
@@ -1217,7 +1220,7 @@ void group18RetryAfter(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
     // a 429 into a refusal.
     const Hit hit = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
     LR_CHECK_EQ(hit.status, 200);
-    LR_CHECK_EQ(relay_a.chatRequests(), 1);
+    LR_CHECK_EQ(relay_a.chatRequests(), 2);
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
 
     // One 429 was enough: the relay said "back in 600 seconds", so the breaker
@@ -1229,9 +1232,10 @@ void group18RetryAfter(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
     LR_CHECK_EQ(after.breakers_open, 1);
 
     // So the next request goes straight to the relay that is still answering.
+    const int alpha_requests_before_second = relay_a.chatRequests();
     const Hit second = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
     LR_CHECK_EQ(second.status, 200);
-    LR_CHECK_MSG(relay_a.chatRequests() == 1,
+    LR_CHECK_MSG(relay_a.chatRequests() == alpha_requests_before_second,
                  "the relay that asked for 600 seconds of quiet was tried again anyway");
     LR_CHECK_EQ(relay_b.chatRequests(), 2);
 
