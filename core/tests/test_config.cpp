@@ -886,6 +886,8 @@ void testValidateServer() {
                                      kWarning) != nullptr);
         config.server.routing_policy = "fastest";
         LR_CHECK(literouter::validate(config).ok());
+        config.server.routing_policy = "round_robin";
+        LR_CHECK(literouter::validate(config).ok());
         config.server.routing_policy = "priority";
         LR_CHECK(findIssue(literouter::validate(config), "server.request_deadline_sec", kWarning) ==
                  nullptr);

@@ -45,7 +45,7 @@ export function Routes() {
 
       <div className="flex items-start gap-3 rounded-2xl border border-primary/15 bg-primary/5 p-4 sm:p-5">
         <ShieldCheck aria-hidden className="mt-0.5 size-5 shrink-0 text-primary" />
-        <div><p className="text-sm font-medium">{t('managementFailoverTitle')}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t(working.server.routing_policy === 'fastest' ? 'managementRoutingFastestHint' : working.server.routing_policy === 'cheapest' ? 'managementRoutingCheapestHint' : 'routeHint')}</p></div>
+        <div><p className="text-sm font-medium">{t('managementFailoverTitle')}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t(working.server.routing_policy === 'fastest' ? 'managementRoutingFastestHint' : working.server.routing_policy === 'cheapest' ? 'managementRoutingCheapestHint' : working.server.routing_policy === 'round_robin' ? 'managementRoutingRoundRobinHint' : 'routeHint')}</p></div>
       </div>
 
       {working.server.session_affinity_sec > 0 ? <p className="text-xs text-muted-foreground">{t('managementAffinityHint', { seconds: working.server.session_affinity_sec })}</p> : null}

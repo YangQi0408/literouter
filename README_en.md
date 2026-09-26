@@ -156,6 +156,7 @@ Pricing often differs significantly across providers and among different models 
 - **Provider Default Pricing**: Set `price_in_per_million` and `price_out_per_million` on a provider as baseline prices;
 - **Per-Model Overrides (`model_prices`)**: Override input/output rates for specific models; unlisted models fall back to the provider default;
 - **Cheapest Routing Policy (`routing_policy: "cheapest"`)**: Dynamically evaluates the actual price of the requested model across all candidate relays and routes to the cheapest healthy relay first;
+- **Balanced Round-Robin (`routing_policy: "round_robin"`)**: Rotates the first relay between requests so equal relays share traffic over time instead of staying in a fixed primary/backup split; a relay's model fallback chain stays together.
 - **Visual Management**: Easily configure model rates in the `/ui` Web Console and monitor real-time spend across relays and models.
 
 ---

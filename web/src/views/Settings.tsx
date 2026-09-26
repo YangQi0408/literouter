@@ -191,6 +191,7 @@ export function Settings({ initialSection = 'connection' }: { initialSection?: S
                     <SelectItem value="priority">{t('policyPriority')}</SelectItem>
                     <SelectItem value="fastest">{t('policyFastest')}</SelectItem>
                     <SelectItem value="cheapest">{t('policyCheapest')}</SelectItem>
+                    <SelectItem value="round_robin">{t('policyRoundRobin')}</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>

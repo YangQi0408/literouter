@@ -183,8 +183,13 @@ struct ServerConfig {
     //                first;
     //   "cheapest" — priced relays first, by input+output price per million;
     //                an unpriced relay sorts last because its cost is unknown
-    //                rather than zero.
-    // Ties keep the priority order, and session affinity still wins over both:
+    //                rather than zero;
+    //   "round_robin" — rotate the first relay between requests, so equal relays
+    //                   share traffic instead of one always winning. A relay's
+    //                   model fallback chain stays together, so this balances
+    //                   relays, not individual model attempts.
+    // Ties keep the priority order, and session affinity still wins over every
+    // policy:
     // which relay has already seen this conversation is the more specific fact.
     std::string routing_policy = "priority";
     // How long the whole request may take, across every candidate, in seconds.

@@ -471,10 +471,11 @@ ValidationReport validate(const AppConfig &config) {
                              config.server.request_deadline_sec));
     }
     if (config.server.routing_policy != "priority" && config.server.routing_policy != "fastest" &&
-        config.server.routing_policy != "cheapest") {
+        config.server.routing_policy != "cheapest" &&
+        config.server.routing_policy != "round_robin") {
         addIssue(report, ValidationIssue::Level::Warning, "server.routing_policy",
                  std::format("`{}` is not a routing policy; falling back to `priority` "
-                             "(known: priority, fastest, cheapest)",
+                             "(known: priority, fastest, cheapest, round_robin)",
                              config.server.routing_policy));
     }
     if (config.server.circuit_failure_threshold < 1) {

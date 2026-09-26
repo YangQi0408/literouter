@@ -1056,6 +1056,12 @@ struct ProxyServer::Impl {
     // answered.
     UpstreamLimiter upstream_limiter;
     ResponseCache response_cache;
+    // Round-robin cursors are per logical model, so one busy model cannot change
+    // which relay another model starts on. Bounded like affinity: an arbitrary
+    // pass-through model name must not grow this table forever.
+    static constexpr std::size_t kMaxRoundRobinModels = 256;
+    mutable std::mutex round_robin_mutex;
+    std::map<std::string, std::size_t, std::less<>> round_robin_cursor;
 
     mutable std::mutex config_mutex;
     AppConfig config;
@@ -2147,6 +2153,62 @@ struct ProxyServer::Impl {
         return std::min<std::size_t>(candidates, static_cast<std::size_t>(cfg.server.max_attempts));
     }
 
+    // Round-robin is deliberately applied to the ordered candidate list rather
+    // than inside the router: the router is a pure decision layer, while the
+    // cursor is request scheduling state. Grouping by provider first keeps a
+    // relay's model fallback chain intact; otherwise a renamed primary on one
+    // relay and a fallback on another would be interleaved arbitrarily.
+    void rotateRoundRobin(const std::string &model, std::vector<Candidate> &candidates) {
+        if (candidates.size() < 2) {
+            return;
+        }
+
+        struct Group {
+            std::string provider;
+            std::vector<Candidate> candidates;
+        };
+        std::vector<Group> groups;
+        for (auto &candidate : candidates) {
+            auto group = std::ranges::find(groups, candidate.provider, &Group::provider);
+            if (group == groups.end()) {
+                groups.push_back(Group{.provider = candidate.provider});
+                group = std::prev(groups.end());
+            }
+            group->candidates.push_back(std::move(candidate));
+        }
+        if (groups.size() < 2) {
+            candidates.clear();
+            for (auto &candidate : groups.front().candidates) {
+                candidates.push_back(std::move(candidate));
+            }
+            return;
+        }
+
+        std::size_t cursor = 0;
+        {
+            std::scoped_lock lock{round_robin_mutex};
+            if (!round_robin_cursor.contains(model) &&
+                round_robin_cursor.size() >= kMaxRoundRobinModels) {
+                round_robin_cursor.erase(round_robin_cursor.begin());
+            }
+            cursor = round_robin_cursor[model]++;
+        }
+
+        const std::size_t offset = cursor % groups.size();
+        candidates.clear();
+        candidates.reserve(groups.size() * 2);
+        for (std::size_t index = 0; index < groups.size(); ++index) {
+            for (auto &candidate : groups[(index + offset) % groups.size()].candidates) {
+                candidates.push_back(std::move(candidate));
+            }
+        }
+        // The router marks an open circuit per provider/model. Rotation is
+        // traffic balancing, not permission to jump an unhealthy group ahead of
+        // a healthy one, so restore that invariant after moving whole groups.
+        std::stable_partition(candidates.begin(), candidates.end(),
+                              [](const Candidate &candidate) { return !candidate.skipped; });
+    }
+
     // ── the chat / embeddings pipeline ───────────────────────────────────────
 
     void serveJson(const h::Request &req, h::Response &res, std::string_view kind,
@@ -2321,6 +2383,9 @@ struct ProxyServer::Impl {
                                  }
                                  return left < right;
                              });
+        }
+        if (ctx.config.server.routing_policy == "round_robin") {
+            rotateRoundRobin(ctx.model, candidates);
         }
         if (!ctx.affinity_key.empty()) {
             const std::string warm = affinityProvider(ctx.affinity_key, nowUnix());
@@ -4253,6 +4318,10 @@ void ProxyServer::resetStats() {
         impl_->latency_ms_avg = 0.0;
     }
     impl_->router.resetHealth();
+    {
+        std::scoped_lock lock{impl_->round_robin_mutex};
+        impl_->round_robin_cursor.clear();
+    }
     impl_->recordSystem("counters reset");
 }
 

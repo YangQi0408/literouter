@@ -105,7 +105,7 @@ export function RouteDialog({
           <section className="border-t pt-5">
             <div className="mb-4">
               <h3 className="text-sm font-semibold">{t('managementFailoverTitle')}</h3>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t(working?.server.routing_policy === 'fastest' ? 'managementRoutingFastestHint' : working?.server.routing_policy === 'cheapest' ? 'managementRoutingCheapestHint' : 'routeHint')}</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t(working?.server.routing_policy === 'fastest' ? 'managementRoutingFastestHint' : working?.server.routing_policy === 'cheapest' ? 'managementRoutingCheapestHint' : working?.server.routing_policy === 'round_robin' ? 'managementRoutingRoundRobinHint' : 'routeHint')}</p>
             </div>
             {(working?.server.session_affinity_sec ?? 0) > 0 ? <p className="mb-4 text-xs text-muted-foreground">{t('managementAffinityHint', { seconds: working!.server.session_affinity_sec })}</p> : null}
             {!providers.length ? <p className="mb-4 rounded-xl border border-warn/20 bg-warn/5 px-3 py-2.5 text-xs leading-relaxed text-warn">{t('managementAddProviderFirst')}</p> : null}

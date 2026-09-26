@@ -59,7 +59,7 @@ You can override the default configuration path at any time via:
     "api_key": "",                // Access key for the model and management endpoints; empty disables authentication
     "pass_through_unknown": true, // Automatically pass through models not listed in `routes` to providers declaring them
     "max_attempts": 0,            // Max candidates to try per request; 0 means try all available candidates
-    "routing_policy": "priority", // Chain order: priority (default) / fastest (measured) / cheapest (price)
+    "routing_policy": "priority", // Chain order: priority (default) / fastest (measured) / cheapest (price) / round_robin (balanced)
     "request_deadline_sec": 0,    // Whole-request budget in seconds; 0 disables it
     "session_affinity_sec": 0,    // How long a conversation stays on one relay; 0 disables it
     "circuit_failure_threshold": 3, // Consecutive retriable errors before tripping circuit breaker
@@ -160,7 +160,7 @@ You can override the default configuration path at any time via:
 | `api_key` | `string` | `""` | Access credential for the model endpoints and the management API, supporting environment references. Authentication is disabled only while it is empty. A non-loopback `host` and the web console both warn when it is empty, because either would otherwise expose the request log. |
 | `pass_through_unknown` | `bool` | `true` | If client requests an unrouted model, pass through to providers advertising that model. |
 | `max_attempts` | `size_t` | `0` | Upper limit of candidate providers to try per request. `0` means try all candidates. |
-| `routing_policy` | `string` | `"priority"` | How the **candidate chain is ordered before the first attempt**: `priority` (the default — the declared `priority`/`weight` order), `fastest` (relays with a measurement first, by p95, because a relay that is usually fast and occasionally terrible should not be tried first), `cheapest` (priced relays first, by input + output price per million; an unpriced relay sorts last because its cost is unknown rather than zero). Ties keep the priority order, and **session affinity still wins over both**: which relay has already seen this conversation is the more specific fact. |
+| `routing_policy` | `string` | `"priority"` | How the **candidate chain is ordered before the first attempt**: `priority` (the default — the declared `priority`/`weight` order), `fastest` (relays with a measurement first, by p95, because a relay that is usually fast and occasionally terrible should not be tried first), `cheapest` (priced relays first, by input + output price per million; an unpriced relay sorts last because its cost is unknown rather than zero), `round_robin` (rotate the first relay between requests so equal relays share traffic; a relay's model fallback chain stays together). Ties keep the priority order, and **session affinity still wins over every policy**: which relay has already seen this conversation is the more specific fact. |
 | `request_deadline_sec` | `int` | `0` | Whole-request budget in seconds; `0` disables it. Unlike `timeout_sec` (one attempt) and `max_attempts` (how many), this bounds the number a client actually cares about: how long it will wait. Checked between attempts and while waiting for a streamed answer to start; once bytes are committed the answer is not cut short, because truncating it is worse than letting it finish. A value below 5s leaves no room for a second relay, and validation warns about it. |
 | `session_affinity_sec` | `int` | `0` | How long a conversation stays pinned to the relay that **answered it** (seconds); `0` disables it. With it on, a follow-up turn is tried first on the relay that last served that conversation, because the provider can then reuse its **prompt cache** — on a long context that is real money and real latency, and priority order cannot know which relay is warm. Recorded only after a useful answer; a relay whose breaker is open is not held; entries expire and the table is bounded. |
 | `reload_on_change` | `bool` | `false` | Watch the config file and apply it when it changes (off by default). With it on, editing and saving `config.json` takes effect within a few seconds — it rides the same 3-second tick as the telemetry flush — so no reload click and no restart. A save from the console itself does not produce a spurious "reloaded" line. It is off by default because a config that moves under a running proxy should be something the operator asked for. |
@@ -215,6 +215,7 @@ Accounting rules:
 - Accumulated only when **prices are configured**: relays without pricing count as 0, making the total a lower bound of known spend.
 - Costs are accumulated at **request completion time** using current prices; subsequent price edits do not recalculate history.
 - When `routing_policy` is set to `cheapest`, candidate chains are dynamically sorted by the sum of input and output prices for the requested model.
+- When `routing_policy` is set to `round_robin`, the first relay rotates between the providers in the candidate chain, so equal relays converge on an even traffic split as requests accumulate.
 
 This makes it possible to track fine-grained spend across heterogeneous models and helps answer "which relay is dearer, and what has today cost me".
 
@@ -365,4 +366,3 @@ curl -X POST http://127.0.0.1:8787/__literouter/reload
 
 # Option 3: Click "Reload from disk" in the Settings tab of the console
 ```
-

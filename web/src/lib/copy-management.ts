@@ -23,7 +23,7 @@ export const managementEn: Record<string, string> = {
   managementImportModels: "Add {n} selected models",
   managementModelListHint: "One model ID per line. These names appear in the model list and are matched automatically when automatic routing is enabled. Explicit routes can use models not listed here.",
   managementStreamingHint: "When off, this provider is skipped for streaming requests. Non-streaming requests can still use it.",
-  managementPriorityHint: "Lower values are preferred for automatic model matching. Explicit routes use their target order; fastest/cheapest policies may reorder the result.",
+  managementPriorityHint: "Lower values are preferred for automatic model matching. Explicit routes use their target order; routing policies may reorder the result.",
   managementWeightHint: "For automatic matches at the same priority, higher weight comes first. This is a tie-breaker, not a traffic percentage.",
   managementChatPathHint: "Keep /chat/completions to use the selected protocol’s default endpoint. A custom path overrides that default and is joined to the base URL.",
   managementEmbeddingsPathHint: "Used for embedding requests. The upstream endpoint must accept the OpenAI embeddings format; no embedding protocol conversion is performed.",
@@ -31,6 +31,7 @@ export const managementEn: Record<string, string> = {
   managementEditorConflict: "This item changed while the editor was open. Cancel and reopen it before applying your changes.",
   managementRoutingFastestHint: "The fastest policy ranks these targets by measured p95 latency. The listed order breaks ties; unmeasured targets come last.",
   managementRoutingCheapestHint: "The cheapest policy ranks these targets by input + output token price. The listed order breaks ties; unpriced targets come last.",
+  managementRoutingRoundRobinHint: "The round-robin policy rotates the first relay between requests. A relay's model fallback chain stays together, and session affinity still moves a warm relay to the front.",
   managementAffinityHint: "Session affinity is enabled for {seconds} seconds and may move a conversation’s previous provider to the front.",
   managementDisabledRouteFallback: "This explicit route is disabled. Automatic matching is enabled, so the same model name may still reach providers that list it.",
 
@@ -149,7 +150,7 @@ export const managementZh: Record<string, string> = {
   managementImportModels: "加入已选的 {n} 个模型",
   managementModelListHint: "每行一个模型标识。模型会出现在模型列表中，并在启用自动匹配时参与选站。显式路由也可调用未列在此处的模型。",
   managementStreamingHint: "关闭后，流式请求会跳过此中转站；非流式请求仍可使用。",
-  managementPriorityHint: "自动匹配模型时，数值越小越优先。显式路由按候选顺序；最快或最便宜策略可能重新排序。",
+  managementPriorityHint: "自动匹配模型时，数值越小越优先。显式路由按候选顺序；路由策略可能重新排序。",
   managementWeightHint: "自动匹配且优先级相同时，权重越大越靠前。它用于同级排序，不是流量百分比。",
   managementChatPathHint: "保留 /chat/completions 时使用所选协议的默认接口。自定义路径会替代默认接口，并与基础地址拼接。",
   managementEmbeddingsPathHint: "用于向量请求。上游接口需兼容 OpenAI embeddings 格式，此处不进行向量协议转换。",
@@ -157,6 +158,7 @@ export const managementZh: Record<string, string> = {
   managementEditorConflict: "编辑期间此条目已发生变化，请取消并重新打开后再应用修改。",
   managementRoutingFastestHint: "当前使用最快策略，候选按已测得的 p95 延迟排序；列表顺序用于同分排序，尚无测量数据的目标排后。",
   managementRoutingCheapestHint: "当前使用最便宜策略，候选按输入与输出 Token 单价之和排序；列表顺序用于同价排序，未定价目标排后。",
+  managementRoutingRoundRobinHint: "当前使用平均分流策略，请求会轮流从中转站开始尝试；同一中转站的模型回退顺序保持在一起，会话亲和仍可把热站提到最前。",
   managementAffinityHint: "会话亲和已启用，有效期为 {seconds} 秒，可能优先使用该会话上一次的中转站。",
   managementDisabledRouteFallback: "此显式路由已停用。当前仍启用自动匹配，同名模型可能继续通过列有该模型的中转站调用。",
 

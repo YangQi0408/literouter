@@ -2366,6 +2366,90 @@ void group28RoutingPolicy(StubRelay &relay_a, StubRelay &relay_b) {
         proxy.stop();
     }
 
+    // ── round-robin ─────────────────────────────────────────────────────────
+    {
+        literouter::AppConfig config;
+        start_proxy(config, "round_robin", relay_a, relay_b, 10.0, 1.0);
+        literouter::ProxyServer proxy;
+        const auto started = proxy.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) {
+            return;
+        }
+        const int port = proxy.boundPort();
+        relay_a.resetCounters();
+        relay_b.resetCounters();
+        relay_a.setDelayMs(0);
+        relay_a.setMode(StubRelay::Mode::Normal);
+        relay_b.setMode(StubRelay::Mode::Normal);
+
+        std::vector<int> starts;
+        for (int request = 0; request < 4; ++request) {
+            const int a_before = relay_a.chatRequests();
+            const int b_before = relay_b.chatRequests();
+            LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+            starts.push_back(relay_a.chatRequests() > a_before ? 0 : 1);
+            LR_CHECK_EQ(relay_a.chatRequests() + relay_b.chatRequests(), request + 1);
+        }
+        LR_CHECK_MSG(starts == (std::vector<int>{0, 1, 0, 1}),
+                     "round-robin did not alternate the first relay");
+        LR_CHECK_EQ(relay_a.chatRequests(), 2);
+        LR_CHECK_EQ(relay_b.chatRequests(), 2);
+
+        // A round-robin cursor must not rotate an open relay ahead of a healthy
+        // one. The breaker state survives the policy and remains the first
+        // ordering invariant, with configuration threshold 1 for this probe.
+        relay_a.setMode(StubRelay::Mode::RateLimit);
+        config.server.circuit_failure_threshold = 1;
+        proxy.updateConfig(config);
+        LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+        const int a_after_trip = relay_a.chatRequests();
+        const int b_after_trip = relay_b.chatRequests();
+        LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+        LR_CHECK_MSG(relay_a.chatRequests() == a_after_trip,
+                     "round-robin retried the open relay before the healthy one");
+        LR_CHECK_EQ(relay_b.chatRequests(), b_after_trip + 1);
+        relay_a.setMode(StubRelay::Mode::Normal);
+        proxy.stop();
+    }
+
+    // A single relay with its own model fallback chain still has multiple
+    // candidates. Grouping by relay must not make the candidate list disappear
+    // when there is nobody to rotate against.
+    {
+        literouter::AppConfig config;
+        config.server.host = "127.0.0.1";
+        config.server.port = 0;
+        config.server.pass_through_unknown = false;
+        config.server.persist_telemetry = false;
+        config.server.routing_policy = "round_robin";
+        literouter::ProviderConfig first;
+        first.id = "first";
+        first.base_url = relay_a.baseUrl();
+        first.timeout_sec = 10;
+        first.connect_timeout_sec = 2;
+        first.priority = 10;
+        first.models = {"fallback-model"};
+        config.providers = {first};
+        literouter::RouteConfig route;
+        route.model = kRouteModel;
+        route.targets = {literouter::RouteTarget{.provider = "first", .model = {}}};
+        config.routes = {route};
+
+        literouter::ProxyServer proxy;
+        const auto started = proxy.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) {
+            return;
+        }
+        relay_a.resetCounters();
+        relay_a.setMode(StubRelay::Mode::Normal);
+        LR_CHECK_EQ(postJson(proxy.boundPort(), "/v1/chat/completions", chatRequest(kRouteModel)).status,
+                    200);
+        LR_CHECK_EQ(relay_a.chatRequests(), 1);
+        proxy.stop();
+    }
+
     // Price and historical latency must not undo the breaker's healthy-first
     // order. With one attempt, choosing the open relay would strand a healthy
     // backup indefinitely.

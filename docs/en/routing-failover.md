@@ -199,6 +199,7 @@ The chain is ordered by `priority` (then `weight`) by default, which is the answ
 | `priority` (default) | the declared order | you know the relays' trade-offs and want to keep control |
 | `fastest` | measured **p95** latency (unmeasured last) | several relays serve the model and their latency differs |
 | `cheapest` | input price + output price (unpriced last) | several relays serve the model and their price differs |
+| `round_robin` | rotate the first relay by request | equal relays should share traffic instead of one always serving as primary |
 
 Three rules keep it from becoming "random order":
 
