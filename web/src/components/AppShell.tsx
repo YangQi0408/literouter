@@ -75,36 +75,36 @@ export function AppShell({ tab, onTab, children }: { tab: Tab; onTab: (tab: Tab)
     <div className="min-h-dvh lg:pl-[232px]">
       <a href="#main-content" className="fixed top-3 left-3 z-[100] -translate-y-24 rounded-lg bg-primary px-4 py-3 text-primary-foreground focus:translate-y-0">{t('skipToContent')}</a>
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[232px] flex-col bg-sidebar px-4 py-7 text-sidebar-foreground lg:flex">
-        <div className="px-3 text-white"><Brand /></div>
+        <div className="px-3 text-foreground"><Brand /></div>
         <div className="mt-9 px-3 text-[10px] font-semibold tracking-[0.16em] uppercase text-sidebar-foreground/60">{t('workspaceLabel')}</div>
         <nav className="mt-3 space-y-1.5" aria-label={t('navigationLabel')}>
           {NAV.map(({ tab: page, icon: Icon, label }) => {
             const count = page === 'providers' ? working?.providers.length : page === 'routes' ? working?.routes.length : undefined
             return (
               <button key={page} type="button" aria-current={tab === page ? 'page' : undefined} onClick={() => navigate(page)}
-                className={cn('flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-[13px] font-medium transition-colors', tab === page ? 'bg-white/10 text-white' : 'hover:bg-white/5 hover:text-white')}>
-                <Icon className={cn('size-[18px]', tab === page && 'text-[#b5a5ff]')} strokeWidth={1.7} />
+                className={cn('flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-[13px] font-medium transition-colors', tab === page ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground')}>
+                <Icon className={cn('size-[18px]', tab === page && 'text-sidebar-accent-foreground')} strokeWidth={1.7} />
                 {t(label)}
-                {count !== undefined && <span className="ml-auto rounded-md bg-white/5 px-1.5 py-0.5 text-[10px] tnum text-sidebar-foreground">{count}</span>}
-                {page === 'overview' && tab === page && <span className="ml-auto size-1.5 rounded-full bg-[#b5a5ff]" />}
+                {count !== undefined && <span className="ml-auto rounded-md bg-sidebar-accent px-1.5 py-0.5 text-[10px] tnum text-sidebar-foreground">{count}</span>}
+                {page === 'overview' && tab === page && <span className="ml-auto size-1.5 rounded-full bg-sidebar-accent-foreground" />}
               </button>
             )
           })}
         </nav>
 
         <div className="mt-auto pt-10">
-          <div className="rounded-xl border border-white/8 bg-white/3 p-3.5">
-            <div className="flex items-center gap-2 text-xs font-medium text-white"><CircleDot className="size-4 text-[#a493ef]" />{t('gatewayLabel')}</div>
+          <div className="rounded-xl border border-sidebar-border bg-sidebar-accent/45 p-3.5">
+            <div className="flex items-center gap-2 text-xs font-medium text-sidebar-accent-foreground"><CircleDot className="size-4" />{t('gatewayLabel')}</div>
             <div className="mt-2 truncate font-mono text-[10px] text-sidebar-foreground" title={snapshot?.base_url}>{snapshot?.base_url || '—'}</div>
-            <div className="mt-3 flex items-center justify-between border-t border-white/8 pt-3 text-[10px]">
+            <div className="mt-3 flex items-center justify-between border-t border-sidebar-border pt-3 text-[10px]">
               <span className="flex items-center gap-1.5"><span className={cn('size-1.5 rounded-full', online ? 'bg-emerald-400' : 'bg-rose-400')} />{online ? t('connected') : t('disconnected')}</span>
               <span className="font-mono">{snapshot?.version ? `v${snapshot.version}` : '—'}</span>
             </div>
           </div>
           <div className="mt-4 flex items-center justify-between px-1">
-            <Button size="icon" variant="ghost" className="text-sidebar-foreground hover:bg-white/10 hover:text-white" aria-label={t('themeTitle')} title={t('themeTitle')} onClick={toggle}>{theme === 'dark' ? <Sun /> : <Moon />}</Button>
-            <Button size="icon" variant="ghost" className="text-sidebar-foreground hover:bg-white/10 hover:text-white" aria-label={t('languageTitle')} title={t('languageTitle')} onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')}><Globe /></Button>
-            <Button size="icon" variant="ghost" className="text-sidebar-foreground hover:bg-white/10 hover:text-white" aria-label={t('keyTitle')} title={t('keyTitle')} onClick={openKeyPrompt}><KeyRound /></Button>
+            <Button size="icon" variant="ghost" className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground" aria-label={t('themeTitle')} title={t('themeTitle')} onClick={toggle}>{theme === 'dark' ? <Sun /> : <Moon />}</Button>
+            <Button size="icon" variant="ghost" className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground" aria-label={t('languageTitle')} title={t('languageTitle')} onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')}><Globe /></Button>
+            <Button size="icon" variant="ghost" className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground" aria-label={t('keyTitle')} title={t('keyTitle')} onClick={openKeyPrompt}><KeyRound /></Button>
           </div>
         </div>
       </aside>
