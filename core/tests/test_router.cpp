@@ -157,7 +157,10 @@ void testPassThroughDisabled() {
     // Even an advertised model is unroutable once pass-through is off: only a
     // route reaches a relay.
     LR_CHECK(router.candidatesFor("public-model").empty());
-    LR_CHECK(idsOf(router.candidatesFor("routed")) == (std::vector<std::string>{"a"}));
+    LR_CHECK(idsOf(router.candidatesFor("routed")) ==
+             (std::vector<std::string>{"a", "a"}));
+    LR_CHECK(modelsOf(router.candidatesFor("routed")) ==
+             (std::vector<std::string>{"routed", "public-model"}));
 
     config.server.pass_through_unknown = true;
     router.setConfig(config);
@@ -182,6 +185,43 @@ void testRouteWinsOverPassThrough() {
     Router router;
     router.setConfig(config);
     LR_CHECK(idsOf(router.candidatesFor("shared")) == (std::vector<std::string>{"preferred"}));
+}
+
+void testSameProviderModelFallbacks() {
+    LR_GROUP("candidatesFor: same-provider model fallbacks and model breakers");
+    AppConfig config;
+    config.server.circuit_failure_threshold = 1;
+    config.server.circuit_cooldown_sec = 30;
+    auto provider = relay("relay");
+    provider.models = {"primary", "backup", "backup"};
+    config.providers = {provider};
+    RouteConfig route;
+    route.model = "logical";
+    route.targets = {RouteTarget{.provider = "relay", .model = "primary"}};
+    config.routes = {route};
+
+    Router router;
+    router.setConfig(config);
+    auto candidates = router.candidatesFor("logical");
+    LR_CHECK(modelsOf(candidates) ==
+             (std::vector<std::string>{"primary", "backup"}));
+    LR_CHECK(!candidates[0].skipped && !candidates[1].skipped);
+
+    const double base = literouter::nowUnix();
+    router.recordFailure("relay", "primary", "HTTP 429", base);
+    candidates = router.candidatesFor("logical");
+    LR_CHECK(candidates.size() == 2);
+    LR_CHECK(candidates[0].skipped && !candidates[1].skipped);
+    LR_CHECK(router.circuitOpen("relay", "primary", base));
+    LR_CHECK(!router.circuitOpen("relay", "backup", base));
+
+    const auto health = router.health(base);
+    LR_CHECK(!health.empty() && health[0].state != ProviderHealth::State::Open);
+    LR_CHECK_EQ(router.openBreakerCount(base), 1);
+
+    router.recordFailure("relay", "backup", "HTTP 429", base);
+    const auto all_open = router.health(base);
+    LR_CHECK(!all_open.empty() && all_open[0].state == ProviderHealth::State::Open);
 }
 
 void testCircuitBreaker() {
@@ -425,6 +465,7 @@ int main() {
     testPassThroughOrdering();
     testPassThroughDisabled();
     testRouteWinsOverPassThrough();
+    testSameProviderModelFallbacks();
     testCircuitBreaker();
     testHealthStates();
     testRetryableStatus();

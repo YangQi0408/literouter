@@ -2464,7 +2464,7 @@ struct ProxyServer::Impl {
             if (!result.ok) {
                 last_error = std::format("{}: {}", provider->id, result.error);
                 last_status = 502;
-                router.recordFailure(provider->id, result.error, nowUnix());
+                router.recordFailure(provider->id, upstream_model, result.error, nowUnix());
                 // No response at all: the request never reached the relay's
                 // socket, so it counts as nothing sent.
                 recordAttempt(provider->id, AttemptOutcome::Failure, result.latency_ms, 0, 0, 0);
@@ -2481,7 +2481,7 @@ struct ProxyServer::Impl {
                                  ? std::format("{}: Cloudflare WAF blocked (HTTP {})", provider->id, result.status)
                                  : std::format("{}: HTTP {}", provider->id, result.status);
                 last_status = result.status;
-                router.recordFailure(provider->id, last_error, nowUnix(),
+                router.recordFailure(provider->id, upstream_model, last_error, nowUnix(),
                                      retryAfterSeconds(result.headers));
                 recordAttempt(provider->id, AttemptOutcome::Failure, result.latency_ms, 0, 0, 0,
                               payload.size());
@@ -2504,9 +2504,9 @@ struct ProxyServer::Impl {
             const bool good = result.status >= 200 && result.status < 300;
             const bool relay_behaved = good || (!retryable && !is_html_err && result.status != 403);
             if (relay_behaved) {
-                router.recordSuccess(provider->id, result.latency_ms, nowUnix());
+                router.recordSuccess(provider->id, upstream_model, result.latency_ms, nowUnix());
             } else {
-                router.recordFailure(provider->id, std::format("HTTP {}", result.status),
+                router.recordFailure(provider->id, upstream_model, std::format("HTTP {}", result.status),
                                      nowUnix(), retryAfterSeconds(result.headers));
             }
 
@@ -2642,7 +2642,9 @@ struct ProxyServer::Impl {
         std::string scheme;
         if (!splitBaseUrl(provider.base_url, root, prefix, scheme)) {
             last_error = std::format("{}: invalid base_url", provider.id);
-            router.recordFailure(provider.id, "invalid base_url", nowUnix());
+            router.recordFailure(provider.id,
+                                 candidate.model.empty() ? ctx.model : candidate.model,
+                                 "invalid base_url", nowUnix());
             recordAttempt(provider.id, AttemptOutcome::Failure, 0.0, 0, 0, 0);
             return 502;
         }
@@ -2834,7 +2836,7 @@ struct ProxyServer::Impl {
             }
             last_error = std::format("{}: {}", provider.id, reason);
             retireUpstreamConnection(root, provider);
-            router.recordFailure(provider.id, reason, nowUnix());
+            router.recordFailure(provider.id, upstream_model, reason, nowUnix());
             recordAttempt(provider.id, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0);
             logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
@@ -2880,7 +2882,7 @@ struct ProxyServer::Impl {
             retireUpstreamConnection(root, provider);
             // A streamed 429 has the same thing to say about when it will be
             // ready as a buffered one does.
-            router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix(),
+            router.recordFailure(provider.id, upstream_model, std::format("HTTP {}", status), nowUnix(),
                                  retryAfterSeconds(retry_headers));
             recordAttempt(provider.id, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
@@ -2935,7 +2937,7 @@ struct ProxyServer::Impl {
                 last_error = is_cf_block
                                  ? std::format("{}: Cloudflare WAF blocked (HTTP {})", provider.id, status)
                                  : std::format("{}: HTTP {}", provider.id, status);
-                router.recordFailure(provider.id, last_error, nowUnix(),
+                router.recordFailure(provider.id, upstream_model, last_error, nowUnix(),
                                      retryAfterSeconds(error_headers));
                 recordAttempt(provider.id, AttemptOutcome::Failure,
                               (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
@@ -2949,9 +2951,9 @@ struct ProxyServer::Impl {
             const bool ok_status = status >= 200 && status < 300;
             const bool relay_behaved = ok_status || (!retryable && !is_html_err && status != 403);
             if (relay_behaved) {
-                router.recordSuccess(provider.id, 0.0, nowUnix());
+                router.recordSuccess(provider.id, upstream_model, 0.0, nowUnix());
             } else {
-                router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix(),
+                router.recordFailure(provider.id, upstream_model, std::format("HTTP {}", status), nowUnix(),
                                      retryAfterSeconds(error_headers));
             }
             ProviderStat error_usage;
@@ -3011,14 +3013,14 @@ struct ProxyServer::Impl {
         const bool good = status >= 200 && status < 300;
         const bool relay_ok = good || !Router::retryableStatus(status);
         if (relay_ok) {
-            router.recordSuccess(provider.id, 0.0, nowUnix());
+            router.recordSuccess(provider.id, upstream_model, 0.0, nowUnix());
         } else {
             std::vector<std::pair<std::string, std::string>> commit_headers;
             {
                 std::scoped_lock lock{bridge->mutex};
                 commit_headers = bridge->headers;
             }
-            router.recordFailure(provider.id, std::format("HTTP {}", status), nowUnix(),
+            router.recordFailure(provider.id, upstream_model, std::format("HTTP {}", status), nowUnix(),
                                  retryAfterSeconds(commit_headers));
         }
 
@@ -3143,7 +3145,7 @@ struct ProxyServer::Impl {
                             // as a transport error, never gain a success marker
                             // or concatenate bytes from a second provider.
                             retireUpstreamConnection(provider_root, provider);
-                            router.recordFailure(provider_id, transport_error, nowUnix());
+                            router.recordFailure(provider_id, upstream_model, transport_error, nowUnix());
                             const double latency = (nowUnix() - attempt_started) * 1000.0;
                             const auto bytes = bridge->bytes_out.load();
                             const auto tokens = usage_observer->usage();
