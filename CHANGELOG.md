@@ -5,6 +5,18 @@
 
 ---
 
+## [0.3.1] - 2026-09-27
+
+详细说明见 [docs/release-notes/v0.3.1.md](docs/release-notes/v0.3.1.md)。
+
+### Added
+- Web 控制台的请求活动页新增请求路径、入站/出站协议、客户端 IP 与 User-Agent、请求与响应大小、输入/输出 Token、预估费用及本地缓存命中状态。
+- 活动列表支持按缓存命中、故障转移和错误筛选，并汇总当前筛选结果中的 Token、预估费用与缓存命中数。
+- 日志详情按请求、路由和用量分区展示，模型重命名、上游协议、三阶段耗时、故障转移和请求正文仍可完整追踪。
+
+### Changed
+- 核心日志条目新增 `method`、`path`、`ingress_protocol`、`client_ip`、`user_agent`、`upstream_protocol`、`request_bytes`、`prompt_tokens`、`completion_tokens`、`cost_usd` 与 `cache_status` 字段；管理 API 与 CLI 的 JSON 输出同步扩展，旧日志仍可读取。
+
 ## [0.3.0] - 2026-09-26
 
 详细说明见 [docs/release-notes/v0.3.0.md](docs/release-notes/v0.3.0.md)。

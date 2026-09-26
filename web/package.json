@@ -1,7 +1,7 @@
 {
   "name": "literouter-console",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "literouter's built-in web console — served by the proxy at /ui",
   "license": "Apache-2.0",
