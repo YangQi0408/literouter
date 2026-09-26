@@ -24,6 +24,20 @@ function cacheLabel(t: (key: string) => string, status: string) {
   return t('activityCacheSkipped')
 }
 
+/** The request line and the wire protocols, kept compact enough for a table
+ *  cell: the details dialog carries the full untruncated values. */
+function requestLine(entry: LogEntry) {
+  if (entry.method && entry.path) return `${entry.method} ${entry.path}`
+  return entry.path || ''
+}
+
+function protocolLine(entry: LogEntry) {
+  const ingress = entry.ingress_protocol || ''
+  const upstream = entry.upstream_protocol || ''
+  if (ingress && upstream && ingress !== upstream) return `${ingress} → ${upstream}`
+  return ingress || upstream
+}
+
 export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }: { entries: LogEntry[]; emptyFiltered?: boolean; onConfigureLogging: () => void }) {
   const { t } = useI18n()
   const [selected, setSelected] = useState<LogEntry | null>(null)
@@ -51,12 +65,13 @@ export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }:
   return (
     <>
       <div className="hidden max-h-[calc(100dvh-20rem)] min-h-40 overflow-auto md:block">
-        <table className="w-full min-w-[880px]">
+        <table className="w-full min-w-[1120px]">
           <thead>
             <tr>
               <th>{t('colTime')}</th>
               <th>{t('colLevel')}</th>
               <th>{t('colModel')}</th>
+              <th>{t('colRequestClient')}</th>
               <th>{t('colProvider')}</th>
               <th className="text-right">{t('colStatus')}</th>
               <th className="text-right">{t('colLatency')}</th>
@@ -79,6 +94,11 @@ export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }:
                     {entry.failover ? <span className="rounded bg-warn/10 px-1.5 py-0.5 text-warn">{t('activityFailover')}</span> : null}
                   </div>
                 </td>
+                <td className="align-top">
+                  <div className="max-w-64 truncate font-mono text-[11px]" title={requestLine(entry)}>{requestLine(entry) || '—'}</div>
+                  {protocolLine(entry) ? <div className="mt-1 max-w-64 truncate font-mono text-[10px] text-muted-foreground" title={protocolLine(entry)}>{protocolLine(entry)}</div> : null}
+                  {entry.client_ip || entry.user_agent ? <div className="mt-1 max-w-64 truncate text-[10px] text-muted-foreground" title={[entry.client_ip, entry.user_agent].filter(Boolean).join(' · ')}>{[entry.client_ip, entry.user_agent].filter(Boolean).join(' · ')}</div> : null}
+                </td>
                 <td><div className="max-w-36 truncate text-xs" title={entry.provider}>{entry.provider || '—'}</div>{entry.cache_status ? <div className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground"><Database className="size-3" />{cacheLabel(t, entry.cache_status)}</div> : null}</td>
                 <td className="text-right"><Badge variant="outline" className={statusBadgeClass(entry.status)}>{entry.status || '—'}</Badge></td>
                 <td className="whitespace-nowrap text-right font-mono text-xs tnum" title={latencyTitle(entry)}>{entry.latency_ms ? humanMillis(entry.latency_ms) : '—'}</td>
@@ -100,9 +120,12 @@ export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }:
               <div className="flex items-center gap-1.5"><Badge variant="outline" className={statusBadgeClass(entry.status)}>{entry.status || '—'}</Badge><ChevronRight className="size-3.5 text-muted-foreground" /></div>
             </div>
             <div className="space-y-1"><p className="truncate font-mono text-sm font-medium">{entry.model || kindName(entry.kind)}</p><p className="truncate text-xs text-muted-foreground">{entry.provider || kindName(entry.kind)}{entry.stream ? ` · ${t('activityStream')}` : ''}{entry.failover ? ` · ${t('activityFailover')}` : ''}{entry.cache_status ? ` · ${cacheLabel(t, entry.cache_status)}` : ''}</p></div>
+            {requestLine(entry) ? <div className="space-y-1 font-mono text-[11px] text-muted-foreground"><p className="truncate" title={requestLine(entry)}>{requestLine(entry)}</p>{protocolLine(entry) ? <p className="truncate" title={protocolLine(entry)}>{protocolLine(entry)}</p> : null}{entry.client_ip || entry.user_agent ? <p className="truncate" title={[entry.client_ip, entry.user_agent].filter(Boolean).join(' · ')}>{[entry.client_ip, entry.user_agent].filter(Boolean).join(' · ')}</p> : null}</div> : null}
             {entry.message ? <p className="line-clamp-2 break-words text-xs leading-relaxed text-muted-foreground">{entry.message}</p> : null}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted-foreground">
               {entry.latency_ms ? <span className="flex items-center gap-1.5"><Clock3 className="size-3" />{humanMillis(entry.latency_ms)}</span> : null}
+              {entry.request_bytes > 0 ? <span>{humanBytes(entry.request_bytes)} ↑</span> : null}
+              {entry.bytes > 0 ? <span>{humanBytes(entry.bytes)} ↓</span> : null}
               {tokenTotal(entry) > 0 ? <span>{t('activityTokenCount', { count: humanCount(tokenTotal(entry)) })}</span> : null}
               {entry.cost_usd > 0 ? <span>${entry.cost_usd.toFixed(4)}</span> : null}
             </div>

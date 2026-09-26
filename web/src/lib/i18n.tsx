@@ -116,6 +116,7 @@ const en: Record<string, string> = {
   colLevel: 'Level',
   colKind: 'Kind',
   colModel: 'Model',
+  colRequestClient: 'Request / client',
   colStatus: 'Status',
   colMessage: 'Message',
 
@@ -295,6 +296,7 @@ const zh: Record<string, string> = {
   colLevel: '级别',
   colKind: '类型',
   colModel: '模型',
+  colRequestClient: '请求 / 客户端',
   colStatus: '状态',
   colMessage: '消息',
 
