@@ -43,22 +43,24 @@ jobs:
           set -euo pipefail
           notes_file=""
           version="$INPUT_VERSION"
+          changed_files=""
+          changelog_changed=false
 
           if [ -z "$version" ]; then
             changed_files="$(git diff --name-only "${{ github.event.before || 'HEAD~1' }}" "${{ github.sha }}" || true)"
-            while IFS= read -r file; do
-              [ -n "$file" ] || continue
-              if [[ "$file" =~ ^docs/release-notes/.*\.md$ ]]; then
-                notes_file="$file"
-                version="$(basename "$file" .md)"
-                break
-              fi
-              if [ "$file" = "CHANGELOG.md" ]; then
-                notes_file="$file"
-                version="$(grep -oE '##[[:space:]]*\[?v?[0-9]+\.[0-9]+\.[0-9]+' "$file" | head -n 1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+')"
-                break
-              fi
-            done <<< "$changed_files"
+
+            if grep -qxF 'CHANGELOG.md' <<< "$changed_files"; then
+              changelog_changed=true
+              version="$(grep -oE '##[[:space:]]*\[?v?[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -n 1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+')"
+            else
+              while IFS= read -r file; do
+                [ -n "$file" ] || continue
+                if [[ "$file" =~ ^docs/release-notes/(v?[0-9]+\.[0-9]+\.[0-9]+)\.md$ ]]; then
+                  version="${BASH_REMATCH[1]}"
+                  break
+                fi
+              done <<< "$changed_files"
+            fi
           fi
 
           version="${version#v}"
@@ -68,13 +70,13 @@ jobs:
           fi
           tag="v$version"
 
-          if [ -z "$notes_file" ]; then
-            if [ -f "docs/release-notes/$tag.md" ]; then
-              notes_file="docs/release-notes/$tag.md"
-            elif [ -f "docs/release-notes/$version.md" ]; then
-              notes_file="docs/release-notes/$version.md"
+          for candidate in "docs/release-notes/$tag.md" "docs/release-notes/$version.md"; do
+            if [ -f "$candidate" ]; then
+              notes_file="$candidate"
+              break
             fi
-          fi
+          done
+
           if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
             echo "tag already exists: $tag" >&2
             exit 1
@@ -86,6 +88,18 @@ jobs:
             echo "release_notes<<$delimiter"
             if [ -n "$notes_file" ] && [ -f "$notes_file" ]; then
               cat "$notes_file"
+            elif [ "$changelog_changed" = true ]; then
+              awk -v version="$version" '
+                /^## \[/ {
+                  if (capture) exit
+                  heading=$0
+                  sub(/^## \[/, "", heading)
+                  sub(/\].*/, "", heading)
+                  sub(/^v/, "", heading)
+                  if (heading == version) capture=1
+                }
+                capture { print }
+              ' CHANGELOG.md
             else
               echo "Release $tag"
             fi
