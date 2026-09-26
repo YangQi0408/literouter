@@ -7,31 +7,20 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
+import { ACTIVITY_KINDS, filterActivity } from '@/lib/activity'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 
-export function Logs() {
+export function Logs({ initialQuery = '', onConfigureLogging }: { initialQuery?: string; onConfigureLogging: () => void }) {
   const { logs, logsPaused, setLogsPaused, clearLogs, online } = useStore()
   const { t } = useI18n()
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(initialQuery)
   const [level, setLevel] = useState('all')
   const [kind, setKind] = useState('all')
   const deferredQuery = useDeferredValue(query)
   const hasFilters = Boolean(query.trim() || level !== 'all' || kind !== 'all')
 
-  const filtered = useMemo(() => {
-    const needle = deferredQuery.trim().toLowerCase()
-    return logs
-      .filter((entry) => {
-        if (level !== 'all' && entry.level !== level) return false
-        if (kind !== 'all' && entry.kind !== kind) return false
-        if (!needle) return true
-        return [entry.message, entry.model, entry.provider, entry.request_id, entry.upstream_model]
-          .some((field) => String(field ?? '').toLowerCase().includes(needle))
-      })
-      .slice(-800)
-      .reverse()
-  }, [logs, deferredQuery, level, kind])
+  const filtered = useMemo(() => filterActivity(logs, deferredQuery, level, kind), [logs, deferredQuery, level, kind])
 
   function resetFilters() {
     setQuery('')
@@ -80,27 +69,21 @@ export function Logs() {
               <SelectTrigger aria-label={t('activityFilterKind')} className="h-10 min-w-0 flex-1 text-xs sm:w-36 sm:flex-none"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">{t('allKinds')}</SelectItem>
-                <SelectItem value="chat">{t('activityKindChat')}</SelectItem>
-                <SelectItem value="embeddings">{t('activityKindEmbeddings')}</SelectItem>
-                <SelectItem value="audio">{t('kindAudio')}</SelectItem>
-                <SelectItem value="images">{t('kindImages')}</SelectItem>
-                <SelectItem value="models">{t('activityKindModels')}</SelectItem>
-                <SelectItem value="admin">{t('activityKindAdmin')}</SelectItem>
-                <SelectItem value="system">{t('activityKindSystem')}</SelectItem>
+                {Object.entries(ACTIVITY_KINDS).map(([value, label]) => <SelectItem key={value} value={value}>{t(label)}</SelectItem>)}
               </SelectContent>
             </Select>
             <span className="mx-1 hidden h-5 w-px bg-border sm:block" />
             <Button size="icon" variant={logsPaused ? 'secondary' : 'ghost'} aria-label={logsPaused ? t('resume') : t('pause')} title={logsPaused ? t('resume') : t('pause')} onClick={() => setLogsPaused(!logsPaused)}>
               {logsPaused ? <Play className="size-4" /> : <Pause className="size-4" />}
             </Button>
-            <Button size="icon" variant="ghost" aria-label={t('clear')} title={t('clear')} onClick={clearLogs} disabled={!logs.length}><Trash2 className="size-4" /></Button>
+            <Button size="icon" variant="ghost" aria-label={t('activityClearView')} title={t('activityClearView')} onClick={clearLogs} disabled={!logs.length}><Trash2 className="size-4" /></Button>
           </div>
         </div>
         <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-muted/15 px-5 py-3 text-xs text-muted-foreground">
           <span aria-live="polite">{t('activityCount', { shown: filtered.length, total: logs.length })}</span>
           {hasFilters ? <button type="button" className="flex items-center gap-1 text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={resetFilters}><X className="size-3" />{t('activityReset')}</button> : <span className="flex items-center gap-1.5"><ArrowDownWideNarrow className="size-3.5" />{t('activityNewest')}</span>}
         </div>
-        <LogTable entries={filtered} emptyFiltered={hasFilters} />
+        <LogTable entries={filtered} emptyFiltered={hasFilters} onConfigureLogging={onConfigureLogging} />
       </Card>
     </div>
   )

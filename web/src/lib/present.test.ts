@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
 import { makeProvider } from '@/lib/config-fixture'
-import { formatTokens, keySummary, stateBadgeClass, statusBadgeClass } from '@/lib/present'
+import { clientBaseUrl, formatTokens, keySummary, stateBadgeClass, statusBadgeClass } from '@/lib/present'
 
 const t = (key: string, vars?: Record<string, string | number>) =>
   vars ? `${key}:${Object.values(vars).join(',')}` : key
+
+describe('client connection address', () => {
+  it('includes the API prefix exactly once', () => {
+    expect(clientBaseUrl('http://127.0.0.1:8788')).toBe('http://127.0.0.1:8788/v1')
+    expect(clientBaseUrl('https://localhost:8788/')).toBe('https://localhost:8788/v1')
+    expect(clientBaseUrl('https://localhost:8788/v1/')).toBe('https://localhost:8788/v1')
+    expect(clientBaseUrl('')).toBe('')
+  })
+})
 
 describe('keySummary never leaks more than the server sent', () => {
   it('names the variable behind an environment reference', () => {

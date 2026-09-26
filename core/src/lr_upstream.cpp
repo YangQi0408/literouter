@@ -326,10 +326,10 @@ UpstreamResult upstreamPostRaw(const ProviderConfig &provider, std::string_view 
     // override behavior. Media callers supply an explicit payload MIME type.
     if (!content_type.empty()) header_set.put("Content-Type", std::string{content_type});
     const auto headers = header_set.toHttplib();
-    const std::string effective_type = content_type.empty() ? "application/json" : std::string{content_type};
-
     const auto attempt = [&](h::Client &client) {
-        return client.Post(target, headers, std::string{body}, effective_type);
+        // HeaderSet already selected the content type. Post's MIME argument
+        // appends another header instead of replacing it, so leave it empty.
+        return client.Post(target, headers, std::string{body}, "");
     };
 
     h::Result result;

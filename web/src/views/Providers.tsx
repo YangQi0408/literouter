@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import type { ProviderConfig } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
+import { canProbeProvider, providerRemovalImpact, removeProvider, replaceProvider } from '@/lib/provider-route-edit'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 
@@ -41,9 +42,8 @@ export function Providers() {
     setProbing((prev) => new Set(prev).add(id))
     try {
       await probe(id)
-    } catch (error) {
+    } catch {
       // The store handles connection and authentication failures.
-      toast.error(t('probeFail', { detail: error instanceof Error ? error.message : String(error) }))
     } finally {
       setProbing((prev) => {
         const next = new Set(prev)
@@ -111,7 +111,7 @@ export function Providers() {
               : provider.api_key_source === 'literal' ? t('keyStored') : t('keyNone')
             const models = provider.models ?? []
             const saved = loaded?.config.providers.find((item) => item.id === provider.id)
-            const canProbe = !!saved && JSON.stringify(saved) === JSON.stringify(provider)
+            const canProbe = canProbeProvider(provider, saved)
             return (
               <article key={`${provider.id}-${index}`} className="group flex min-w-0 flex-col overflow-hidden rounded-2xl border bg-card transition-[border-color,box-shadow] hover:border-primary/25 hover:shadow-md hover:shadow-primary/3">
                 <div className="flex items-start gap-3 p-5 pb-4">
@@ -147,16 +147,19 @@ export function Providers() {
                   {provider.note ? <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">{provider.note}</p> : null}
                 </div>
 
+                {!canProbe ? <p className="px-5 pb-3 text-xs text-muted-foreground">{t('managementSaveToProbe')}</p> : null}
                 <div className="flex items-center gap-1 border-t bg-muted/20 px-3 py-2">
                   <span title={!canProbe ? t('managementSaveToProbe') : undefined}>
-                    <Button size="sm" variant="ghost" disabled={!canProbe || probing.has(provider.id)} onClick={() => void runProbe(provider.id)}>
+                    <Button size="sm" variant="ghost" title={t('managementProbeHint')} disabled={!canProbe || probing.has(provider.id)} onClick={() => void runProbe(provider.id)}>
                       {probing.has(provider.id) ? <LoaderCircle className="size-3.5 animate-spin" /> : <Radio className="size-3.5" />}{t(probing.has(provider.id) ? 'testing' : 'test')}
                     </Button>
                   </span>
                   <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setEditing({ index, draft: provider, isNew: false })}><Pencil className="size-3.5" />{t('edit')}</Button>
                   <Button size="icon" variant="ghost" aria-label={t('managementRemoveProvider', { id: provider.id })} title={t('remove')} className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive" onClick={() => {
-                    if (!window.confirm(t('confirmDeleteProvider', { id: provider.id }))) return
-                    update((draft) => { draft.providers.splice(index, 1) })
+                    const impact = providerRemovalImpact(working, provider.id)
+                    const message = impact.targets ? t('managementConfirmDeleteReferencedProvider', { id: provider.id, targets: impact.targets, routes: impact.routes.length, models: impact.routes.join(', ') || '—' }) : t('confirmDeleteProvider', { id: provider.id })
+                    if (!window.confirm(message)) return
+                    update((draft) => removeProvider(draft, index))
                   }}><Trash2 className="size-3.5" /></Button>
                 </div>
               </article>
@@ -176,7 +179,11 @@ export function Providers() {
 
       {editing ? (
         <ProviderDialog key={`${editing.index}-${editing.isNew}`} open draft={editing.draft} isNew={editing.isNew} onCancel={() => setEditing(null)} onApply={(provider) => {
-          update((draft) => { if (editing.isNew) draft.providers.push(provider); else draft.providers[editing.index] = provider })
+          if (!editing.isNew && JSON.stringify(working.providers[editing.index]) !== JSON.stringify(editing.draft)) {
+            toast.error(t('managementEditorConflict'))
+            return
+          }
+          update((draft) => { if (editing.isNew) draft.providers.push(provider); else replaceProvider(draft, editing.index, provider) })
           setEditing(null)
         }} />
       ) : null}

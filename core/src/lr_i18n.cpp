@@ -29,6 +29,7 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
     {"cannot initialize HTTPS listener from TLS files", "无法使用 TLS 文件初始化 HTTPS 监听"},
     // Relay-side protection.
     {"relay concurrency and rate limits cannot be negative", "中转站并发与速率限制不可为负数"},
+    {"no relay for this model supports streaming", "该模型没有支持流式请求的中转站"},
     // The traffic trend's window.
     {"a trend needs at least two buckets to show a shape", "趋势图至少需要两个桶才能显示出形状"},
     // The local response cache.

@@ -4,7 +4,7 @@ import {
   Route as RouteIcon, Save, Server, Settings2, SquareTerminal, Sun,
   TriangleAlert, WifiOff, X, Zap,
 } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import { Issues } from '@/components/Issues'
 import { Button } from '@/components/ui/button'
@@ -53,6 +53,13 @@ export function AppShell({ tab, onTab, children }: { tab: Tab; onTab: (tab: Tab)
   const [refreshing, setRefreshing] = useState(false)
   const active = NAV.find((item) => item.tab === tab) ?? NAV[0]!
   const changes = working && loaded ? countChanges(working, loaded.config) : 0
+
+  useEffect(() => {
+    if (!dirty) return
+    const protectDraft = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', protectDraft)
+    return () => window.removeEventListener('beforeunload', protectDraft)
+  }, [dirty])
 
   async function refreshStatus() {
     setRefreshing(true)
@@ -120,7 +127,8 @@ export function AppShell({ tab, onTab, children }: { tab: Tab; onTab: (tab: Tab)
         </div>
       </header>
 
-      {consoleOff && <div className="flex flex-wrap items-center gap-3 border-b border-warn/20 bg-warn/5 px-5 py-3 text-xs text-warn"><TriangleAlert className="size-4" />{t('consoleDisabled')}<Button size="sm" variant="ghost" className="ml-auto text-warn" onClick={() => update((draft) => { draft.server.web_ui = true })}>{t('hintWebUi')}</Button></div>}
+      {consoleOff && <div className="flex flex-wrap items-center gap-3 border-b border-warn/20 bg-warn/5 px-5 py-3 text-xs text-warn"><TriangleAlert className="size-4" />{t('consoleDisabled')}<Button size="sm" variant="ghost" className="ml-auto text-warn" onClick={() => update((draft) => { draft.server.web_ui = true })}>{t('restoreConsoleDraft')}</Button></div>}
+      {!dirty && saveIssues.length > 0 && <div className="mx-4 mt-5 sm:mx-7 lg:mx-9" role="alert"><Issues issues={saveIssues} /></div>}
       {!online && <div className="mx-4 mt-5 flex flex-wrap items-center gap-3 rounded-xl border border-warn/20 bg-warn/5 p-4 sm:mx-7 lg:mx-9">
         <WifiOff className="size-4 shrink-0 text-warn" />
         <div className="min-w-0 flex-1"><p className="text-sm font-medium">{t(snapshot ? 'connectionLost' : 'connectingGateway')}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t(snapshot ? 'connectionLostNote' : 'connectionInitialNote')}</p></div>
@@ -164,7 +172,7 @@ export function AppShell({ tab, onTab, children }: { tab: Tab; onTab: (tab: Tab)
               { icon: RefreshCw, title: 'reload', note: 'reloadNote', action: () => { if (!dirty || window.confirm(t('confirmReloadDraft'))) { setControls(false); void reload() } } },
               { icon: Zap, title: 'resetStats', note: 'resetNote', action: () => { if (window.confirm(t('confirmResetStats'))) { setControls(false); void resetStats() } } },
               { icon: Power, title: 'shutdown', note: 'shutdownNote', action: () => { if (window.confirm(t('confirmShutdown'))) { setControls(false); void shutdown() } } },
-            ].map(({ icon: Icon, title, note, action }) => <button type="button" key={title} onClick={action} className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition-colors hover:bg-muted"><span className={cn('flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted', title === 'shutdown' && 'bg-destructive/10 text-destructive')}><Icon className="size-4" /></span><span className="flex-1"><span className="block text-sm font-medium">{t(title)}</span><span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{t(note)}</span></span><ArrowUpRight className="size-4 shrink-0 text-muted-foreground" /></button>)}
+            ].map(({ icon: Icon, title, note, action }) => <button type="button" key={title} disabled={!online || saving} onClick={action} className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"><span className={cn('flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted', title === 'shutdown' && 'bg-destructive/10 text-destructive')}><Icon className="size-4" /></span><span className="flex-1"><span className="block text-sm font-medium">{t(title)}</span><span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{t(note)}</span></span><ArrowUpRight className="size-4 shrink-0 text-muted-foreground" /></button>)}
           </div>
         </DialogContent>
       </Dialog>

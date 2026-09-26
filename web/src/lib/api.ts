@@ -7,7 +7,7 @@ import { normalizeConfig } from '@/lib/normalize'
 
 
 export type LogLevel = 'info' | 'warn' | 'error'
-export type LogKind = 'chat' | 'embeddings' | 'models' | 'admin' | 'system'
+export type LogKind = 'chat' | 'embeddings' | 'responses' | 'anthropic' | 'gemini' | 'gemini_stream' | 'audio' | 'images' | 'models' | 'admin' | 'system'
 export type HealthState = 'unknown' | 'healthy' | 'degraded' | 'open'
 export type Protocol =
   | 'openai'
@@ -49,6 +49,9 @@ export interface LogEntry {
   stream_ms: number
   bytes: number
   message: string
+  /** Redacted and size-limited by the server; omitted when body logging is off. */
+  request_body?: string
+  response_body?: string
 }
 
 export interface ProviderStat {
@@ -296,14 +299,17 @@ export class ApiError extends Error {
 
 const KEY_STORAGE = 'lr.key'
 
-let apiKey = localStorage.getItem(KEY_STORAGE) ?? ''
+let apiKey = ''
+try { apiKey = localStorage.getItem(KEY_STORAGE) ?? '' } catch { /* Storage can be disabled. */ }
 
 export const getApiKey = () => apiKey
 
 export function setApiKey(key: string) {
   apiKey = key.trim()
-  if (apiKey) localStorage.setItem(KEY_STORAGE, apiKey)
-  else localStorage.removeItem(KEY_STORAGE)
+  try {
+    if (apiKey) localStorage.setItem(KEY_STORAGE, apiKey)
+    else localStorage.removeItem(KEY_STORAGE)
+  } catch { /* Keep the entered key usable for this page even without storage. */ }
 }
 
 function errorMessage(body: unknown, fallback: string): string {
@@ -317,12 +323,23 @@ function errorMessage(body: unknown, fallback: string): string {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const requestKey = apiKey
   const headers: Record<string, string> = { Accept: 'application/json' }
-  if (apiKey) headers['x-api-key'] = apiKey
+  if (requestKey) headers['x-api-key'] = requestKey
   if (init.body) headers['Content-Type'] = 'application/json'
 
-  const response = await fetch(path, { ...init, headers })
-  const text = await response.text()
+  const { response, text } = await (async () => {
+    try {
+      const response = await fetch(path, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(30_000) })
+      return { response, text: await response.text() }
+    } catch (error) {
+      if (requestKey !== apiKey) throw new DOMException('Credentials changed', 'AbortError')
+      throw error
+    }
+  })()
+  // A response authorized with the old key must not reopen the login dialog or
+  // replace data after the operator has supplied a different credential.
+  if (requestKey !== apiKey) throw new DOMException('Credentials changed', 'AbortError')
   let data: unknown = null
   if (text) {
     try {

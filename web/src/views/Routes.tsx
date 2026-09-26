@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowRight, GitBranch, Pencil, Plus, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { toast } from 'sonner'
 
 import { RouteDialog, blankRoute } from '@/components/RouteDialog'
 import { Badge } from '@/components/ui/badge'
@@ -44,9 +45,10 @@ export function Routes() {
 
       <div className="flex items-start gap-3 rounded-2xl border border-primary/15 bg-primary/5 p-4 sm:p-5">
         <ShieldCheck aria-hidden className="mt-0.5 size-5 shrink-0 text-primary" />
-        <div><p className="text-sm font-medium">{t('managementFailoverTitle')}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('routeHint')}</p></div>
+        <div><p className="text-sm font-medium">{t('managementFailoverTitle')}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t(working.server.routing_policy === 'fastest' ? 'managementRoutingFastestHint' : working.server.routing_policy === 'cheapest' ? 'managementRoutingCheapestHint' : 'routeHint')}</p></div>
       </div>
 
+      {working.server.session_affinity_sec > 0 ? <p className="text-xs text-muted-foreground">{t('managementAffinityHint', { seconds: working.server.session_affinity_sec })}</p> : null}
       <div className="relative w-full sm:max-w-sm">
         <Search aria-hidden className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('managementSearchRoutes')} aria-label={t('managementSearchRoutes')} className="h-10 bg-card pl-9" />
@@ -88,7 +90,7 @@ export function Routes() {
                 })}
                 {!(route.targets ?? []).length ? <li className="text-sm text-muted-foreground">{t('managementNoTargets')}</li> : null}
               </ol>
-              {!route.enabled ? <div className="border-t px-5 py-2.5 text-xs text-muted-foreground">{t('managementRouteDisabled')}</div> : null}
+              {!route.enabled ? <div className="border-t px-5 py-2.5 text-xs text-muted-foreground">{t(working.server.pass_through_unknown ? 'managementDisabledRouteFallback' : 'managementRouteDisabled')}</div> : null}
             </article>
           ))}
         </div>
@@ -102,6 +104,10 @@ export function Routes() {
       )}
 
       {editing ? <RouteDialog key={`${editing.index}-${editing.isNew}`} open draft={editing.draft} isNew={editing.isNew} onCancel={() => setEditing(null)} onApply={(route) => {
+        if (!editing.isNew && JSON.stringify(working.routes[editing.index]) !== JSON.stringify(editing.draft)) {
+          toast.error(t('managementEditorConflict'))
+          return
+        }
         update((draft) => { if (editing.isNew) draft.routes.push(route); else draft.routes[editing.index] = route })
         setEditing(null)
       }} /> : null}

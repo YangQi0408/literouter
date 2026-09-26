@@ -1,8 +1,9 @@
 import { ArrowDown, ArrowUp, GitBranch, Plus, ShieldCheck, Trash2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 
 import { Field, SwitchField, TextField } from '@/components/fields'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogContent,
@@ -20,6 +21,7 @@ import {
 } from '@/components/ui/select'
 import type { RouteConfig, RouteTarget } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
+import { routeIssue } from '@/lib/provider-route-edit'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 
@@ -45,6 +47,7 @@ export function RouteDialog({
   const { t } = useI18n()
   const { working } = useStore()
   const [route, setRoute] = useState<RouteConfig>(draft)
+  const fieldId = useId()
 
   useEffect(() => {
     if (open) setRoute(draft)
@@ -52,6 +55,15 @@ export function RouteDialog({
 
   const providers = (working?.providers ?? []).map((provider) => provider.id).filter(Boolean)
   const targets = route.targets ?? []
+  const issue = routeIssue(route, (working?.routes ?? []).filter((item) => isNew || item.model !== draft.model).map((item) => item.model), providers)
+  const edited = JSON.stringify(route) !== JSON.stringify(draft)
+  const cancel = () => { if (!edited || window.confirm(t('managementDiscardDialog'))) onCancel() }
+  useEffect(() => {
+    if (!edited) return
+    const beforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => window.removeEventListener('beforeunload', beforeUnload)
+  }, [edited])
 
   const patchTarget = (index: number, changes: Partial<RouteTarget>) =>
     setRoute((prev) => ({
@@ -71,7 +83,7 @@ export function RouteDialog({
     })
 
   return (
-    <Dialog open={open} onOpenChange={(next) => (next ? undefined : onCancel())}>
+    <Dialog open={open} onOpenChange={(next) => (next ? undefined : cancel())}>
       <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
         <DialogHeader className="border-b px-5 py-5 text-left sm:px-6">
           <div className="flex items-center gap-3 pr-6">
@@ -93,8 +105,9 @@ export function RouteDialog({
           <section className="border-t pt-5">
             <div className="mb-4">
               <h3 className="text-sm font-semibold">{t('managementFailoverTitle')}</h3>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('routeHint')}</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t(working?.server.routing_policy === 'fastest' ? 'managementRoutingFastestHint' : working?.server.routing_policy === 'cheapest' ? 'managementRoutingCheapestHint' : 'routeHint')}</p>
             </div>
+            {(working?.server.session_affinity_sec ?? 0) > 0 ? <p className="mb-4 text-xs text-muted-foreground">{t('managementAffinityHint', { seconds: working!.server.session_affinity_sec })}</p> : null}
             {!providers.length ? <p className="mb-4 rounded-xl border border-warn/20 bg-warn/5 px-3 py-2.5 text-xs leading-relaxed text-warn">{t('managementAddProviderFirst')}</p> : null}
             <div className="space-y-3">
               {targets.map((target, index) => (
@@ -113,13 +126,14 @@ export function RouteDialog({
                       <Select value={target.provider || undefined} onValueChange={(provider) => patchTarget(index, { provider })}>
                         <SelectTrigger aria-label={t('managementTargetProviderLabel', { n: index + 1 })} className="h-10 w-full min-w-0 font-mono text-sm"><SelectValue placeholder={t('managementSelectProvider')} /></SelectTrigger>
                         <SelectContent>
-                          {providers.map((id) => <SelectItem key={id} value={id} className="font-mono text-sm">{id}</SelectItem>)}
+                          {providers.map((id) => <SelectItem key={id} value={id} className="font-mono text-sm">{id}{working?.providers.find((provider) => provider.id === id)?.enabled === false ? ` · ${t('managementDisabled')}` : ''}</SelectItem>)}
                           {target.provider && !providers.includes(target.provider) ? <SelectItem value={target.provider} className="font-mono text-sm">{target.provider} · {t('managementMissingProvider')}</SelectItem> : null}
                         </SelectContent>
                       </Select>
                     </Field>
                     <Field label={t('managementUpstreamModel')}>
-                      <TextField value={target.model ?? ''} placeholder={route.model || t('managementKeepModel')} ariaLabel={t('managementTargetModelLabel', { n: index + 1 })} onChange={(model) => patchTarget(index, { model })} />
+                      <Input value={target.model ?? ''} list={`${fieldId}-models-${index}`} placeholder={route.model || t('managementKeepModel')} aria-label={t('managementTargetModelLabel', { n: index + 1 })} onChange={(event) => patchTarget(index, { model: event.target.value })} className="h-10 font-mono text-sm" />
+                      <datalist id={`${fieldId}-models-${index}`}>{[...new Set(working?.providers.find((provider) => provider.id === target.provider)?.models ?? [])].map((model) => <option key={model} value={model} />)}</datalist>
                     </Field>
                   </div>
                 </div>
@@ -129,11 +143,13 @@ export function RouteDialog({
           </section>
         </div>
 
+        {issue ? <p role="alert" className="border-t px-5 py-3 text-xs text-destructive sm:px-6">{t(issue.key, issue.values)}</p> : null}
         <DialogFooter className="border-t bg-muted/20 p-4 sm:items-center sm:px-6">
           <p className="mr-auto hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex"><ShieldCheck className="size-3.5" />{t('managementDraftHint')}</p>
-          <Button variant="outline" onClick={onCancel}>{t('cancel')}</Button>
-          <Button disabled={!route.model.trim() || targets.length === 0 || targets.some((target) => !target.provider)} onClick={() => onApply({
+          <Button variant="outline" onClick={cancel}>{t('cancel')}</Button>
+          <Button disabled={!!issue} onClick={() => onApply({
             ...route,
+            model: route.model.trim(),
             targets: targets.map((target) => ({ provider: target.provider, ...(target.model?.trim() ? { model: target.model.trim() } : {}) })),
           })}>{t('apply')}</Button>
         </DialogFooter>

@@ -120,6 +120,22 @@ describe('normalizeConfig', () => {
     normalizeConfig(raw)
     expect(JSON.stringify(raw)).toBe(before)
   })
+
+  it('does not share mutable defaults between relays or with a loaded payload', () => {
+    const config = normalizeConfig({ providers: [{ id: 'a' }, { id: 'b' }] })
+    config.providers[0]!.models.push('new-model')
+    config.providers[0]!.headers.Authorization = 'new-value'
+    expect(config.providers[1]!.models).toEqual([])
+    expect(config.providers[1]!.headers).toEqual({})
+    expect(PROVIDER_DEFAULTS.models).toEqual([])
+    expect(PROVIDER_DEFAULTS.headers).toEqual({})
+    const raw = { id: 'c', models: ['m'], headers: { Accept: 'application/json' } }
+    const provider = normalizeProvider(raw)
+    provider.models.push('another')
+    provider.headers.Accept = 'text/event-stream'
+    expect(raw.models).toEqual(['m'])
+    expect(raw.headers.Accept).toBe('application/json')
+  })
 })
 
 describe('PROVIDER_DEFAULTS', () => {

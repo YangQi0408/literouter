@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Clock,
   Coins,
+  Copy,
   Database,
   KeyRound,
   Link2,
@@ -21,6 +22,7 @@ import {
 } from 'lucide-react'
 
 import { Metric } from '@/components/Metric'
+import { toast } from 'sonner'
 import { HourlyTrend } from '@/components/HourlyTrend'
 import { RelayHealth } from '@/components/RelayHealth'
 import { Badge } from '@/components/ui/badge'
@@ -28,7 +30,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { humanBytes, humanCount, humanUptime, humanMillis, pct, successRatio } from '@/lib/format'
 import { useI18n } from '@/lib/i18n'
-import { totalTokens } from '@/lib/present'
+import { clientBaseUrl, totalTokens } from '@/lib/present'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 
@@ -75,9 +77,19 @@ function RuntimeRow({ icon: Icon, label, value, note, danger }: {
   )
 }
 
-export function Overview({ onNavigate }: { onNavigate?: (page: 'providers' | 'routes' | 'logs') => void }) {
+export function Overview({ onNavigate, onInspectRelay }: { onNavigate?: (page: 'providers' | 'routes' | 'logs') => void; onInspectRelay: (provider: string) => void }) {
   const { snapshot, models, online, refresh, openKeyPrompt } = useStore()
   const { t } = useI18n()
+  const endpoint = clientBaseUrl(snapshot?.base_url ?? '')
+
+  async function copyEndpoint() {
+    try {
+      await navigator.clipboard.writeText(endpoint)
+      toast.success(t('copied'))
+    } catch {
+      toast.error(t('clipboardFailed'))
+    }
+  }
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
@@ -175,7 +187,7 @@ export function Overview({ onNavigate }: { onNavigate?: (page: 'providers' | 'ro
               </div>
               {onNavigate ? <Button size="sm" variant="ghost" onClick={() => onNavigate('providers')}>{t('overviewManageRelays')}<ArrowRight className="size-3.5" aria-hidden="true" /></Button> : null}
             </CardHeader>
-            <CardContent className="p-0"><RelayHealth /></CardContent>
+            <CardContent className="p-0"><RelayHealth onInspect={onInspectRelay} /></CardContent>
           </Card>
 
           <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
@@ -221,7 +233,7 @@ export function Overview({ onNavigate }: { onNavigate?: (page: 'providers' | 'ro
                 <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t('overviewEndpointDescription')}</p>
               </CardHeader>
               <CardContent className="px-5 pb-5">
-                <div className="flex items-start gap-2 rounded-lg border border-primary/10 bg-card p-3"><Link2 className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" /><code className="break-all text-xs leading-5">{snapshot.base_url || '—'}</code></div>
+                <div className="flex items-start gap-2 rounded-lg border border-primary/10 bg-card p-3"><Link2 className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" /><code className="min-w-0 flex-1 break-all text-xs leading-5">{endpoint || '—'}</code><Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label={t('overviewCopyEndpoint')} title={t('overviewCopyEndpoint')} disabled={!endpoint} onClick={() => void copyEndpoint()}><Copy className="size-3.5" /></Button></div>
                 {snapshot.config_path ? <div className="mt-5"><p className="text-[11px] font-medium text-muted-foreground">{t('overviewConfigPath')}</p><p className="mt-1.5 break-all font-mono text-[11px] leading-5 text-muted-foreground">{snapshot.config_path}</p></div> : null}
               </CardContent>
             </Card>

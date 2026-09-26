@@ -1,4 +1,4 @@
-import { ChevronDown, Loader2, Network, Radar, Server } from 'lucide-react'
+import { ChevronDown, Loader2, Network, Radar, Server, SquareTerminal } from 'lucide-react'
 import { useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
@@ -16,8 +16,8 @@ const healthLabel: Record<HealthState, string> = {
   unknown: 'overviewUnknown',
 }
 
-export function RelayHealth() {
-  const { snapshot, probe } = useStore()
+export function RelayHealth({ onInspect }: { onInspect: (provider: string) => void }) {
+  const { snapshot, probe, online, loaded } = useStore()
   const { t } = useI18n()
   const [busy, setBusy] = useState<Set<string>>(new Set())
 
@@ -54,7 +54,8 @@ export function RelayHealth() {
       {snapshot.providers.map((stat) => {
         const state = health.get(stat.provider)
         const ratio = successRatio(stat.successes, stat.requests)
-        const status = state?.state ?? 'unknown'
+        const enabled = loaded?.config.providers.find((p) => p.id === stat.provider)?.enabled !== false
+        const status = state?.state === 'healthy' && stat.requests === 0 ? 'unknown' : state?.state ?? 'unknown'
         const probing = busy.has(stat.provider)
         return (
           <div key={stat.provider} className="px-5 py-4 transition-colors hover:bg-muted/15 sm:px-6">
@@ -66,7 +67,7 @@ export function RelayHealth() {
                   <div className="mt-1.5 flex flex-wrap items-center gap-2">
                     <Badge variant="outline" className={`${stateBadgeClass(status)} gap-1.5 px-1.5 py-0 text-[10px] leading-4`}>
                       <span className="size-1 rounded-full bg-current" />
-                      {t(healthLabel[status])}
+                      {t(enabled ? healthLabel[status] : 'overviewDisabled')}
                     </Badge>
                     {state && state.cooldown_remaining > 0 ? <span className="text-[11px] text-muted-foreground tnum">{humanDuration(state.cooldown_remaining)}</span> : null}
                   </div>
@@ -89,11 +90,14 @@ export function RelayHealth() {
                   <div className="mt-1.5 text-sm font-medium tnum">{stat.latency_ms_avg ? humanMillis(stat.latency_ms_avg) : '—'}</div>
                 </div>
               </div>
-              <Button size="sm" variant="outline" className="col-start-2 row-start-1 lg:col-start-3" disabled={probing}
-                aria-label={t('overviewProbeRelay', { provider: stat.provider })} onClick={() => void run(stat.provider)}>
-                {probing ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <Radar className="size-3.5" aria-hidden="true" />}
-                {probing ? t('testing') : t('test')}
-              </Button>
+              <div className="col-start-2 row-start-1 flex items-center gap-2 lg:col-start-3">
+                <Button size="icon" variant="ghost" aria-label={t('overviewInspectRelay', { provider: stat.provider })} title={t('overviewInspectRelay', { provider: stat.provider })} onClick={() => onInspect(stat.provider)}><SquareTerminal className="size-4" /></Button>
+                <Button size="sm" variant="outline" disabled={probing || !online}
+                  aria-label={t('overviewProbeRelay', { provider: stat.provider })} onClick={() => void run(stat.provider)}>
+                  {probing ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <Radar className="size-3.5" aria-hidden="true" />}
+                  {probing ? t('testing') : t('test')}
+                </Button>
+              </div>
             </div>
             <details className="group mt-3">
               <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">

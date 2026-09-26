@@ -25,6 +25,7 @@ export const shellEn = {
   connectionInitialNote: 'Waiting for the local service. You can retry or enter an access key.',
   gatewayStatus: 'Gateway status',
   confirmResetStats: 'Reset all traffic counters and statistics?',
+  restoreConsoleDraft: 'Re-enable console in draft',
 }
 export const shellZh: Record<keyof typeof shellEn, string> = {
   workspaceLabel: '工作空间',
@@ -53,4 +54,5 @@ export const shellZh: Record<keyof typeof shellEn, string> = {
   connectionInitialNote: '等待本地服务响应，你可以重试或输入访问密钥。',
   gatewayStatus: '网关状态',
   confirmResetStats: '是否清空所有流量计数与统计数据？',
+  restoreConsoleDraft: '重新启用控制台（保存后生效）',
 }

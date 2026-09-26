@@ -208,6 +208,22 @@ When the **client request protocol** matches the **upstream provider protocol** 
 - **Zero JSON DOM Overhead**: The payload streams directly without constructing an internal JSON tree (unless model renaming is required);
 - **Zero Copy SSE Forwarding**: Upstream SSE data blocks are streamed directly into the client socket with zero intermediate allocation, reaching theoretical network limits.
 
+Requests forward end-to-end business headers by default, including `User-Agent`, `originator`, request/session identifiers, tracing headers, and unknown custom headers. No header registration or additional configuration is needed. Repeated incoming names use their first value, except `anthropic-beta` and `openai-beta`, whose list values are joined with commas. Explicit `providers[].headers` settings take precedence with case-insensitive replacement, including over merged beta lists. Buffered and streaming requests follow the same rules.
+
+The incoming headers that belong to the local connection are excluded:
+
+- Local credentials (`Authorization`, `x-api-key`, `api-key`, `x-goog-api-key`), cookies, proxy forwarding addresses, and AWS signing fields. Upstream authentication comes from the selected provider.
+- `Host`, hop-by-hop headers, and every field named by the incoming `Connection` headers, matched without regard to case.
+- `Accept`, `Accept-Encoding`, body type/length/encoding, body digests, and `Expect`. The outgoing request rebuilds its transport metadata for the destination and the actual payload.
+
+Known OpenAI and Anthropic negotiation/account-selection headers are retained only for a destination in that API family; unrelated custom business headers survive protocol conversion. Client API CORS preflight accepts the requested custom header names. The admin API and console retain their same-origin boundary.
+
+When response caching is enabled, the cache key also includes the effective forwarded headers after provider overrides. Identical JSON with different business headers or `User-Agent` values cannot reuse each other's answer; header casing and order do not create separate variants.
+
+For streamed chat/protocol requests, providers with `supports_stream: false` are skipped before the attempt budget is counted. A capable backup can answer even with `max_attempts: 1`. If every candidate lacks streaming support, the request returns HTTP 400 with code `unsupported_stream`; non-streaming requests can still use those providers. Binary media endpoints retain their own response handling.
+
+Large prompts are sent immediately without automatically enabling `Expect: 100-continue`. Some relays cannot complete that handshake, causing small requests to succeed while larger requests fail with a read error after about a second. HTTP 429 remains an upstream rate-limit response; two relay entries using the same account may share its concurrency limit.
+
 > **Upstream connection reuse**: both legs draw their connections from a per-worker-thread pool (one per relay, keyed by the root, the two timeouts and the CA bundle), so consecutive requests do not pay for a TCP and TLS handshake over and over — the streamed leg used to build a fresh connection per attempt, which put the handshake cost on the leg carrying nearly all the traffic. A transfer that ends cleanly leaves its connection in the pool; an aborted or transport-failed transfer retires it, so the next request is only ever handed a clean socket. httplib probes a socket before reusing it (including a TLS peer-closed check), so a relay dropping an idle connection costs one reconnect rather than a failed request.
 
 > **Token counts in streams**: to account for usage, every chunk that passes is substring-matched — and a chunk that ends on an event boundary without mentioning `usage` is not copied and not parsed at all (the fast path). Only a chunk that mentions `usage` / `usageMetadata` is parsed as JSON (for OpenAI that is usually the final chunk alone), and only an event split across two reads enters the bounded carry buffer. So both the "zero JSON overhead" and the "zero intermediate allocation" above still hold in substance. Counts merge by taking the **largest** seen: Anthropic reports input and output separately in `message_start` and `message_delta`, Gemini reports cumulatively on every chunk, and OpenAI reports once at the tail — but only when the client asked for `stream_options.include_usage`, which `literouter` deliberately does not inject on the client's behalf. A stream that never reports usage counts as zero; nothing is estimated.

@@ -259,6 +259,252 @@ void testOpenAiResponsesAdaptation() {
     LR_CHECK(responses_resp.find("Space and time are linked together.") != std::string::npos);
 }
 
+void testResponsesWireContract() {
+    LR_GROUP("Responses messages, tools and usage use their real wire shapes");
+    ProviderConfig provider;
+    provider.protocol = "openai_responses";
+    const std::string request = R"({
+        "model":"m","instructions":"keep the system rule","stream":true,
+        "input":[
+            {"role":"user","content":[{"type":"input_text","text":"look up both"},
+                {"type":"input_image","image_url":"data:image/png;base64,AA==","detail":"low"}]},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"checking"}]},
+            {"type":"function_call","id":"fc_a","call_id":"call_a","name":"lookup","arguments":"{\"city\":\"A\"}"},
+            {"type":"function_call","id":"fc_b","call_id":"call_b","name":"lookup","arguments":"{\"city\":\"B\"}"},
+            {"type":"function_call_output","call_id":"call_a","output":"sunny"},
+            {"type":"function_call_output","call_id":"call_b","output":"rain"}
+        ],
+        "tools":[{"type":"function","name":"lookup","description":"weather","strict":true,
+            "parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}],
+        "tool_choice":{"type":"function","name":"lookup"},"parallel_tool_calls":false,
+        "max_output_tokens":123,"top_p":0.9,"reasoning":{"effort":"high"},
+        "text":{"format":{"type":"json_schema","name":"answer","strict":true,"schema":{"type":"object"}}}
+    })";
+    const json chat = json::parse(adaptResponsesToChat(request));
+    LR_CHECK_MSG(chat["messages"].size() == 5, chat.dump());
+    if (chat["messages"].size() != 5) return;
+    LR_CHECK_MSG(chat["messages"][0]["role"] == "system" && chat["messages"][0]["content"] == "keep the system rule", chat.dump());
+    LR_CHECK_MSG(chat["messages"][1]["content"][0]["type"] == "text", chat.dump());
+    LR_CHECK_MSG(chat["messages"][1]["content"][1]["image_url"]["detail"] == "low", chat.dump());
+    LR_CHECK_MSG(chat["messages"][2]["tool_calls"].size() == 2, chat.dump());
+    LR_CHECK_MSG(chat["messages"][2]["tool_calls"][0]["id"] == "call_a", chat.dump());
+    LR_CHECK_MSG(chat["messages"][3]["role"] == "tool" && chat["messages"][3]["tool_call_id"] == "call_a", chat.dump());
+    LR_CHECK_MSG(chat["messages"][4]["tool_call_id"] == "call_b", chat.dump());
+    LR_CHECK_MSG(chat["tools"][0]["function"]["strict"] == true, chat.dump());
+    LR_CHECK_MSG(chat["tool_choice"]["function"]["name"] == "lookup", chat.dump());
+    LR_CHECK_MSG(chat["max_completion_tokens"] == 123 && chat["reasoning_effort"] == "high", chat.dump());
+    LR_CHECK_MSG(chat["parallel_tool_calls"] == false && chat["top_p"] == 0.9, chat.dump());
+    LR_CHECK_MSG(chat["response_format"]["json_schema"]["name"] == "answer", chat.dump());
+
+    const json back = json::parse(adaptChatRequest(provider, "upstream", chat.dump(), true));
+    LR_CHECK_MSG(back["model"] == "upstream" && back["stream"] == true, back.dump());
+    LR_CHECK_MSG(back["input"][1]["content"][0]["type"] == "input_text", back.dump());
+    LR_CHECK_MSG(back["input"][1]["content"][1]["image_url"] == "data:image/png;base64,AA==", back.dump());
+    LR_CHECK_MSG(back["input"][2]["type"] == "message" && back["input"][2].contains("id"), back.dump());
+    LR_CHECK_MSG(back["input"][3]["type"] == "function_call" && back["input"][3]["call_id"] == "call_a", back.dump());
+    LR_CHECK_MSG(back["input"][5]["type"] == "function_call_output" && back["input"][5]["output"] == "sunny", back.dump());
+    LR_CHECK_MSG(back["tools"][0]["name"] == "lookup" && back["tools"][0]["strict"] == true, back.dump());
+    LR_CHECK_MSG(back["tool_choice"]["name"] == "lookup" && back["max_output_tokens"] == 123, back.dump());
+    LR_CHECK_MSG(back["reasoning"]["effort"] == "high" && back["text"]["format"]["name"] == "answer", back.dump());
+
+    // Real Responses snapshots include error:null and output_text. Treating
+    // the mere presence of error as an error used to skip the entire adapter.
+    const std::string response = R"({"id":"resp_a","object":"response","status":"completed","error":null,
+        "output":[{"id":"msg_a","type":"message","role":"assistant","content":[{"type":"output_text","text":"checking","annotations":[]}]},
+                  {"id":"fc_a","type":"function_call","call_id":"call_a","name":"lookup","arguments":"{\"city\":\"A\"}"}],
+        "usage":{"input_tokens":11,"output_tokens":5,"total_tokens":16,"input_tokens_details":{"cached_tokens":3},
+                 "output_tokens_details":{"reasoning_tokens":2}}})";
+    const json converted = json::parse(adaptChatResponse(provider, response, "m"));
+    LR_CHECK_MSG(converted["choices"][0]["message"]["content"] == "checking", converted.dump());
+    LR_CHECK_MSG(converted["choices"][0]["message"]["tool_calls"][0]["id"] == "call_a", converted.dump());
+    LR_CHECK_MSG(converted["choices"][0]["finish_reason"] == "tool_calls", converted.dump());
+    LR_CHECK_MSG(converted["usage"]["prompt_tokens"] == 11 && converted["usage"]["completion_tokens_details"]["reasoning_tokens"] == 2, converted.dump());
+    const json restored = json::parse(adaptChatToResponses(converted.dump(), "m"));
+    LR_CHECK_MSG(restored["output"][0]["content"][0]["type"] == "output_text", restored.dump());
+    LR_CHECK_MSG(restored["output"][1]["type"] == "function_call" && restored["output"][1]["call_id"] == "call_a", restored.dump());
+    LR_CHECK_MSG(restored["usage"]["input_tokens"] == 11 && restored["usage"]["input_tokens_details"]["cached_tokens"] == 3, restored.dump());
+    json limited = converted;
+    limited["choices"][0]["finish_reason"] = "length";
+    const json incomplete = json::parse(adaptChatToResponses(limited.dump(), "m"));
+    LR_CHECK_MSG(incomplete["status"] == "incomplete" && incomplete["incomplete_details"]["reason"] == "max_output_tokens", incomplete.dump());
+    const json limited_chat = json::parse(adaptChatResponse(provider, incomplete.dump(), "m"));
+    LR_CHECK_MSG(limited_chat["choices"][0]["finish_reason"] == "length", limited_chat.dump());
+    const json interleaved = json::parse(adaptResponsesToChat(R"({"model":"m","input":[
+        {"type":"function_call","call_id":"call_a","name":"lookup","arguments":"{}"},
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"checking"}]},
+        {"type":"message","role":"assistant","content":" now"},
+        {"type":"function_call_output","call_id":"call_a","output":"sunny"}]})"));
+    LR_CHECK_MSG(interleaved["messages"].size() == 2, interleaved.dump());
+    LR_CHECK_MSG(interleaved["messages"][0]["tool_calls"][0]["id"] == interleaved["messages"][1]["tool_call_id"], interleaved.dump());
+    LR_CHECK_MSG(interleaved["messages"][0]["content"].size() == 2, interleaved.dump());
+}
+
+json protocolSseDocuments(const std::string &stream) {
+    json events = json::array();
+    std::istringstream input(stream);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.starts_with("data: ")) continue;
+        const json value = json::parse(line.substr(6), nullptr, false);
+        if (!value.is_discarded()) events.push_back(value);
+    }
+    return events;
+}
+
+void testResponsesStreamContract() {
+    LR_GROUP("Responses streams preserve tool fragments and complete SDK output snapshots");
+    StreamProtocolAdapter adapter("openai", "openai_responses", "m", "stream_contract");
+    const std::string upstream =
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n"
+        "data: {\"choices\":[{\"delta\":{\"content\":\"checking\"}}]}\n\n"
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":["
+        "{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"city\\\":\"}},"
+        "{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"city\\\":\"}}]}}]}\n\n"
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":["
+        "{\"index\":1,\"function\":{\"arguments\":\"\\\"B\\\"}\"}},"
+        "{\"index\":0,\"function\":{\"arguments\":\"\\\"A\\\"}\"}}]}}]}\n\n"
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":5,\"total_tokens\":16}}\n\n"
+        "data: [DONE]\n\n";
+    std::string downstream;
+    for (std::size_t offset = 0; offset < upstream.size(); offset += 7) {
+        downstream += adapter.feed(std::string_view{upstream}.substr(offset, 7));
+    }
+    downstream += adapter.finish();
+    LR_CHECK_MSG(adapter.feed("data: [DONE]\n\n").empty(), downstream);
+    const json events = protocolSseDocuments(downstream);
+    json assembled = json::array();
+    json completed;
+    int completions = 0;
+    int sequence = 0;
+    for (const auto &event : events) {
+        LR_CHECK_MSG(event.value("sequence_number", -1) == sequence++, event.dump());
+        const std::string type = event.value("type", "");
+        if (type == "response.output_item.added") {
+            LR_CHECK_MSG(event["output_index"] == assembled.size(), event.dump());
+            assembled.push_back(event["item"]);
+        } else if (type == "response.content_part.added" || type == "response.reasoning_summary_part.added") {
+            const std::size_t index = event["output_index"].get<std::size_t>();
+            LR_CHECK_MSG(index < assembled.size(), event.dump());
+            if (index >= assembled.size()) continue;
+            LR_CHECK_MSG(event["item_id"] == assembled[index]["id"], event.dump());
+            assembled[index][type == "response.content_part.added" ? "content" : "summary"].push_back(event["part"]);
+        } else if (type == "response.output_text.delta" || type == "response.reasoning_summary_text.delta" || type == "response.function_call_arguments.delta") {
+            const std::size_t index = event["output_index"].get<std::size_t>();
+            LR_CHECK_MSG(index < assembled.size(), event.dump());
+            if (index >= assembled.size()) continue;
+            auto &item = assembled[index];
+            LR_CHECK_MSG(event["item_id"] == item["id"], event.dump());
+            if (type == "response.function_call_arguments.delta") {
+                item["arguments"] = item["arguments"].get<std::string>() + event["delta"].get<std::string>();
+            } else {
+                const bool reasoning = type == "response.reasoning_summary_text.delta";
+                const auto part_index = event[reasoning ? "summary_index" : "content_index"].get<std::size_t>();
+                auto &part = item[reasoning ? "summary" : "content"][part_index];
+                part["text"] = part["text"].get<std::string>() + event["delta"].get<std::string>();
+            }
+        } else if (type == "response.output_item.done") {
+            const auto index = event["output_index"].get<std::size_t>();
+            json expected = assembled[index];
+            if (expected.contains("status")) expected["status"] = "completed";
+            LR_CHECK_MSG(expected == event["item"], event.dump() + " assembled=" + expected.dump());
+            assembled[index] = event["item"];
+        } else if (type == "response.completed") {
+            ++completions;
+            completed = event["response"];
+        }
+    }
+    LR_CHECK_MSG(completions == 1, downstream);
+    LR_CHECK_MSG(completed["output"] == assembled && assembled.size() == 4, completed.dump());
+    LR_CHECK_MSG(assembled[0]["summary"][0]["text"] == "think", assembled.dump());
+    LR_CHECK_MSG(assembled[1]["content"][0]["type"] == "output_text" && assembled[1]["content"][0]["text"] == "checking", assembled.dump());
+    LR_CHECK_MSG(assembled[2]["call_id"] == "call_a" && assembled[2]["arguments"] == R"({"city":"A"})", assembled.dump());
+    LR_CHECK_MSG(assembled[3]["call_id"] == "call_b" && assembled[3]["arguments"] == R"({"city":"B"})", assembled.dump());
+    LR_CHECK_MSG(completed["usage"]["input_tokens"] == 11 && completed["usage"]["output_tokens"] == 5, completed.dump());
+
+    // Round-trip the emitted output plus the tool result as a client does on
+    // its next turn; the call id must still match after request conversion.
+    json next_input = completed["output"];
+    next_input.push_back({{"type", "function_call_output"}, {"call_id", "call_a"}, {"output", "sunny"}});
+    next_input.push_back({{"type", "function_call_output"}, {"call_id", "call_b"}, {"output", "rain"}});
+    const json next = json::parse(adaptResponsesToChat(json{{"model", "m"}, {"input", next_input}}.dump()));
+    LR_CHECK_MSG(next["messages"][0]["tool_calls"][0]["id"] == next["messages"][1]["tool_call_id"], next.dump());
+    LR_CHECK_MSG(next["messages"][0]["tool_calls"][1]["id"] == next["messages"][2]["tool_call_id"], next.dump());
+
+    // The same output, ingested as Responses SSE, preserves Chat ids and emits
+    // each argument fragment once despite both item.done and final snapshots.
+    StreamProtocolAdapter reverse("openai_responses", "openai", "m", "reverse_contract");
+    std::string reverse_output;
+    for (std::size_t offset = 0; offset < downstream.size(); offset += 11) {
+        reverse_output += reverse.feed(std::string_view{downstream}.substr(offset, 11));
+    }
+    reverse_output += reverse.finish();
+    std::map<int, std::string> ids;
+    std::map<int, std::string> args;
+    int finishes = 0;
+    bool usage = false;
+    for (const auto &event : protocolSseDocuments(reverse_output)) {
+        if (event.contains("usage")) usage = event["usage"]["prompt_tokens"] == 11;
+        if (!event.contains("choices") || event["choices"].empty()) continue;
+        const auto &choice = event["choices"][0];
+        if (choice.contains("finish_reason") && choice["finish_reason"].is_string()) {
+            ++finishes;
+            LR_CHECK_MSG(choice["finish_reason"] == "tool_calls", event.dump());
+        }
+        if (!choice.contains("delta") || !choice["delta"].contains("tool_calls")) continue;
+        for (const auto &call : choice["delta"]["tool_calls"]) {
+            const int index = call["index"].get<int>();
+            if (call.contains("id")) ids[index] = call["id"].get<std::string>();
+            args[index] += call["function"].value("arguments", "");
+        }
+    }
+    LR_CHECK_MSG(ids[0] == "call_a" && ids[1] == "call_b", reverse_output);
+    LR_CHECK_MSG(args[0] == R"({"city":"A"})" && args[1] == R"({"city":"B"})", reverse_output);
+    LR_CHECK_MSG(finishes == 1 && usage, reverse_output);
+    LR_CHECK_MSG(reverse_output.find("[DONE]") == reverse_output.rfind("[DONE]"), reverse_output);
+}
+
+void testResponsesStreamTermination() {
+    LR_GROUP("stream aliases, failure status and terminal events remain consistent");
+    StreamProtocolAdapter limited("azure", "openai_responses", "m", "limited");
+    std::string out = limited.feed("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"length\"}]}\n\n");
+    LR_CHECK_MSG(out.find("response.output_text.delta") != std::string::npos, out);
+    LR_CHECK_MSG(out.find("response.incomplete") == std::string::npos, out);
+    out += limited.feed("data: [DONE]\n\n");
+    out += limited.finish();
+    LR_CHECK_MSG(out.find("response.incomplete") != std::string::npos && out.find("max_output_tokens") != std::string::npos, out);
+    LR_CHECK_MSG(out.find("response.completed") == std::string::npos, out);
+
+    StreamProtocolAdapter vertex("vertex", "openai", "m", "vertex");
+    const std::string vertex_out = vertex.feed("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}]}\n\n");
+    LR_CHECK_MSG(vertex_out.find("hello") != std::string::npos && vertex_out.find("[DONE]") != std::string::npos, vertex_out);
+
+    StreamProtocolAdapter failed("openai_responses", "openai", "m", "failed");
+    const std::string error = failed.feed("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"unavailable\"}}}\n\n");
+    LR_CHECK_MSG(error.find("unavailable") != std::string::npos && error.find("[DONE]") == std::string::npos, error);
+    LR_CHECK_MSG(failed.finish().empty(), error);
+    StreamProtocolAdapter failed_chat("openai", "openai_responses", "m", "failed_chat");
+    const std::string response_error = failed_chat.feed("data: {\"error\":{\"code\":\"server_error\",\"message\":\"unavailable\"}}\n\n");
+    LR_CHECK_MSG(response_error.find("response.failed") != std::string::npos && response_error.find("response.completed") == std::string::npos, response_error);
+
+    StreamProtocolAdapter null_fields("openai", "openai_responses", "m", "null_fields");
+    std::string nullable = null_fields.feed("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":null,\"function\":{\"name\":null,\"arguments\":null}}]}}]}\n\n");
+    nullable += null_fields.feed("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_n\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n");
+    const json nullable_events = protocolSseDocuments(nullable);
+    const json nullable_final = nullable_events.back()["response"]["output"][0];
+    LR_CHECK_MSG(nullable_final["call_id"] == "call_n" && nullable_final["name"] == "lookup" && nullable_final["arguments"] == "{}", nullable);
+
+    StreamProtocolAdapter same("openai_responses", "openai_responses", "m", "same");
+    const std::string raw = "event: custom\ndata: {\"preserve\":true}\n\n";
+    LR_CHECK_MSG(same.feed(raw) == raw && same.finish().empty(), raw);
+    StreamProtocolAdapter same_shape("azure", "openai", "m", "same_shape");
+    LR_CHECK_MSG(same_shape.feed(raw) == raw && same_shape.finish().empty(), raw);
+    StreamProtocolAdapter anthropic("openai", "anthropic", "m", "once");
+    const std::string stop = anthropic.feed("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
+    const std::string marker = "event: message_stop";
+    LR_CHECK_MSG(stop.find(marker) != std::string::npos && stop.find(marker) == stop.rfind(marker), stop);
+}
+
 void testStreamProtocolAdapterAnthropic() {
     LR_GROUP("StreamProtocolAdapter: Anthropic SSE translation");
 
@@ -437,7 +683,7 @@ void testReasoningMapping() {
               {"id":"rs_1","type":"reasoning",
                "summary":[{"type":"summary_text","text":"weighed it"}]},
               {"id":"msg_1","type":"message","role":"assistant",
-               "content":[{"type":"text","text":"the answer"}]}
+               "content":[{"type":"output_text","text":"the answer"}]}
             ],
             "usage":{"input_tokens":9,"output_tokens":4}
         })";
@@ -1306,6 +1552,9 @@ int main() {
     testAnthropicResponseAdaptation();
     testGeminiAdaptation();
     testOpenAiResponsesAdaptation();
+    testResponsesWireContract();
+    testResponsesStreamContract();
+    testResponsesStreamTermination();
     testStreamProtocolAdapterAnthropic();
     testStreamProtocolAdapterGemini();
     testStreamProtocolAdapterOpenAiPassthrough();

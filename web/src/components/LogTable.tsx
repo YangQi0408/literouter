@@ -8,19 +8,17 @@ import type { LogEntry } from '@/lib/api'
 import { humanBytes, humanMillis } from '@/lib/format'
 import { levelBadgeClass, statusBadgeClass } from '@/lib/present'
 import { useI18n } from '@/lib/i18n'
+import { activityKindKey } from '@/lib/activity'
 
 function DetailField({ label, children }: { label: string; children: ReactNode }) {
   return <div className="min-w-0 space-y-1.5"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="break-words font-mono text-xs leading-relaxed">{children || '—'}</dd></div>
 }
 
-export function LogTable({ entries, emptyFiltered = false }: { entries: LogEntry[]; emptyFiltered?: boolean }) {
+export function LogTable({ entries, emptyFiltered = false, onConfigureLogging }: { entries: LogEntry[]; emptyFiltered?: boolean; onConfigureLogging: () => void }) {
   const { t } = useI18n()
   const [selected, setSelected] = useState<LogEntry | null>(null)
   const levelName = (level: string) => t(level === 'warn' ? 'activityLevelWarn' : level === 'error' ? 'activityLevelError' : 'activityLevelInfo')
-  const kindName = (kind: string) => {
-    const keys: Record<string, string> = { chat: 'activityKindChat', embeddings: 'activityKindEmbeddings', audio: 'kindAudio', images: 'kindImages', models: 'activityKindModels', admin: 'activityKindAdmin', system: 'activityKindSystem' }
-    return keys[kind] ? t(keys[kind]) : kind
-  }
+  const kindName = (kind: string) => t(activityKindKey(kind))
 
   // Where the time went: the phases only mean anything together, and a column
   // each would not fit the table. Keep them in the hover hint and detail view.
@@ -130,6 +128,19 @@ export function LogTable({ entries, emptyFiltered = false }: { entries: LogEntry
               </div>
             </section> : null}
             {selected.message ? <section><h3 className="mb-3 text-sm font-medium">{t('activityMessage')}</h3><pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-xl border bg-muted/30 p-4 font-mono text-xs leading-relaxed">{selected.message}</pre></section> : null}
+            {selected.request_body || selected.response_body ? <section className="space-y-4">
+              <p className="text-xs leading-relaxed text-muted-foreground">{t('activityBodiesNote')}</p>
+              {([
+                ['activityRequestBody', selected.request_body],
+                ['activityResponseBody', selected.response_body],
+              ] as const).map(([label, body]) => body ? <div key={label}>
+                <h3 className="mb-3 text-sm font-medium">{t(label)}</h3>
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl border bg-muted/30 p-4 font-mono text-xs leading-relaxed">{body}</pre>
+              </div> : null)}
+            </section> : selected.request_id ? <section className="rounded-xl border border-dashed p-4">
+              <p className="text-xs leading-relaxed text-muted-foreground">{t('activityBodiesAbsent')}</p>
+              <Button size="sm" variant="outline" className="mt-3" onClick={onConfigureLogging}>{t('activityConfigureBodies')}</Button>
+            </section> : null}
           </> : null}
         </DialogContent>
       </Dialog>

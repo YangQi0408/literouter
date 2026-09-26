@@ -389,6 +389,120 @@ bool ciEqual(std::string_view a, std::string_view b) {
     return a.size() == b.size() && toLower(a) == toLower(b);
 }
 
+ProviderConfig providerForRequest(const ProviderConfig &provider, const h::Request &req) {
+    // Business headers, including unknown SDK/relay extensions, survive by
+    // default. Credentials and transport metadata belong to this hop: the
+    // upstream key, body, destination and compression can all be different.
+    static constexpr std::string_view kLocalHeaders[]{
+        "authorization", "x-api-key", "api-key", "x-goog-api-key", "cookie",
+        "host", "connection", "keep-alive", "proxy-connection", "proxy-authenticate",
+        "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade",
+        "accept", "accept-encoding", "content-type", "content-length", "content-encoding",
+        "expect", "content-md5", "digest", "content-digest", "repr-digest",
+        "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto",
+        "x-forwarded-port", "x-real-ip", "x-amz-date", "x-amz-content-sha256",
+        "x-amz-security-token", "access-control-request-method", "access-control-request-headers",
+    };
+    std::set<std::string, std::less<>> connection_headers;
+    for (const auto &[name, value] : req.headers) {
+        if (!ciEqual(name, "connection")) continue;
+        std::string_view remaining = value;
+        while (!remaining.empty()) {
+            const auto comma = remaining.find(',');
+            const std::string token = toLower(trim(remaining.substr(0, comma)));
+            if (!token.empty()) connection_headers.insert(token);
+            if (comma == std::string_view::npos) break;
+            remaining.remove_prefix(comma + 1);
+        }
+    }
+    const WireShape shape = wireShapeOf(provider.protocol);
+    const auto allowed = [shape, &connection_headers](std::string_view name) {
+        if (connection_headers.contains(name) ||
+            std::ranges::find(kLocalHeaders, name) != std::end(kLocalHeaders)) {
+            return false;
+        }
+        // A protocol conversion does not make the destination understand the
+        // source API's negotiation or account-selection headers.
+        if (name == "openai-beta" || name == "openai-organization" || name == "openai-project") {
+            return shape == WireShape::OpenAi || shape == WireShape::Responses;
+        }
+        if (name == "anthropic-version" || name == "anthropic-beta") {
+            return shape == WireShape::Anthropic;
+        }
+        return true;
+    };
+
+    ProviderConfig forwarded = provider;
+    forwarded.headers.clear();
+    for (const auto &[name, value] : req.headers) {
+        const std::string key = toLower(name);
+        if (!allowed(key)) continue;
+        const auto [entry, inserted] = forwarded.headers.try_emplace(key, value);
+        // Beta negotiation is a comma-separated list, so every repeated
+        // field contributes features. Other headers keep their first value.
+        if (!inserted && (key == "anthropic-beta" || key == "openai-beta")) {
+            entry->second += ", " + value;
+        }
+    }
+    // Normalize once so both transports receive the same single value. An
+    // explicit relay setting always wins, including differently cased names.
+    for (const auto &[name, value] : provider.headers) {
+        if (!name.empty()) forwarded.headers.insert_or_assign(toLower(name), value);
+    }
+    return forwarded;
+}
+
+std::string requestCacheKey(const h::Request &req, const AppConfig &config,
+                            const std::vector<Candidate> &candidates,
+                            std::string_view protocol, std::string_view model,
+                            std::string_view body) {
+    const auto append = [](std::string &out, std::string_view field) {
+        out += std::format("{}:", field.size());
+        out.append(field);
+    };
+    std::vector<std::string> contexts;
+    for (const auto &candidate : candidates) {
+        const auto *provider = config.provider(candidate.provider);
+        if (provider == nullptr || !provider->enabled) continue;
+        const auto forwarded = providerForRequest(*provider, req);
+        std::string context;
+        append(context, candidate.provider);
+        append(context, candidate.model);
+        append(context, provider->base_url);
+        append(context, provider->protocol);
+        // Endpoint and credential edits apply immediately, even while an old
+        // answer is still inside its TTL. Use the actual derived path so Azure
+        // API versions and Vertex project/location changes cannot reuse it.
+        const std::string_view upstream_model = candidate.model.empty()
+            ? model : std::string_view{candidate.model};
+        append(context, resolveChatPath(*provider, upstream_model, false));
+        append(context, provider->embeddings_path);
+        append(context, provider->api_key);
+        append(context, provider->credentials_file);
+        append(context, provider->region);
+        append(context, provider->aws_access_key);
+        append(context, provider->aws_secret_key);
+        append(context, provider->aws_session_token);
+        for (const auto &[name, value] : forwarded.headers) {
+            append(context, name);
+            append(context, value);
+        }
+        contexts.push_back(std::move(context));
+    }
+    // A business header can change the answer without changing the JSON body.
+    // Hash the actual forwarded values (after overrides), sorted independently
+    // of breaker/latency ordering. Length prefixes prevent ambiguous joins.
+    std::ranges::sort(contexts);
+    std::string material{"literouter-request-with-headers-v1"};
+    append(material, req.path);
+    // The same-protocol path forwards the whole original body. Its cache key
+    // must retain fields the cross-protocol adapter does not understand, such
+    // as a Responses previous_response_id or a future vendor extension.
+    append(material, body);
+    for (const auto &context : contexts) append(material, context);
+    return ResponseCache::keyFor(protocol, model, material);
+}
+
 bool headerExists(const std::vector<std::pair<std::string, std::string>> &headers,
                   std::string_view name) {
     return std::ranges::any_of(headers, [name](const auto &entry) {
@@ -2000,11 +2114,17 @@ struct ProxyServer::Impl {
         return false;
     }
 
-    static void applyCors(h::Response &res) {
+    static void applyCors(const h::Request &req, h::Response &res) {
         res.set_header("Access-Control-Allow-Origin", "*");
-        res.set_header("Access-Control-Allow-Headers",
-                       "Authorization, Content-Type, x-api-key, openai-beta, openai-organization, "
-                       "anthropic-version, anthropic-beta");
+        const std::string requested = req.get_header_value("Access-Control-Request-Headers");
+        if (req.method == "OPTIONS" && !requested.empty()) {
+            res.set_header("Access-Control-Allow-Headers", requested);
+            res.set_header("Vary", "Access-Control-Request-Headers");
+        } else {
+            res.set_header("Access-Control-Allow-Headers",
+                           "Authorization, Content-Type, x-api-key, openai-beta, openai-organization, "
+                           "anthropic-version, anthropic-beta");
+        }
         res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.set_header("Access-Control-Max-Age", "86400");
     }
@@ -2108,13 +2228,15 @@ struct ProxyServer::Impl {
         }
 
         // ── the local response cache ────────────────────────────────────────
-        // Looked up before a candidate is chosen, because a hit needs no relay at
-        // all. Streaming is excluded by construction: a cached answer is one
+        // Looked up before a candidate is attempted, because a hit needs no relay
+        // at all. Streaming is excluded by construction: a cached answer is one
         // body, and the client asked for an event stream. Media is excluded
         // because its request is multipart and its answer can be binary.
-        const bool cacheable = !media && !ctx.stream;
+        auto candidates = order(router.candidatesFor(ctx.model));
+        const bool cacheable = !media && !ctx.stream && response_cache.enabled();
         const std::string cache_key =
-            cacheable ? ResponseCache::keyFor(ingress_protocol, ctx.model, effective_req_body)
+            cacheable ? requestCacheKey(req, ctx.config, candidates, ingress_protocol,
+                                       ctx.model, req.body)
                       : std::string{};
         if (cacheable) {
             if (auto hit = response_cache.lookup(cache_key, nowUnix()); hit) {
@@ -2133,7 +2255,6 @@ struct ProxyServer::Impl {
             }
         }
 
-        auto candidates = order(router.candidatesFor(ctx.model));
         if (media && !candidates.empty()) {
             std::erase_if(candidates, [&](const Candidate &candidate) {
                 const auto *provider = ctx.config.provider(candidate.provider);
@@ -2149,6 +2270,21 @@ struct ProxyServer::Impl {
                 return;
             }
 
+        }
+        if (ctx.stream && !media && !candidates.empty()) {
+            // This capability filters the chain before max_attempts is applied:
+            // an incapable relay must neither consume an attempt nor receive a
+            // non-streaming request whose JSON answer would be mislabeled SSE.
+            std::erase_if(candidates, [&](const Candidate &candidate) {
+                const auto *provider = ctx.config.provider(candidate.provider);
+                return provider == nullptr || !provider->supports_stream;
+            });
+            if (candidates.empty()) {
+                sendError(res, 400, "no relay for this model supports streaming",
+                          "invalid_request_error", "unsupported_stream");
+                finish(ctx, {.status = res.status, .message = "no relay for this model supports streaming"});
+                return;
+            }
         }
         // The policy reorders the chain the operator's priority produced; it does
         // not replace it. Ties keep the priority order, and a relay with no
@@ -2177,6 +2313,7 @@ struct ProxyServer::Impl {
             };
             std::stable_sort(candidates.begin(), candidates.end(),
                              [&](const Candidate &a, const Candidate &b) {
+                                 if (a.skipped != b.skipped) return !a.skipped;
                                  const double left = metric_of(a);
                                  const double right = metric_of(b);
                                  if (left < 0.0 || right < 0.0) {
@@ -2282,10 +2419,15 @@ struct ProxyServer::Impl {
             const std::string request_type = multipart ? multipart->contentType() : "application/json";
             if (multipart) {
                 payload = multipart->payload(upstream_model);
+            } else if (kind == "embeddings" && upstream_model != ctx.model) {
+                json patched = body;
+                patched["model"] = upstream_model;
+                payload = dumpJson(patched);
             } else if (kind != "embeddings") {
                 if (same_protocol) {
                     // Direct passthrough! When model renaming is configured, rewrite model only if not Gemini (Gemini embeds in path)
-                    if (!candidate.model.empty() && candidate.model != ctx.model && egress_protocol != "gemini") {
+                    if (!candidate.model.empty() && candidate.model != ctx.model &&
+                        wireShapeOf(egress_protocol) != WireShape::Gemini) {
                         const json parsed_req = json::parse(req.body, nullptr, false);
                         if (!parsed_req.is_discarded() && parsed_req.is_object()) {
                             json patched = parsed_req;
@@ -2303,8 +2445,9 @@ struct ProxyServer::Impl {
             }
 
             ctx.attempted_upstream = true;
+            const ProviderConfig forwarded_provider = providerForRequest(*provider, req);
             if (ctx.stream) {
-                last_status = relayStream(ctx, res, *provider, candidate, path, payload, attempt,
+                last_status = relayStream(ctx, res, forwarded_provider, candidate, path, payload, attempt,
                                           budget, last_error, ingress_protocol, request_type, media,
                                           slot);
                 if (last_status == 0) {
@@ -2315,8 +2458,8 @@ struct ProxyServer::Impl {
 
             const double attempt_started = nowUnix();
             UpstreamResult result = media
-                ? upstreamPostRaw(*provider, path, payload, request_type)
-                : upstreamPost(*provider, path, payload);
+                ? upstreamPostRaw(forwarded_provider, path, payload, request_type)
+                : upstreamPost(forwarded_provider, path, payload);
             const auto waited_ms = [&] { return (attempt_started - ctx.started) * 1000.0; };
             if (!result.ok) {
                 last_error = std::format("{}: {}", provider->id, result.error);
@@ -2559,6 +2702,7 @@ struct ProxyServer::Impl {
             }
             for (const auto &[name, value] : provider.headers) {
                 if (!name.empty()) {
+                    upstream.headers.erase(name);
                     upstream.set_header(name, value);
                 }
             }
@@ -2885,7 +3029,7 @@ struct ProxyServer::Impl {
         }
         res.status = status;
         for (const auto &[name, value] : headers) {
-            if (!isHopByHop(name)) {
+            if (!isHopByHop(name) && !ciEqual(name, "content-type")) {
                 res.set_header(name, value);
             }
         }
@@ -3332,7 +3476,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         if (console_path || startsWith(req.path, kAdminPrefix)) {
             res.set_header("Cache-Control", "no-store");
         } else {
-            Impl::applyCors(res);
+            Impl::applyCors(req, res);
         }
         if (req.method == "OPTIONS") {
             res.status = 204;

@@ -9,7 +9,8 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
-import { normalizeConfig } from '@/lib/normalize'
+import { ConfigImportError, readConfigImport } from '@/lib/config-import'
+import { clientBaseUrl } from '@/lib/present'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 
@@ -21,7 +22,7 @@ const sections = [
   { id: 'config', label: 'settingsConfig', note: 'settingsConfigNote', icon: FileJson2 },
 ] as const
 
-type SectionId = (typeof sections)[number]['id']
+export type SettingsSection = (typeof sections)[number]['id']
 
 function FieldGroup({ title, children }: { title?: string; children: ReactNode }) {
   return (
@@ -32,10 +33,10 @@ function FieldGroup({ title, children }: { title?: string; children: ReactNode }
   )
 }
 
-export function Settings() {
-  const { working, update, loaded, serverReport, saveIssues } = useStore()
+export function Settings({ initialSection = 'connection' }: { initialSection?: SettingsSection }) {
+  const { working, update, loaded, snapshot, serverReport, saveIssues } = useStore()
   const { t } = useI18n()
-  const [active, setActive] = useState<SectionId>('connection')
+  const [active, setActive] = useState<SettingsSection>(initialSection)
   const [copied, setCopied] = useState(false)
   const [importError, setImportError] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
@@ -87,10 +88,9 @@ export function Settings() {
         setImportError(t('importNotObject'))
         return
       }
-      // Normalised at the boundary for the same reason the server's reply is: a
-      // hand-written or older file omits every field at its default, and the
-      // editors iterate over `headers` and `models`.
-      const incoming = normalizeConfig(parsed)
+      // Validate container and scalar types before replacing a usable draft;
+      // omitted defaults from hand-written and older files are still restored.
+      const incoming = readConfigImport(parsed)
       update((draft) => {
         draft.schema = incoming.schema
         draft.server = incoming.server
@@ -98,7 +98,9 @@ export function Settings() {
         draft.routes = incoming.routes
       })
     } catch (error) {
-      setImportError(`${t('importFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+      setImportError(error instanceof ConfigImportError
+        ? t(error.path ? 'importInvalidField' : 'importNotConfig', { path: error.path })
+        : `${t('importFailed')}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -118,7 +120,7 @@ export function Settings() {
                   key={id}
                   type="button"
                   aria-current={active === id ? 'page' : undefined}
-                  aria-controls={`settings-panel-${active}`}
+                  aria-controls={active === id ? `settings-panel-${id}` : undefined}
                   onClick={() => setActive(id)}
                   className={cn('flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-3 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', active === id ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground')}
                 >
@@ -145,6 +147,10 @@ export function Settings() {
 
           {active === 'connection' ? <>
             <FieldGroup title={t('settingsListener')}>
+              {snapshot ? <div className="rounded-xl bg-muted/50 px-3.5 py-3 sm:col-span-2">
+                <p className="text-xs text-muted-foreground">{t('settingsCurrentEndpoint')}</p>
+                <p className="mt-1 break-all font-mono text-sm">{clientBaseUrl(snapshot.base_url)}</p>
+              </div> : null}
               <Field label={t('settingHost')}>
                 <TextField value={server.host} onChange={(host) => patch({ host })} />
               </Field>
@@ -202,8 +208,8 @@ export function Settings() {
               </Field>
             </FieldGroup>
             <FieldGroup title={t('settingsCircuit')}>
-              <Field label={t('settingFailureThreshold')}>
-                <NumberField value={server.circuit_failure_threshold} min={1} onChange={(circuit_failure_threshold) => patch({ circuit_failure_threshold })} />
+              <Field label={t('settingFailureThreshold')} hint={t('hintFailureThreshold')}>
+                <NumberField value={server.circuit_failure_threshold} min={0} onChange={(circuit_failure_threshold) => patch({ circuit_failure_threshold })} />
               </Field>
               <Field label={t('settingCooldown')}>
                 <NumberField value={server.circuit_cooldown_sec} min={1} onChange={(circuit_cooldown_sec) => patch({ circuit_cooldown_sec })} />
@@ -218,7 +224,7 @@ export function Settings() {
             <Field label={t('settingCacheTtl')} hint={t('hintCacheTtl')}>
               <NumberField value={server.response_cache_ttl_sec} min={0} onChange={(response_cache_ttl_sec) => patch({ response_cache_ttl_sec })} />
             </Field>
-            <Field label={t('settingCacheEntries')}>
+            <Field label={t('settingCacheEntries')} hint={t('hintCacheEntries')}>
               <NumberField value={server.response_cache_max_entries} min={1} onChange={(response_cache_max_entries) => patch({ response_cache_max_entries })} />
             </Field>
           </FieldGroup> : null}
@@ -228,8 +234,8 @@ export function Settings() {
               <Field label={t('settingLogCapacity')}>
                 <NumberField value={server.log_capacity} min={16} onChange={(log_capacity) => patch({ log_capacity })} />
               </Field>
-              <Field label={t('settingBodyLimit')}>
-                <NumberField value={server.log_body_limit} min={64} onChange={(log_body_limit) => patch({ log_body_limit })} />
+              <Field label={t('settingBodyLimit')} hint={t('hintBodyLimit')}>
+                <NumberField value={server.log_body_limit} min={0} onChange={(log_body_limit) => patch({ log_body_limit })} />
               </Field>
               <Field label={t('settingLogBodies')} hint={t('hintLogBodies')}>
                 <SwitchField checked={server.log_bodies} onChange={(log_bodies) => patch({ log_bodies })} label={enabled(server.log_bodies)} ariaLabel={t('settingLogBodies')} />
@@ -240,10 +246,10 @@ export function Settings() {
             </FieldGroup>
             <FieldGroup title={t('settingsTraffic')}>
               <Field label={t('settingBucketSec')} hint={t('hintBucketSec')}>
-                <NumberField value={server.traffic_bucket_sec} min={60} step={60} onChange={(traffic_bucket_sec) => patch({ traffic_bucket_sec })} />
+                <NumberField value={server.traffic_bucket_sec} min={60} max={86400} step={60} onChange={(traffic_bucket_sec) => patch({ traffic_bucket_sec })} />
               </Field>
               <Field label={t('settingBucketCount')} hint={t('hintBucketCount')}>
-                <NumberField value={server.traffic_bucket_count} min={2} onChange={(traffic_bucket_count) => patch({ traffic_bucket_count })} />
+                <NumberField value={server.traffic_bucket_count} min={2} max={10000} onChange={(traffic_bucket_count) => patch({ traffic_bucket_count })} />
               </Field>
             </FieldGroup>
             <FieldGroup title={t('settingsMetrics')}>

@@ -38,6 +38,10 @@ json.workspace = true
 # concurrent SSE streams and admin requests while keeping the thread-local
 # connection pool hit rate high and virtual memory overhead low (~64 MB stack
 # reservation vs ~384 MB at 48).
-cxxflags = ["-DCPPHTTPLIB_THREAD_POOL_COUNT=8"]
+# Relays behind HTTP/TLS proxies do not consistently implement Expect:
+# 100-continue. httplib adds it automatically above 1 KiB, which can turn an
+# ordinary agent prompt into a read error before the final response headers.
+# Send the already-buffered body immediately on both HTTP transport paths.
+cxxflags = ["-DCPPHTTPLIB_THREAD_POOL_COUNT=8", "-DCPPHTTPLIB_EXPECT_100_THRESHOLD=0"]
 bmi_schedule = "on"
 jobs = "auto"

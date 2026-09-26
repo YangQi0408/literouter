@@ -5,6 +5,8 @@
 // client has a timeout, and every server this test starts is stopped and joined
 // before main returns.
 #include <httplib.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
 
 #include <algorithm>
 #include <chrono>
@@ -68,12 +70,34 @@ bool writeFile(const std::filesystem::path &path, std::string_view text) {
     return static_cast<bool>(output);
 }
 
+bool writeVertexCredentials(const std::filesystem::path &path, const std::string &token_uri) {
+    const std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> context{
+        EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr), EVP_PKEY_CTX_free};
+    EVP_PKEY *raw = nullptr;
+    if (!context || EVP_PKEY_keygen_init(context.get()) != 1 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(context.get(), 2048) != 1 ||
+        EVP_PKEY_keygen(context.get(), &raw) != 1) return false;
+    const std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key{raw, EVP_PKEY_free};
+    const std::unique_ptr<BIO, decltype(&BIO_free)> buffer{BIO_new(BIO_s_mem()), BIO_free};
+    if (!buffer || PEM_write_bio_PrivateKey(buffer.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) != 1) {
+        return false;
+    }
+    char *data = nullptr;
+    const long length = BIO_get_mem_data(buffer.get(), &data);
+    if (length <= 0) return false;
+    const json document{{"type", "service_account"}, {"project_id", "local-test"},
+                        {"private_key", std::string{data, static_cast<std::size_t>(length)}},
+                        {"client_email", "literouter@local-test.iam.gserviceaccount.com"},
+                        {"token_uri", token_uri}};
+    return writeFile(path, document.dump());
+}
+
 // ── stub relay ───────────────────────────────────────────────────────────────
 
 // Behaves like an OpenAI-compatible relay whose mood is set per assertion group.
 class StubRelay {
 public:
-    enum class Mode { Normal, RateLimit, ServerError, BadRequest, EmptyError, Stream };
+    enum class Mode { Normal, RateLimit, ServerError, BadRequest, EmptyError, Stream, HeaderEcho, RequestEcho };
 
     StubRelay(std::string path_prefix, std::string normal_body)
         : path_prefix_(std::move(path_prefix)), normal_body_(std::move(normal_body)) {}
@@ -91,6 +115,14 @@ public:
                      [this](const httplib::Request &req, httplib::Response &res) {
                          serveChat(req, res);
                      });
+        server_.Post(path_prefix_ + "/embeddings",
+                     [this](const httplib::Request &req, httplib::Response &res) {
+                         serveChat(req, res);
+                     });
+        server_.Post(path_prefix_ + "/v1/responses",
+                     [this](const httplib::Request &req, httplib::Response &res) {
+                         serveChat(req, res);
+                     });
         server_.Post(path_prefix_ + "/v1/messages",
                      [this](const httplib::Request &req, httplib::Response &res) {
                          serveChat(req, res);
@@ -99,6 +131,14 @@ public:
                      [this](const httplib::Request &req, httplib::Response &res) {
                          serveChat(req, res);
                      });
+        server_.Post(path_prefix_ + R"(/v1/projects/(.*?)/locations/(.*?)/publishers/google/models/(.*?):generateContent)",
+                     [this](const httplib::Request &req, httplib::Response &res) {
+                         serveChat(req, res);
+                     });
+        server_.Post(path_prefix_ + "/token", [](const httplib::Request &, httplib::Response &res) {
+            res.set_content(R"({"access_token":"local-vertex-token","expires_in":3600,"token_type":"Bearer"})",
+                            "application/json");
+        });
         server_.Get(path_prefix_ + "/models", [this](const httplib::Request &, httplib::Response &res) {
             ++model_requests_;
             res.status = 200;
@@ -167,6 +207,11 @@ public:
         return last_chat_path_;
     }
 
+    httplib::Headers lastChatHeaders() const {
+        std::scoped_lock lock{body_mutex_};
+        return last_chat_headers_;
+    }
+
 private:
     void serveChat(const httplib::Request &req, httplib::Response &res) {
         ++chat_requests_;
@@ -174,6 +219,7 @@ private:
             std::scoped_lock lock{body_mutex_};
             last_chat_body_ = req.body;
             last_chat_path_ = req.path;
+            last_chat_headers_ = req.headers;
         }
         switch (mode_.load()) {
         case Mode::Normal:
@@ -207,6 +253,31 @@ private:
         case Mode::Stream:
             serveStream(res);
             return;
+        case Mode::HeaderEcho: {
+            const std::string content = req.get_header_value("X-Custom-Feature") + "|" +
+                                        req.get_header_value("User-Agent");
+            const json response{{"id", "header-response"}, {"object", "chat.completion"},
+                                {"choices", json::array({json{{"index", 0},
+                                    {"message", json{{"role", "assistant"}, {"content", content}}}}})}};
+            res.status = 200;
+            res.set_content(response.dump(), "application/json");
+            return;
+        }
+        case Mode::RequestEcho: {
+            const std::string content = req.path + "|" + req.body;
+            json response;
+            if (req.path.ends_with("/responses")) {
+                response = {{"id", "resp_echo"}, {"object", "response"}, {"status", "completed"},
+                            {"output", json::array({json{{"type", "message"}, {"role", "assistant"},
+                                {"content", json::array({json{{"type", "output_text"}, {"text", content}}})}}})}};
+            } else {
+                response = {{"id", "chat_echo"}, {"object", "chat.completion"},
+                            {"choices", json::array({json{{"index", 0},
+                                {"message", json{{"role", "assistant"}, {"content", content}}}}})}};
+            }
+            res.set_content(response.dump(), "application/json");
+            return;
+        }
         }
     }
 
@@ -248,6 +319,7 @@ private:
     mutable std::mutex body_mutex_;
     std::string last_chat_body_;
     std::string last_chat_path_;
+    httplib::Headers last_chat_headers_;
 };
 
 #ifndef _WIN32
@@ -489,9 +561,11 @@ literouter::AppConfig buildProxyConfig(const std::string &alpha, const std::stri
 
 struct Hit {
     bool transport_ok = false;
+    std::string transport_error;
     int status = 0;
     std::string body;
     std::string content_type;
+    std::size_t content_type_count = 0;
     std::string acao; // Access-Control-Allow-Origin, empty when absent
     // "hit" / "miss" / empty. A cache that cannot say whether it answered from
     // memory is a cache nobody can debug.
@@ -500,24 +574,30 @@ struct Hit {
 };
 
 Hit postJson(int port, const std::string &path, const std::string &body,
-             const std::string &key = {}) {
+             const std::string &key = {}, const httplib::Headers &extra_headers = {}, bool compress = false) {
     httplib::Client client{"127.0.0.1", port};
     client.set_connection_timeout(2, 0);
     client.set_read_timeout(5, 0);
     client.set_write_timeout(5, 0);
-    httplib::Headers headers{{"Content-Type", "application/json"}};
+    client.set_compress(compress);
+    httplib::Headers headers = extra_headers;
+    if (headers.find("Content-Type") == headers.end()) {
+        headers.emplace("Content-Type", "application/json");
+    }
     if (!key.empty()) {
         headers.emplace("Authorization", "Bearer " + key);
     }
-    auto result = client.Post(path, headers, body, "application/json");
+    auto result = client.Post(path, headers, body, "");
     Hit hit;
     if (!result) {
+        hit.transport_error = httplib::to_string(result.error());
         return hit;
     }
     hit.transport_ok = true;
     hit.status = result->status;
     hit.body = result->body;
     hit.content_type = result->get_header_value("Content-Type");
+    hit.content_type_count = result->get_header_value_count("Content-Type");
     hit.acao = result->get_header_value("Access-Control-Allow-Origin");
     hit.cache = result->get_header_value("X-Literouter-Cache");
     hit.retry_after = result->get_header_value("Retry-After");
@@ -1583,6 +1663,11 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
                          where);
         LR_CHECK_MSG(!entry.request_body.empty(),
                      "LogEntry.request_body never written, with log_bodies on" + where);
+        const std::string serialized = literouter::toJsonString(entry);
+        const json wire_entry = json::parse(serialized, nullptr, false);
+        LR_CHECK_MSG(wire_entry.is_object() &&
+                         wire_entry.value("request_body", std::string{}) == entry.request_body,
+                     "the admin log JSON lost request_body" + where + ": " + serialized);
         if (entry.upstream_model != entry.model) {
             saw_renamed = true;
         }
@@ -1591,6 +1676,9 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
         }
         if (!entry.response_body.empty()) {
             saw_text_body = true;
+            LR_CHECK_MSG(wire_entry.is_object() &&
+                             wire_entry.value("response_body", std::string{}) == entry.response_body,
+                         "the admin log JSON lost response_body" + where + ": " + serialized);
         }
         // The phases: a buffered answer is one number (the relay's time to its
         // first byte, since httplib cannot separate connect from answer), and a
@@ -2273,6 +2361,381 @@ void group28RoutingPolicy(StubRelay &relay_a, StubRelay &relay_b) {
                      "the default policy stopped honouring the declared order");
         proxy.stop();
     }
+
+    // Price and historical latency must not undo the breaker's healthy-first
+    // order. With one attempt, choosing the open relay would strand a healthy
+    // backup indefinitely.
+    for (const std::string policy : {"fastest", "cheapest"}) {
+        literouter::AppConfig config;
+        start_proxy(config, policy, relay_a, relay_b, 1.0, 10.0);
+        config.server.max_attempts = 1;
+        config.server.circuit_failure_threshold = 1;
+        relay_a.setDelayMs(0);
+        relay_b.setDelayMs(0);
+        relay_a.setMode(StubRelay::Mode::Normal);
+        relay_b.setMode(StubRelay::Mode::Normal);
+        relay_a.resetCounters();
+        relay_b.resetCounters();
+
+        literouter::ProxyServer proxy;
+        const auto started = proxy.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) continue;
+
+        const int port = proxy.boundPort();
+        const Hit warm = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+        LR_CHECK_MSG(warm.status == 200 && relay_a.chatRequests() == 1,
+                     std::format("{} did not warm the preferred relay: status={} requests={}",
+                                 policy, warm.status, relay_a.chatRequests()));
+        relay_a.setMode(StubRelay::Mode::RateLimit);
+        const Hit failed = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+        LR_CHECK_MSG(failed.status == 429,
+                     std::format("{} did not observe the failure: status={}", policy, failed.status));
+        const int failed_attempts = relay_a.chatRequests();
+        const Hit recovered = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+        LR_CHECK_MSG(recovered.status == 200 && relay_a.chatRequests() == failed_attempts &&
+                         relay_b.chatRequests() == 1,
+                     std::format("{} reordered an open breaker: status={} failed={} backup={}",
+                                 policy, recovered.status, relay_a.chatRequests(), relay_b.chatRequests()));
+        proxy.stop();
+    }
+    relay_a.setMode(StubRelay::Mode::Normal);
+}
+
+void group35ForwardedHeaders(StubRelay &relay) {
+    LR_GROUP("35. business headers survive both transports without local credentials or hop metadata");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.persist_telemetry = false;
+    config.server.pass_through_unknown = false;
+    config.server.api_key = "local-credential";
+    literouter::ProviderConfig provider;
+    provider.id = "headers";
+    provider.base_url = relay.baseUrl();
+    provider.api_key = "upstream-credential";
+    config.providers = {provider};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = provider.id, .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) return;
+
+    {
+        httplib::Client client{"127.0.0.1", proxy.boundPort()};
+        client.set_connection_timeout(2, 0);
+        client.set_read_timeout(5, 0);
+        const std::string requested = "authorization, content-type, x-custom-feature, traceparent";
+        const httplib::Headers preflight{{"Origin", "https://client.example"},
+                                         {"Access-Control-Request-Method", "POST"},
+                                         {"Access-Control-Request-Headers", requested}};
+        const auto api = client.Options("/v1/chat/completions", preflight);
+        LR_CHECK_MSG(api && api->status == 204 &&
+                         api->get_header_value("Access-Control-Allow-Headers") == requested,
+                     api ? std::format("custom-header preflight returned {} / {}", api->status,
+                                        api->get_header_value("Access-Control-Allow-Headers"))
+                         : "custom-header preflight failed to connect");
+        const auto admin = client.Options("/__literouter/config", preflight);
+        LR_CHECK_MSG(admin && !admin->has_header("Access-Control-Allow-Origin") &&
+                         !admin->has_header("Access-Control-Allow-Headers"),
+                     admin ? "admin preflight exposed cross-origin headers" : "admin preflight failed to connect");
+    }
+
+    const httplib::Headers incoming{
+        {"uSeR-aGeNt", "codex-test/1.0"}, {"originator", "codex_cli_rs"},
+        {"OpenAI-Beta", "responses=experimental"}, {"oPeNaI-bEtA", "assistants=v2"},
+        {"OpenAI-Organization", "org-client"},
+        {"OpenAI-Project", "proj-client"}, {"anthropic-version", "2023-06-01"},
+        {"anthropic-beta", "tools-test"}, {"AnThRoPiC-bEtA", "prompt-caching-test"},
+        {"X-Client-Request-ID", "client-request"},
+        {"X-Stainless-Runtime", "python"}, {"session_id", "client-session"},
+        {"x-api-key", "local-anthropic-credential"}, {"api-key", "local-azure-credential"},
+        {"x-goog-api-key", "local-gemini-credential"}, {"Cookie", "local-session=secret"},
+        {"Proxy-Authorization", "Basic local-proxy-credential"},
+        {"X-Forwarded-For", "203.0.113.10"}, {"Forwarded", "for=203.0.113.10"},
+        {"X-Custom-Feature", "new-relay-capability"}, {"x-CUSTOM-feature", "second-value"},
+        {"Traceparent", "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"},
+        {"Connection", "keep-alive, X-Hop-Private, x-HOP-second, Content-MD5"},
+        // httplib's typed-header API rejects outer whitespace. Put it around
+        // the comma instead so trimming is exercised by a request it can send.
+        {"cOnNeCtIoN", "X-Hop-Third ,\t X-Hop-Fourth"}, {"X-Hop-Private", "hop-only"},
+        {"x-hop-second", "second-hop-only"}, {"X-Hop-Third", "third-hop-only"},
+        {"X-Hop-Fourth", "fourth-hop-only"},
+        {"Keep-Alive", "timeout=987"}, {"Proxy-Connection", "keep-alive"},
+        {"TE", "trailers"}, {"Trailer", "X-Late"}, {"Upgrade", "client-protocol"},
+        {"Content-Type", "application/json; charset=us-ascii"},
+        {"Content-MD5", "old-body-digest"}, {"Content-Digest", "sha-256=:old-digest:"},
+        {"Accept", "application/x-client-only"}, {"Accept-Encoding", "br"},
+        {"Host", "client.example"}, {"X-Amz-Date", "20000101T000000Z"},
+        {"X-Amz-Content-Sha256", "old-body-sha"}, {"X-Amz-Security-Token", "local-aws-token"},
+    };
+
+    for (const bool anthropic : {false, true}) {
+        for (const bool configured : {false, true}) {
+            config.providers[0].protocol = anthropic ? "anthropic" : "openai";
+            config.providers[0].headers.clear();
+            if (configured) {
+                config.providers[0].headers = {
+                    {"USER-agent", "configured-agent"}, {"ORIGINATOR", "configured-originator"},
+                    {"x-CUSTOM-feature", "configured-feature"},
+                    {"Content-Type", "application/json; charset=utf-8"},
+                    {anthropic ? "X-API-KEY" : "AUTHORIZATION", "configured-credential"},
+                    {anthropic ? "Anthropic-Beta" : "OPENAI-BETA", "configured-beta"},
+                };
+            }
+            proxy.updateConfig(config);
+            for (const bool stream : {false, true}) {
+                relay.setMode(stream ? StubRelay::Mode::Stream : StubRelay::Mode::Normal);
+                json request = json::parse(chatRequest(kRouteModel, stream));
+                if (anthropic) request["max_tokens"] = 16;
+                const Hit hit = postJson(proxy.boundPort(),
+                                         anthropic ? "/v1/messages" : "/v1/chat/completions",
+                                         request.dump(), "local-credential", incoming);
+                const std::string context = std::format("{} stream={} configured={}",
+                                                        anthropic ? "anthropic" : "openai",
+                                                        stream, configured);
+                LR_CHECK_MSG(hit.transport_ok && hit.status == 200,
+                             std::format("{} failed: status={} transport={} body={}",
+                                         context, hit.status, hit.transport_error, hit.body));
+                if (!hit.transport_ok) continue;
+                LR_CHECK_MSG(hit.content_type_count == 1,
+                             std::format("{} emitted {} Content-Type headers", context, hit.content_type_count));
+                LR_CHECK_MSG(hit.content_type == (stream ? "text/event-stream" : "application/json"),
+                             std::format("{} returned Content-Type {}", context, hit.content_type));
+
+                const auto headers = relay.lastChatHeaders();
+                const auto expect = [&](const std::string &name, const std::string &value) {
+                    const auto found = headers.find(name);
+                    const std::string actual = found == headers.end() ? "<missing>" : found->second;
+                    LR_CHECK_MSG(headers.count(name) == 1 && actual == value,
+                                 std::format("{} {} count={} value={}", context, name, headers.count(name), actual));
+                };
+                const auto absent = [&](const std::string &name) {
+                    LR_CHECK_MSG(headers.count(name) == 0,
+                                 std::format("{} leaked {} (count={})", context, name, headers.count(name)));
+                };
+                expect("User-Agent", configured ? "configured-agent" : "codex-test/1.0");
+                expect("originator", configured ? "configured-originator" : "codex_cli_rs");
+                expect("X-Client-Request-ID", "client-request");
+                expect("X-Stainless-Runtime", "python");
+                expect("session_id", "client-session");
+                expect("X-Custom-Feature", configured ? "configured-feature" : "new-relay-capability");
+                expect("Traceparent", "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01");
+                expect("Content-Type", configured ? "application/json; charset=utf-8" : "application/json");
+                expect("Content-Length", std::to_string(relay.lastChatBody().size()));
+                expect("Accept", stream ? "text/event-stream" : "application/json");
+                std::string root;
+                std::string prefix;
+                std::string scheme;
+                const bool valid_url = literouter::splitBaseUrl(relay.baseUrl(), root, prefix, scheme);
+                LR_CHECK_MSG(valid_url, "invalid stub URL: " + relay.baseUrl());
+                if (valid_url) expect("Host", root.substr(root.find("://") + 3));
+                const auto encoding = headers.find("Accept-Encoding");
+                LR_CHECK_MSG(encoding == headers.end() || encoding->second != "br",
+                             context + " reused the client's compression negotiation");
+                if (anthropic) {
+                    expect("x-api-key", configured ? "configured-credential" : "upstream-credential");
+                    expect("anthropic-version", "2023-06-01");
+                    expect("anthropic-beta", configured ? "configured-beta" : "tools-test, prompt-caching-test");
+                    absent("Authorization");
+                    absent("OpenAI-Beta");
+                    absent("OpenAI-Organization");
+                    absent("OpenAI-Project");
+                } else {
+                    expect("Authorization", configured ? "configured-credential" : "Bearer upstream-credential");
+                    expect("OpenAI-Beta", configured ? "configured-beta" : "responses=experimental, assistants=v2");
+                    expect("OpenAI-Organization", "org-client");
+                    expect("OpenAI-Project", "proj-client");
+                    absent("x-api-key");
+                    absent("anthropic-version");
+                    absent("anthropic-beta");
+                }
+                for (const std::string name : {"api-key", "x-goog-api-key", "Cookie", "Proxy-Authorization",
+                                               "Forwarded", "X-Forwarded-For", "X-Hop-Private", "X-Hop-Second",
+                                               "X-Hop-Third", "X-Hop-Fourth", "Keep-Alive", "Proxy-Connection", "TE", "Trailer", "Upgrade",
+                                               "Content-MD5", "Content-Digest", "X-Amz-Date", "X-Amz-Content-Sha256",
+                                               "X-Amz-Security-Token", "Expect"}) {
+                    absent(name);
+                }
+            }
+        }
+    }
+    proxy.stop();
+    relay.setMode(StubRelay::Mode::Normal);
+}
+
+void group36EmbeddingAlias(StubRelay &relay) {
+    LR_GROUP("36. embedding routes rename the model while preserving the input");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.persist_telemetry = false;
+    config.server.pass_through_unknown = false;
+    literouter::ProviderConfig provider;
+    provider.id = "embeddings";
+    provider.base_url = relay.baseUrl();
+    config.providers = {provider};
+    literouter::RouteConfig route;
+    route.model = "embedding-alias";
+    route.targets = {literouter::RouteTarget{.provider = provider.id, .model = "text-embedding-3-small"}};
+    config.routes = {route};
+    relay.setMode(StubRelay::Mode::Normal);
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) return;
+    const json request{{"model", "embedding-alias"}, {"input", json::array({"one", "two"})},
+                       {"encoding_format", "base64"}, {"dimensions", 256}};
+    const Hit hit = postJson(proxy.boundPort(), "/v1/embeddings", request.dump());
+    LR_CHECK_MSG(hit.status == 200, std::format("embedding request failed: status={} body={}", hit.status, hit.body));
+    const std::string forwarded_body = relay.lastChatBody();
+    const json forwarded = json::parse(forwarded_body, nullptr, false);
+    json expected = request;
+    expected["model"] = "text-embedding-3-small";
+    LR_CHECK_MSG(forwarded == expected,
+                 std::format("embedding alias/input mismatch: actual={} expected={}", forwarded_body, expected.dump()));
+    LR_CHECK_MSG(relay.lastChatPath().ends_with("/embeddings"),
+                 "embedding request reached " + relay.lastChatPath());
+    proxy.stop();
+}
+
+void group37LargeRequestWithoutExpect(StubRelay &relay) {
+    LR_GROUP("37. large buffered and streamed requests send the complete body without Expect");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.persist_telemetry = false;
+    config.server.pass_through_unknown = false;
+    literouter::ProviderConfig provider;
+    provider.id = "large-request";
+    provider.base_url = relay.baseUrl();
+    config.providers = {provider};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = provider.id, .model = {}}};
+    config.routes = {route};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) return;
+
+    for (const auto [stream, compress] : {std::pair{false, false}, std::pair{false, true},
+                                          std::pair{true, false}, std::pair{true, true}}) {
+#ifndef CPPHTTPLIB_ZLIB_SUPPORT
+        if (compress) continue;
+#endif
+        relay.setMode(stream ? StubRelay::Mode::Stream : StubRelay::Mode::Normal);
+        json request = json::parse(chatRequest(kRouteModel, stream));
+        // Exceeds httplib's former 1 KiB auto-Expect threshold. Relays that do
+        // not implement 100-continue can close before reading this prompt.
+        request["messages"][0]["content"] = std::string(44 * 1024, 'x');
+        const std::string body = request.dump();
+        const Hit hit = postJson(proxy.boundPort(), "/v1/chat/completions", body, {},
+                                 {{"Expect", "100-continue"}}, compress);
+        LR_CHECK_MSG(hit.transport_ok && hit.status == 200,
+                     std::format("large stream={} compressed={} request failed: status={} body={}",
+                                 stream, compress, hit.status, hit.body));
+        const auto headers = relay.lastChatHeaders();
+        LR_CHECK_MSG(headers.count("Expect") == 0,
+                     std::format("large stream={} request added {} Expect headers", stream, headers.count("Expect")));
+        LR_CHECK_MSG(headers.count("Content-Encoding") == 0,
+                     std::format("large stream={} compressed={} request retained its input encoding", stream, compress));
+        const std::string received = relay.lastChatBody();
+        LR_CHECK_MSG(received == body,
+                     std::format("large stream={} request changed/truncated: received={} expected={} bytes",
+                                 stream, received.size(), body.size()));
+        LR_CHECK_MSG(json::parse(received, nullptr, false).is_object(),
+                     std::format("large stream={} request was not complete JSON ({} bytes)", stream, received.size()));
+    }
+    proxy.stop();
+    relay.setMode(StubRelay::Mode::Normal);
+}
+
+void group38StreamingCapability(StubRelay &relay_a, StubRelay &relay_b) {
+    LR_GROUP("38. streaming capability filters candidates before the attempt budget");
+    struct Request {
+        std::string path;
+        std::string body;
+    };
+    const std::vector<Request> requests{
+        {"/v1/chat/completions", chatRequest(kRouteModel, true)},
+        {"/v1/responses", json{{"model", kRouteModel}, {"input", "hi"}, {"stream", true}}.dump()},
+        {"/v1/messages", json{{"model", kRouteModel}, {"max_tokens", 16}, {"stream", true},
+                              {"messages", json::array({json{{"role", "user"}, {"content", "hi"}}})}}.dump()},
+    };
+    for (const std::string first_protocol : {"openai", "anthropic"}) {
+        literouter::AppConfig config;
+        config.server.host = "127.0.0.1";
+        config.server.port = 0;
+        config.server.persist_telemetry = false;
+        config.server.pass_through_unknown = false;
+        config.server.max_attempts = 1;
+        literouter::ProviderConfig first;
+        first.id = "without-streaming";
+        first.base_url = relay_a.baseUrl();
+        first.protocol = first_protocol;
+        first.supports_stream = false;
+        literouter::ProviderConfig second;
+        second.id = "with-streaming";
+        second.base_url = relay_b.baseUrl();
+        config.providers = {first, second};
+        literouter::RouteConfig route;
+        route.model = kRouteModel;
+        route.targets = {literouter::RouteTarget{.provider = first.id, .model = {}},
+                         literouter::RouteTarget{.provider = second.id, .model = {}}};
+        config.routes = {route};
+        relay_a.setMode(StubRelay::Mode::Normal);
+        relay_b.setMode(StubRelay::Mode::Stream);
+        relay_a.resetCounters();
+        relay_b.resetCounters();
+
+        literouter::ProxyServer proxy;
+        const auto started = proxy.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) continue;
+        for (const auto &request : requests) {
+            const int backup_before = relay_b.chatRequests();
+            const Hit hit = postJson(proxy.boundPort(), request.path, request.body);
+            LR_CHECK_MSG(hit.status == 200 && hit.content_type == "text/event-stream" &&
+                             relay_a.chatRequests() == 0 && relay_b.chatRequests() == backup_before + 1,
+                         std::format("{} via {} consumed the only attempt on an incapable relay: status={} first={} backup={}",
+                                     request.path, first_protocol, hit.status, relay_a.chatRequests(), relay_b.chatRequests()));
+        }
+
+        config.providers[1].supports_stream = false;
+        proxy.updateConfig(config);
+        const int backup_before = relay_b.chatRequests();
+        for (const auto &request : requests) {
+            const Hit hit = postJson(proxy.boundPort(), request.path, request.body);
+            const json error = json::parse(hit.body, nullptr, false);
+            LR_CHECK_MSG(hit.status == 400 && error.is_object() && error.contains("error") &&
+                             error["error"].value("code", std::string{}) == "unsupported_stream",
+                         std::format("{} without streaming support returned {}: {}", request.path, hit.status, hit.body));
+        }
+        LR_CHECK_MSG(relay_a.chatRequests() == 0 && relay_b.chatRequests() == backup_before,
+                     std::format("unsupported streaming reached a relay: first={} backup={}",
+                                 relay_a.chatRequests(), relay_b.chatRequests()));
+
+        // Turning off streaming support does not disable buffered traffic.
+        config.providers[0].protocol = "openai";
+        proxy.updateConfig(config);
+        const Hit buffered = postJson(proxy.boundPort(), "/v1/chat/completions", chatRequest(kRouteModel));
+        LR_CHECK_MSG(buffered.status == 200 && relay_a.chatRequests() == 1,
+                     std::format("non-streaming relay was also disabled for buffered requests: status={} calls={}",
+                                 buffered.status, relay_a.chatRequests()));
+        const Hit unknown = postJson(proxy.boundPort(), "/v1/chat/completions", chatRequest("unknown-model", true));
+        LR_CHECK_MSG(unknown.status == 404,
+                     std::format("unknown streaming model returned {} instead of 404", unknown.status));
+        proxy.stop();
+    }
+    relay_a.setMode(StubRelay::Mode::Normal);
+    relay_b.setMode(StubRelay::Mode::Normal);
 }
 
 // A config file that changes under a running proxy, for operators who keep the
@@ -2649,6 +3112,46 @@ void group14MultiProtocolIngress(StubRelay &relay_a, int port) {
         LR_CHECK(res->body.find(R"("models":)") != std::string::npos);
         LR_CHECK(res->body.find("models/claude-routed") != std::string::npos);
         LR_CHECK(res->body.find("models/gemini-routed") != std::string::npos);
+    }
+
+    // 5. Vertex is Gemini's wire shape too: model aliases belong in its URL,
+    // never in an extra JSON model field rejected by generateContent.
+    {
+        TempDir credentials;
+        const auto key_file = credentials.path() / "vertex.json";
+        const bool written = writeVertexCredentials(key_file, relay_a.baseUrl() + "/token");
+        LR_CHECK_MSG(written, "could not create the local Vertex service-account fixture");
+        if (!written) return;
+        literouter::AppConfig config;
+        config.server.host = "127.0.0.1";
+        config.server.port = 0;
+        config.server.persist_telemetry = false;
+        literouter::ProviderConfig vertex;
+        vertex.id = "vertex-local";
+        vertex.protocol = "vertex";
+        vertex.base_url = relay_a.baseUrl();
+        vertex.project = "local-test";
+        vertex.region = "test-region";
+        vertex.credentials_file = key_file.string();
+        config.providers = {vertex};
+        literouter::RouteConfig route;
+        route.model = "vertex-alias";
+        route.targets = {{.provider = vertex.id, .model = "vertex-upstream"}};
+        config.routes = {route};
+        literouter::ProxyServer vertex_proxy;
+        const auto started = vertex_proxy.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) return;
+        const std::string raw = R"({ "contents": [{"role":"user","parts":[{"text":"hello vertex"}]}], "vendor_option": "preserved" })";
+        const Hit hit = postJson(vertex_proxy.boundPort(), "/v1beta/models/vertex-alias:generateContent", raw);
+        LR_CHECK_MSG(hit.transport_ok && hit.status == 200,
+                     std::format("Vertex passthrough failed: status={} body={}", hit.status, hit.body));
+        const json forwarded = json::parse(relay_a.lastChatBody(), nullptr, false);
+        LR_CHECK_MSG(forwarded.is_object() && !forwarded.contains("model") && relay_a.lastChatBody() == raw,
+                     "Vertex model alias changed its Gemini body: " + relay_a.lastChatBody());
+        LR_CHECK_MSG(relay_a.lastChatPath().ends_with("/models/vertex-upstream:generateContent"),
+                     "Vertex model alias was not applied to its URL: " + relay_a.lastChatPath());
+        vertex_proxy.stop();
     }
 }
 
@@ -3195,6 +3698,91 @@ void group29ResponseCache(StubRelay &relay_a) {
                  "a failed answer must not be cached");
     relay_a.setMode(StubRelay::Mode::Normal);
 
+    // Identical JSON can select different relay behavior through business
+    // headers. Only the effective forwarded values belong in the key.
+    relay_a.setMode(StubRelay::Mode::HeaderEcho);
+    const std::string header_request =
+        std::format(R"({{"model":"{}","messages":[{{"role":"user","content":"header-sensitive"}}]}})",
+                    kRouteModel);
+    const httplib::Headers header_a{{"X-Custom-Feature", "alpha"}, {"User-Agent", "agent-a"}};
+    const httplib::Headers header_a_reordered{{"user-AGENT", "agent-a"}, {"x-CUSTOM-feature", "alpha"},
+                                             {"Cookie", "not-forwarded=different"}};
+    const httplib::Headers header_b{{"X-Custom-Feature", "beta"}, {"User-Agent", "agent-a"}};
+    const httplib::Headers header_c{{"X-Custom-Feature", "beta"}, {"User-Agent", "agent-b"}};
+    const int before_headers = relay_a.chatRequests();
+    const Hit variant_a = postJson(port, "/v1/chat/completions", header_request, "admin-key", header_a);
+    const Hit repeated_a = postJson(port, "/v1/chat/completions", header_request, "admin-key", header_a_reordered);
+    const Hit variant_b = postJson(port, "/v1/chat/completions", header_request, "admin-key", header_b);
+    const Hit variant_c = postJson(port, "/v1/chat/completions", header_request, "admin-key", header_c);
+    LR_CHECK_MSG(variant_a.cache == "miss" && repeated_a.cache == "hit" &&
+                     repeated_a.body == variant_a.body,
+                 std::format("header order/case changed the cache key: first={} repeat={}",
+                             variant_a.cache, repeated_a.cache));
+    LR_CHECK_MSG(variant_b.cache == "miss" && variant_b.body.find("beta|agent-a") != std::string::npos &&
+                     variant_b.body != variant_a.body,
+                 "a custom header reused the wrong cached answer: " + variant_b.body);
+    LR_CHECK_MSG(variant_c.cache == "miss" && variant_c.body.find("beta|agent-b") != std::string::npos &&
+                     variant_c.body != variant_b.body,
+                 "User-Agent reused the wrong cached answer: " + variant_c.body);
+    LR_CHECK_MSG(relay_a.chatRequests() == before_headers + 3,
+                 std::format("header variants made {} relay calls, expected 3", relay_a.chatRequests() - before_headers));
+
+    literouter::AppConfig overridden = config;
+    overridden.providers[0].headers = {{"X-Custom-Feature", "fixed"}, {"User-Agent", "fixed-agent"}};
+    proxy.updateConfig(overridden);
+    const Hit fixed_first = postJson(port, "/v1/chat/completions", header_request, "admin-key", header_a);
+    const Hit fixed_repeat = postJson(port, "/v1/chat/completions", header_request, "admin-key", header_c);
+    LR_CHECK_MSG(fixed_first.cache == "miss" && fixed_repeat.cache == "hit" &&
+                     fixed_first.body.find("fixed|fixed-agent") != std::string::npos &&
+                     fixed_repeat.body == fixed_first.body,
+                 std::format("configured headers did not define the cached variant: first={} repeat={} body={}",
+                             fixed_first.cache, fixed_repeat.cache, fixed_repeat.body));
+
+    // Fields absent from the Chat intermediate still affect a same-protocol
+    // Responses call. A previous response id selects a different conversation.
+    relay_a.setMode(StubRelay::Mode::RequestEcho);
+    literouter::AppConfig responses_config = config;
+    responses_config.providers[0].protocol = "openai_responses";
+    proxy.updateConfig(responses_config);
+    json continuation{{"model", kRouteModel}, {"input", "continue"}, {"previous_response_id", "resp_first"}};
+    const int before_contexts = relay_a.chatRequests();
+    const Hit context_first = postJson(port, "/v1/responses", continuation.dump(), "admin-key");
+    continuation["previous_response_id"] = "resp_second";
+    const Hit context_second = postJson(port, "/v1/responses", continuation.dump(), "admin-key");
+    const Hit context_repeat = postJson(port, "/v1/responses", continuation.dump(), "admin-key");
+    LR_CHECK_MSG(context_first.status == 200 && context_first.cache == "miss" &&
+                     context_second.status == 200 && context_second.cache == "miss" &&
+                     context_repeat.cache == "hit" && context_repeat.body == context_second.body,
+                 std::format("Responses contexts shared a cache entry: first={}/{} second={}/{} repeat={}",
+                             context_first.status, context_first.cache, context_second.status,
+                             context_second.cache, context_repeat.cache));
+    LR_CHECK_MSG(context_first.body != context_second.body &&
+                     context_second.body.find("resp_second") != std::string::npos &&
+                     relay_a.chatRequests() == before_contexts + 2,
+                 "the second Responses context did not reach the relay: " + context_second.body);
+
+    // applyConfig keeps enabled cache entries; changing the relay's custom
+    // path must select a new cache namespace while unchanged requests still hit.
+    proxy.updateConfig(config);
+    const std::string path_request = json{{"model", kRouteModel},
+        {"messages", json::array({json{{"role", "user"}, {"content", "path-sensitive"}}})}}.dump();
+    const int before_paths = relay_a.chatRequests();
+    const Hit old_path = postJson(port, "/v1/chat/completions", path_request, "admin-key");
+    literouter::AppConfig changed_path = config;
+    changed_path.providers[0].chat_path = "/embeddings";
+    proxy.updateConfig(changed_path);
+    const Hit new_path = postJson(port, "/v1/chat/completions", path_request, "admin-key");
+    const Hit repeated_path = postJson(port, "/v1/chat/completions", path_request, "admin-key");
+    LR_CHECK_MSG(old_path.status == 200 && old_path.cache == "miss" &&
+                     new_path.status == 200 && new_path.cache == "miss" &&
+                     repeated_path.cache == "hit" && repeated_path.body == new_path.body,
+                 std::format("custom endpoint edit reused a cache entry: old={}/{} new={}/{} repeat={}",
+                             old_path.status, old_path.cache, new_path.status, new_path.cache, repeated_path.cache));
+    LR_CHECK_MSG(old_path.body != new_path.body && relay_a.lastChatPath().ends_with("/embeddings") &&
+                     relay_a.chatRequests() == before_paths + 2,
+                 "the changed endpoint did not receive the request: " + new_path.body);
+    relay_a.setMode(StubRelay::Mode::Normal);
+
     // Turning the cache off drops what it held.
     literouter::AppConfig off = config;
     off.server.response_cache_ttl_sec = 0;
@@ -3628,6 +4216,10 @@ int main() {
         group31HealthProbes(relay_a);
         group32TrafficBuckets(relay_a);
         group33OtlpExport(relay_a);
+        group35ForwardedHeaders(relay_a);
+        group36EmbeddingAlias(relay_a);
+        group37LargeRequestWithoutExpect(relay_a);
+        group38StreamingCapability(relay_a, relay_b);
 #ifndef _WIN32
         group23RequestDeadline(relay_b);
 #endif

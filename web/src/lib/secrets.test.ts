@@ -68,7 +68,10 @@ describe('generateApiKey uses the platform cryptographic source', () => {
 
 describe('settleSavedDraft clears a submitted draft without dropping newer edits', () => {
   const submitted = makeConfig()
+  submitted.server.api_key = 'submitted-key'
   const saved = structuredClone(submitted)
+  saved.server.api_key = ''
+  saved.server.api_key_source = 'literal'
 
   it('takes the server copy when nothing was touched during the save', () => {
     expect(settleSavedDraft(structuredClone(submitted), submitted, saved)).toEqual(saved)
@@ -77,7 +80,11 @@ describe('settleSavedDraft clears a submitted draft without dropping newer edits
   it('keeps a draft that was edited while the request was in flight', () => {
     const edited = structuredClone(submitted)
     edited.server.port = 9999
-    expect(settleSavedDraft(edited, submitted, saved)).toBe(edited)
+    const settled = settleSavedDraft(edited, submitted, saved)
+    expect(settled).toEqual({ ...saved, server: { ...saved.server, port: 9999 } })
+    expect(settled.server.api_key).toBe('')
+    expect(settled.server.api_key_source).toBe('literal')
+    expect(edited.server.api_key).toBe('submitted-key')
   })
 
   it('takes the server copy when there is no draft at all', () => {

@@ -44,6 +44,12 @@ export function totalTokens(prompt: number, completion: number): number {
   return (prompt || 0) + (completion || 0)
 }
 
+/** The listener's root is not an OpenAI client base URL until /v1 is added. */
+export function clientBaseUrl(listener: string): string {
+  const root = listener.replace(/\/+$/, '')
+  return !root || root.endsWith('/v1') ? root : `${root}/v1`
+}
+
 /** How a provider's stored secret should read in a table or a form. */
 export function keySummary(provider: ProviderConfig, t: (key: string, vars?: Record<string, string | number>) => string) {
   if (provider.api_key_source === 'env' && provider.api_key) {
