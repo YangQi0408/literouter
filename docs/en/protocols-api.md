@@ -363,6 +363,12 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 
   A streamed request is therefore the one case where "how long it took to start answering" and "how long the answer took" are separable — the two numbers that matter when comparing relays.
 
+### Route Explanation Preview
+
+- **Request**: `GET /__literouter/explain?model=<logical-model-name>`
+- **Response**: The candidate chain after the active policy, including upstream model names, weights, breaker state and ordering reasons.
+- **Notes**: Uses the running instance's config and health state. It sends no upstream request and does not advance weighted round-robin state. Session affinity for a particular conversation is not included.
+
 ### 3. Hot Reload Configuration
 
 - **Request**: `POST /__literouter/reload`

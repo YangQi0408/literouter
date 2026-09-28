@@ -1150,6 +1150,8 @@ struct AdminReply {
 
 AdminReply adminPost(std::string_view base_url, std::string_view path,
                      std::string_view body = {}, std::string_view api_key = {});
+AdminReply adminGet(std::string_view base_url, std::string_view path,
+                    std::string_view api_key = {});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON codecs — shared by the config store, the admin API and the console.

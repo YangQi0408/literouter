@@ -160,6 +160,17 @@ literouter models [OPTIONS]
 ### Options
 - `-a, --all`: Include unrouted physical models advertised by providers in pass-through mode.
 
+## Route Explanation (`explain`)
+
+Inspect the running instance's candidate order and reasons for a model without sending an upstream request:
+
+```bash
+literouter explain <model>
+literouter --json explain <model>
+```
+
+The result includes candidate relays, upstream model names, weights, breaker state and the active routing policy. The preview does not advance weighted round-robin state; without a conversation identifier, session affinity is not applied.
+
 ---
 
 ## Provider Management (`providers`)
@@ -341,4 +352,3 @@ one that was logged — worse than not replaying it at all.
 | `--timeout` | Per-request timeout (default: the relay's own) |
 | `--show` | Print the answer body (converted back to chat shape if the relay speaks another protocol) |
 | `--json` | Machine-readable output (global flag) |
-

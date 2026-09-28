@@ -2201,11 +2201,11 @@ struct ProxyServer::Impl {
 
     // Round-robin is deliberately applied to the ordered candidate list rather
     // than inside the router: the router is a pure decision layer, while the
-    // its state is request scheduling data. Grouping by provider first keeps a
+    // scheduler state belongs here. Grouping by provider first keeps a
     // relay's model fallback chain intact; otherwise a renamed primary on one
     // relay and a fallback on another would be interleaved arbitrarily.
     void rotateRoundRobin(const std::string &model, const AppConfig &config,
-                          std::vector<Candidate> &candidates) {
+                          std::vector<Candidate> &candidates, bool advance = true) {
         if (candidates.size() < 2) {
             return;
         }
@@ -2235,41 +2235,58 @@ struct ProxyServer::Impl {
             return;
         }
 
+        std::vector<std::string> providers;
+        std::vector<std::int64_t> weights;
+        providers.reserve(groups.size());
+        weights.reserve(groups.size());
+        for (const auto &group : groups) {
+            providers.push_back(group.provider);
+            weights.push_back(group.weight);
+        }
+
+        const auto nextGroup = [&](std::vector<std::int64_t> &current_weights) {
+            std::int64_t total_weight = 0;
+            for (std::size_t index = 0; index < groups.size(); ++index) {
+                total_weight += groups[index].weight;
+                current_weights[index] += groups[index].weight;
+            }
+            std::size_t selected = 0;
+            for (std::size_t index = 1; index < groups.size(); ++index) {
+                if (current_weights[index] > current_weights[selected]) {
+                    selected = index;
+                }
+            }
+            current_weights[selected] -= total_weight;
+            return selected;
+        };
+
         std::size_t first = 0;
         {
             std::scoped_lock lock{round_robin_mutex};
-            if (!round_robin_state.contains(model) &&
-                round_robin_state.size() >= kMaxRoundRobinModels) {
-                round_robin_state.erase(round_robin_state.begin());
-            }
-            auto &state = round_robin_state[model];
-            std::vector<std::string> providers;
-            std::vector<std::int64_t> weights;
-            providers.reserve(groups.size());
-            weights.reserve(groups.size());
-            for (const auto &group : groups) {
-                providers.push_back(group.provider);
-                weights.push_back(group.weight);
-            }
-            if (state.providers != providers || state.weights != weights) {
-                state.providers = std::move(providers);
-                state.weights = std::move(weights);
-                state.current_weights.assign(groups.size(), 0);
-            } else if (state.current_weights.size() != groups.size()) {
-                state.current_weights.assign(groups.size(), 0);
-            }
-
-            std::int64_t total_weight = 0;
-            for (const auto &group : groups) {
-                total_weight += group.weight;
-            }
-            for (std::size_t index = 0; index < groups.size(); ++index) {
-                state.current_weights[index] += groups[index].weight;
-                if (index == 0 || state.current_weights[index] > state.current_weights[first]) {
-                    first = index;
+            std::vector<std::int64_t> current_weights(groups.size(), 0);
+            RoundRobinState *state = nullptr;
+            if (advance) {
+                if (!round_robin_state.contains(model) &&
+                    round_robin_state.size() >= kMaxRoundRobinModels) {
+                    round_robin_state.erase(round_robin_state.begin());
                 }
+                state = &round_robin_state[model];
             }
-            state.current_weights[first] -= total_weight;
+            if (state != nullptr) {
+                if (state->providers != providers || state->weights != weights) {
+                    state->providers = providers;
+                    state->weights = weights;
+                    state->current_weights.assign(groups.size(), 0);
+                }
+                current_weights = state->current_weights;
+            } else if (const auto it = round_robin_state.find(model);
+                       it != round_robin_state.end() && it->second.providers == providers &&
+                       it->second.weights == weights &&
+                       it->second.current_weights.size() == groups.size()) {
+                current_weights = it->second.current_weights;
+            }
+            first = nextGroup(current_weights);
+            if (state != nullptr) state->current_weights = std::move(current_weights);
         }
 
         candidates.clear();
@@ -2284,6 +2301,79 @@ struct ProxyServer::Impl {
         // a healthy one, so restore that invariant after moving whole groups.
         std::stable_partition(candidates.begin(), candidates.end(),
                               [](const Candidate &candidate) { return !candidate.skipped; });
+    }
+
+    void applyRoutingPolicy(const std::string &model, const AppConfig &config,
+                            std::vector<Candidate> &candidates, bool advance_round_robin = true) {
+        if (config.server.routing_policy == "fastest" ||
+            config.server.routing_policy == "cheapest") {
+            const bool fastest = config.server.routing_policy == "fastest";
+            const auto metric_of = [&](const Candidate &candidate) -> double {
+                if (!fastest) {
+                    const ProviderConfig *provider = config.provider(candidate.provider);
+                    if (provider == nullptr) return -1.0;
+                    const auto [p_in, p_out] = provider->pricesFor(candidate.model, model);
+                    if (p_in <= 0.0 && p_out <= 0.0) return -1.0;
+                    return p_in + p_out;
+                }
+                const double measured = latencyMetric(candidate.provider);
+                return measured > 0.0 ? measured : -1.0;
+            };
+            std::stable_sort(candidates.begin(), candidates.end(),
+                             [&](const Candidate &a, const Candidate &b) {
+                                 if (a.skipped != b.skipped) return !a.skipped;
+                                 const double left = metric_of(a);
+                                 const double right = metric_of(b);
+                                 if (left < 0.0 || right < 0.0) {
+                                     return left >= 0.0 && right < 0.0;
+                                 }
+                                 return left < right;
+                             });
+        } else if (config.server.routing_policy == "round_robin") {
+            rotateRoundRobin(model, config, candidates, advance_round_robin);
+        }
+    }
+
+    json routeExplanation(const std::string &model) {
+        const AppConfig config = snapshotConfig();
+        std::vector<Candidate> candidates = order(router.candidatesFor(model));
+        applyRoutingPolicy(model, config, candidates, false);
+
+        json result = json::object();
+        result["model"] = model;
+        result["policy"] = config.server.routing_policy;
+        result["max_attempts"] = config.server.max_attempts;
+        result["session_affinity_applied"] = false;
+        json entries = json::array();
+        for (std::size_t index = 0; index < candidates.size(); ++index) {
+            const auto &candidate = candidates[index];
+            const ProviderConfig *provider = config.provider(candidate.provider);
+            json item = json::object();
+            item["rank"] = index + 1;
+            item["provider"] = candidate.provider;
+            item["model"] = candidate.model;
+            item["priority"] = provider == nullptr ? 0 : provider->priority;
+            item["weight"] = provider == nullptr ? 1 : provider->weight;
+            item["skipped"] = candidate.skipped;
+            item["selected"] = index == 0 && !candidate.skipped;
+            if (provider != nullptr) {
+                const double latency = latencyMetric(candidate.provider);
+                if (latency > 0.0) item["latency_ms_p95"] = latency;
+                const auto [price_in, price_out] = provider->pricesFor(candidate.model, model);
+                if (price_in > 0.0 || price_out > 0.0) {
+                    item["price_usd_per_million"] = price_in + price_out;
+                }
+            }
+            std::string reason = "configured_order";
+            if (candidate.skipped) reason = "circuit_open";
+            else if (config.server.routing_policy == "fastest") reason = "measured_latency";
+            else if (config.server.routing_policy == "cheapest") reason = "configured_price";
+            else if (config.server.routing_policy == "round_robin") reason = "weighted_round_robin";
+            item["reason"] = reason;
+            entries.push_back(std::move(item));
+        }
+        result["candidates"] = std::move(entries);
+        return result;
     }
 
     // ── the chat / embeddings pipeline ───────────────────────────────────────
@@ -2431,45 +2521,9 @@ struct ProxyServer::Impl {
                 return;
             }
         }
-        // The policy reorders the chain the operator's priority produced; it does
-        // not replace it. Ties keep the priority order, and a relay with no
-        // measurement yet sorts after the ones with one — it has not earned a
-        // place at the front, but it is not disqualified either.
-        if (ctx.config.server.routing_policy == "fastest" ||
-            ctx.config.server.routing_policy == "cheapest") {
-            const bool fastest = ctx.config.server.routing_policy == "fastest";
-            const auto metric_of = [&](const Candidate &candidate) -> double {
-                if (!fastest) {
-                    const ProviderConfig *provider = ctx.config.provider(candidate.provider);
-                    if (provider == nullptr) {
-                        return -1.0;
-                    }
-                    const auto [p_in, p_out] = provider->pricesFor(candidate.model, ctx.model);
-                    if (p_in <= 0.0 && p_out <= 0.0) {
-                        return -1.0; // unpriced: unknown, so it sorts last
-                    }
-                    return p_in + p_out;
-                }
-                // p95 rather than the average: a relay that is usually fast and
-                // occasionally terrible is not the one to try first. 0 means it
-                // has never been measured.
-                const double measured = latencyMetric(candidate.provider);
-                return measured > 0.0 ? measured : -1.0;
-            };
-            std::stable_sort(candidates.begin(), candidates.end(),
-                             [&](const Candidate &a, const Candidate &b) {
-                                 if (a.skipped != b.skipped) return !a.skipped;
-                                 const double left = metric_of(a);
-                                 const double right = metric_of(b);
-                                 if (left < 0.0 || right < 0.0) {
-                                     return left >= 0.0 && right < 0.0; // measured first
-                                 }
-                                 return left < right;
-                             });
-        }
-        if (ctx.config.server.routing_policy == "round_robin") {
-            rotateRoundRobin(ctx.model, ctx.config, candidates);
-        }
+        // Share this order with the read-only `explain` endpoint so its preview
+        // cannot drift from the chain a request would actually try.
+        applyRoutingPolicy(ctx.model, ctx.config, candidates);
         if (!ctx.affinity_key.empty()) {
             const std::string warm = affinityProvider(ctx.affinity_key, nowUnix());
             if (!warm.empty()) {
@@ -4079,6 +4133,17 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         res.set_content(toJsonString(snapshot()), "application/json");
     });
 
+    server.Get(admin + "/explain", [this](const h::Request &req, h::Response &res) {
+        const std::string model = req.has_param("model") ? req.get_param_value("model") : "";
+        if (model.empty()) {
+            sendError(res, 400, "a model query parameter is required", "invalid_request",
+                      "missing_model");
+            return;
+        }
+        res.status = 200;
+        res.set_content(dumpJson(impl_->routeExplanation(model), 2), "application/json");
+    });
+
     // The same numbers the console renders, in the format a scraper reads. On
     // the management surface, so it inherits the same key check as everything
     // else there: a scraper can send a bearer token, and these counters reveal
@@ -4691,6 +4756,27 @@ AdminReply adminPost(std::string_view base_url, std::string_view path, std::stri
     const std::string target = std::format("{}{}{}", prefix, ProxyServer::kAdminPrefix, path);
     auto result = body.empty() ? client->Post(target)
                                : client->Post(target, std::string{body}, "application/json");
+    if (!result) {
+        out.error = errorText(result.error());
+        return out;
+    }
+    out.reachable = true;
+    out.status = result->status;
+    out.body = result->body;
+    return out;
+}
+
+AdminReply adminGet(std::string_view base_url, std::string_view path, std::string_view api_key) {
+    AdminReply out;
+    std::string prefix;
+    std::string error;
+    auto client = makeAdminClient(base_url, api_key, prefix, error);
+    if (!client) {
+        out.error = std::move(error);
+        return out;
+    }
+    const std::string target = std::format("{}{}{}", prefix, ProxyServer::kAdminPrefix, path);
+    auto result = client->Get(target);
     if (!result) {
         out.error = errorText(result.error());
         return out;

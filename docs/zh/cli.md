@@ -166,6 +166,17 @@ literouter models [OPTIONS]
 - 路由来源（显式路由 / 自动透传）；
 - 优先尝试的候选站与兜底故障转移链路。
 
+## 路由解释 (`explain`)
+
+查看运行中实例对指定模型采用的候选顺序和排序依据，不会发送上游请求：
+
+```bash
+literouter explain <model>
+literouter --json explain <model>
+```
+
+结果包含候选中转站、上游模型名、权重、熔断状态和当前路由策略。预览不会推进加权轮询状态；未提供具体会话，因此不包含会话亲和调整。
+
 ---
 
 ## 中转站管理 (`providers`)
@@ -331,4 +342,3 @@ literouter replay --file request.json --provider openai-official --show
 | `--timeout` | 单次超时（秒，默认用中转站自己的配置） |
 | `--show` | 打印回答正文（若上游是别的协议，会先转回 Chat 形状） |
 | `--json` | 以 JSON 输出（全局标志） |
-

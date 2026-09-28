@@ -2467,6 +2467,21 @@ void group28RoutingPolicy(StubRelay &relay_a, StubRelay &relay_b) {
         relay_a.setMode(StubRelay::Mode::Normal);
         relay_b.setMode(StubRelay::Mode::Normal);
 
+        const Hit explanation = getPath(port, "/__literouter/explain?model=route-model");
+        LR_CHECK_EQ(explanation.status, 200);
+        const json preview = json::parse(explanation.body, nullptr, false);
+        LR_CHECK_MSG(!preview.is_discarded(), "route explanation is valid JSON");
+        if (!preview.is_discarded()) {
+            LR_CHECK_EQ(preview.at("policy").get<std::string>(), "round_robin");
+            LR_CHECK_EQ(preview.at("candidates").size(), 2u);
+            LR_CHECK_EQ(preview.at("candidates").at(0).at("provider").get<std::string>(), "first");
+            LR_CHECK_EQ(preview.at("candidates").at(0).at("weight").get<int>(), 3);
+            LR_CHECK(preview.at("candidates").at(0).at("selected").get<bool>());
+            LR_CHECK(!preview.at("session_affinity_applied").get<bool>());
+        }
+        const Hit no_model = getPath(port, "/__literouter/explain");
+        LR_CHECK_EQ(no_model.status, 400);
+
         for (int request = 0; request < 8; ++request) {
             LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
         }
