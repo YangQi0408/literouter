@@ -1,4 +1,4 @@
-import { ArrowDownWideNarrow, Pause, Play, Search, SlidersHorizontal, Trash2, X } from 'lucide-react'
+import { ArrowDownWideNarrow, Download, Pause, Play, Search, SlidersHorizontal, Trash2, X } from 'lucide-react'
 import { useDeferredValue, useMemo, useState } from 'react'
 
 import { LogTable } from '@/components/LogTable'
@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
 import { ACTIVITY_KINDS, activityTotals, filterActivity } from '@/lib/activity'
+import { activityAsCsv, activityAsJson } from '@/lib/activity-export'
 import { humanCount } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
@@ -33,6 +34,19 @@ export function Logs({ initialQuery = '', onConfigureLogging }: { initialQuery?:
     setLevel('all')
     setKind('all')
     setOutcome('all')
+  }
+
+  function download(format: 'json' | 'csv') {
+    const csv = format === 'csv'
+    const blob = new Blob([csv ? activityAsCsv(filtered) : activityAsJson(filtered)], {
+      type: csv ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8',
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `literouter-logs-${new Date().toISOString().replaceAll(':', '-')}.${format}`
+    anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
   return (
@@ -89,6 +103,12 @@ export function Logs({ initialQuery = '', onConfigureLogging }: { initialQuery?:
               </SelectContent>
             </Select>
             <span className="mx-1 hidden h-5 w-px bg-border sm:block" />
+            <Button size="sm" variant="outline" aria-label={t('activityExportJson')} title={t('activityExportJson')} onClick={() => download('json')} disabled={!filtered.length}>
+              <Download className="size-3.5" aria-hidden="true" />JSON
+            </Button>
+            <Button size="sm" variant="outline" aria-label={t('activityExportCsv')} title={t('activityExportCsv')} onClick={() => download('csv')} disabled={!filtered.length}>
+              <Download className="size-3.5" aria-hidden="true" />CSV
+            </Button>
             <Button size="icon" variant={logsPaused ? 'secondary' : 'ghost'} aria-label={logsPaused ? t('resume') : t('pause')} title={logsPaused ? t('resume') : t('pause')} onClick={() => setLogsPaused(!logsPaused)}>
               {logsPaused ? <Play className="size-4" /> : <Pause className="size-4" />}
             </Button>
