@@ -2448,6 +2448,33 @@ void group28RoutingPolicy(StubRelay &relay_a, StubRelay &relay_b) {
         proxy.stop();
     }
 
+    // ── weighted round-robin ────────────────────────────────────────────────
+    {
+        literouter::AppConfig config;
+        start_proxy(config, "round_robin", relay_a, relay_b, 10.0, 1.0);
+        config.providers[0].weight = 3;
+        config.providers[1].weight = 1;
+        literouter::ProxyServer proxy;
+        const auto started = proxy.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (!started) {
+            return;
+        }
+        const int port = proxy.boundPort();
+        relay_a.resetCounters();
+        relay_b.resetCounters();
+        relay_a.setDelayMs(0);
+        relay_a.setMode(StubRelay::Mode::Normal);
+        relay_b.setMode(StubRelay::Mode::Normal);
+
+        for (int request = 0; request < 8; ++request) {
+            LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
+        }
+        LR_CHECK_EQ(relay_a.chatRequests(), 6);
+        LR_CHECK_EQ(relay_b.chatRequests(), 2);
+        proxy.stop();
+    }
+
     // A single relay with its own model fallback chain still has multiple
     // candidates. Grouping by relay must not make the candidate list disappear
     // when there is nobody to rotate against.

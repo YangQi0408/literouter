@@ -1072,12 +1072,17 @@ struct ProxyServer::Impl {
     // answered.
     UpstreamLimiter upstream_limiter;
     ResponseCache response_cache;
-    // Round-robin cursors are per logical model, so one busy model cannot change
+    // Round-robin state is per logical model, so one busy model cannot change
     // which relay another model starts on. Bounded like affinity: an arbitrary
     // pass-through model name must not grow this table forever.
+    struct RoundRobinState {
+        std::vector<std::string> providers;
+        std::vector<std::int64_t> weights;
+        std::vector<std::int64_t> current_weights;
+    };
     static constexpr std::size_t kMaxRoundRobinModels = 256;
     mutable std::mutex round_robin_mutex;
-    std::map<std::string, std::size_t, std::less<>> round_robin_cursor;
+    std::map<std::string, RoundRobinState, std::less<>> round_robin_state;
 
     mutable std::mutex config_mutex;
     AppConfig config;
@@ -2196,10 +2201,11 @@ struct ProxyServer::Impl {
 
     // Round-robin is deliberately applied to the ordered candidate list rather
     // than inside the router: the router is a pure decision layer, while the
-    // cursor is request scheduling state. Grouping by provider first keeps a
+    // its state is request scheduling data. Grouping by provider first keeps a
     // relay's model fallback chain intact; otherwise a renamed primary on one
     // relay and a fallback on another would be interleaved arbitrarily.
-    void rotateRoundRobin(const std::string &model, std::vector<Candidate> &candidates) {
+    void rotateRoundRobin(const std::string &model, const AppConfig &config,
+                          std::vector<Candidate> &candidates) {
         if (candidates.size() < 2) {
             return;
         }
@@ -2207,12 +2213,16 @@ struct ProxyServer::Impl {
         struct Group {
             std::string provider;
             std::vector<Candidate> candidates;
+            std::int64_t weight = 1;
         };
         std::vector<Group> groups;
         for (auto &candidate : candidates) {
             auto group = std::ranges::find(groups, candidate.provider, &Group::provider);
             if (group == groups.end()) {
-                groups.push_back(Group{.provider = candidate.provider});
+                const auto *provider = config.provider(candidate.provider);
+                const auto configured_weight = provider == nullptr ? 1 : provider->weight;
+                groups.push_back(Group{.provider = candidate.provider,
+                                       .weight = std::max<std::int64_t>(1, configured_weight)});
                 group = std::prev(groups.end());
             }
             group->candidates.push_back(std::move(candidate));
@@ -2225,21 +2235,47 @@ struct ProxyServer::Impl {
             return;
         }
 
-        std::size_t cursor = 0;
+        std::size_t first = 0;
         {
             std::scoped_lock lock{round_robin_mutex};
-            if (!round_robin_cursor.contains(model) &&
-                round_robin_cursor.size() >= kMaxRoundRobinModels) {
-                round_robin_cursor.erase(round_robin_cursor.begin());
+            if (!round_robin_state.contains(model) &&
+                round_robin_state.size() >= kMaxRoundRobinModels) {
+                round_robin_state.erase(round_robin_state.begin());
             }
-            cursor = round_robin_cursor[model]++;
+            auto &state = round_robin_state[model];
+            std::vector<std::string> providers;
+            std::vector<std::int64_t> weights;
+            providers.reserve(groups.size());
+            weights.reserve(groups.size());
+            for (const auto &group : groups) {
+                providers.push_back(group.provider);
+                weights.push_back(group.weight);
+            }
+            if (state.providers != providers || state.weights != weights) {
+                state.providers = std::move(providers);
+                state.weights = std::move(weights);
+                state.current_weights.assign(groups.size(), 0);
+            } else if (state.current_weights.size() != groups.size()) {
+                state.current_weights.assign(groups.size(), 0);
+            }
+
+            std::int64_t total_weight = 0;
+            for (const auto &group : groups) {
+                total_weight += group.weight;
+            }
+            for (std::size_t index = 0; index < groups.size(); ++index) {
+                state.current_weights[index] += groups[index].weight;
+                if (index == 0 || state.current_weights[index] > state.current_weights[first]) {
+                    first = index;
+                }
+            }
+            state.current_weights[first] -= total_weight;
         }
 
-        const std::size_t offset = cursor % groups.size();
         candidates.clear();
         candidates.reserve(groups.size() * 2);
         for (std::size_t index = 0; index < groups.size(); ++index) {
-            for (auto &candidate : groups[(index + offset) % groups.size()].candidates) {
+            for (auto &candidate : groups[(index + first) % groups.size()].candidates) {
                 candidates.push_back(std::move(candidate));
             }
         }
@@ -2432,7 +2468,7 @@ struct ProxyServer::Impl {
                              });
         }
         if (ctx.config.server.routing_policy == "round_robin") {
-            rotateRoundRobin(ctx.model, candidates);
+            rotateRoundRobin(ctx.model, ctx.config, candidates);
         }
         if (!ctx.affinity_key.empty()) {
             const std::string warm = affinityProvider(ctx.affinity_key, nowUnix());
@@ -4374,7 +4410,7 @@ void ProxyServer::resetStats() {
     impl_->router.resetHealth();
     {
         std::scoped_lock lock{impl_->round_robin_mutex};
-        impl_->round_robin_cursor.clear();
+        impl_->round_robin_state.clear();
     }
     impl_->recordSystem("counters reset");
 }
