@@ -162,12 +162,14 @@ std::uint64_t ResponseCache::misses() const {
     return impl->misses;
 }
 
-void ResponseCache::clear() {
+std::size_t ResponseCache::clear() {
     const auto impl = impl_;
     std::scoped_lock lock{impl->mutex};
+    const std::size_t cleared = impl->entries.size();
     impl->entries.clear();
     impl->hits = 0;
     impl->misses = 0;
+    return cleared;
 }
 
 } // namespace literouter

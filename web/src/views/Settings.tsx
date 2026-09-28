@@ -1,4 +1,4 @@
-import { Activity, ArrowDownToLine, ArrowUpFromLine, Check, CheckCheck, Copy, Database, FileJson2, Info, Network, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+import { Activity, ArrowDownToLine, ArrowUpFromLine, Check, CheckCheck, Copy, Database, FileJson2, Info, Network, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 
@@ -34,7 +34,7 @@ function FieldGroup({ title, children }: { title?: string; children: ReactNode }
 }
 
 export function Settings({ initialSection = 'connection' }: { initialSection?: SettingsSection }) {
-  const { working, update, loaded, snapshot, serverReport, saveIssues } = useStore()
+  const { working, update, loaded, snapshot, serverReport, saveIssues, clearCache } = useStore()
   const { t } = useI18n()
   const [active, setActive] = useState<SettingsSection>(initialSection)
   const [copied, setCopied] = useState(false)
@@ -61,6 +61,10 @@ export function Settings({ initialSection = 'connection' }: { initialSection?: S
       // Clipboard access needs a secure context; the preview remains selectable.
       toast.error(t('configCopyFailed'))
     }
+  }
+
+  async function clearResponseCache() {
+    if (window.confirm(t('confirmClearCache'))) await clearCache()
   }
 
   /** The whole config as a file. Secrets are written exactly as they are held —
@@ -228,6 +232,12 @@ export function Settings({ initialSection = 'connection' }: { initialSection?: S
             <Field label={t('settingCacheEntries')} hint={t('hintCacheEntries')}>
               <NumberField value={server.response_cache_max_entries} min={1} onChange={(response_cache_max_entries) => patch({ response_cache_max_entries })} />
             </Field>
+            <div className="flex min-w-0 flex-col gap-2 sm:col-span-2">
+              <div className="text-sm font-medium leading-5">{t('settingClearCache')}</div>
+              <div><Button variant="outline" onClick={() => void clearResponseCache()} disabled={Number(snapshot?.cache_entries ?? 0) === 0}>
+                <Trash2 className="size-4" aria-hidden="true" />{t('cacheClearAction')}
+              </Button></div>
+            </div>
           </FieldGroup> : null}
 
           {active === 'telemetry' ? <>

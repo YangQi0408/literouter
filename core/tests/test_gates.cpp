@@ -206,6 +206,14 @@ void cacheBasics() {
     cache.store("edge", CachedResponse{200, "text/plain", "x"}, 200.0);
     LR_CHECK(cache.lookup("edge", 259.999).has_value());
     LR_CHECK(!cache.lookup("edge", 260.0).has_value());
+
+    cache.store("clear-me", CachedResponse{200, "text/plain", "x"}, 300.0);
+    LR_CHECK(cache.lookup("clear-me", 301.0).has_value());
+    LR_CHECK_EQ(cache.clear(), std::size_t{1});
+    LR_CHECK_EQ(cache.size(), std::size_t{0});
+    LR_CHECK_EQ(cache.hits(), std::uint64_t{0});
+    LR_CHECK_EQ(cache.misses(), std::uint64_t{0});
+    LR_CHECK_EQ(cache.clear(), std::size_t{0});
 }
 
 void cacheEviction() {

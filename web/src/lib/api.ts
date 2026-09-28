@@ -401,6 +401,7 @@ export const api = {
     }),
   reload: () => request<ValidationReport>('/__literouter/reload', { method: 'POST' }),
   resetStats: () => request<{ ok: boolean }>('/__literouter/reset-stats', { method: 'POST' }),
+  clearCache: () => request<{ ok: boolean; cleared: UInt64 }>('/__literouter/cache/clear', { method: 'POST' }),
   shutdown: () => request<{ ok: boolean }>('/__literouter/shutdown', { method: 'POST' }),
   probe: (provider: string) =>
     request<ProviderProbe>('/__literouter/probe', {

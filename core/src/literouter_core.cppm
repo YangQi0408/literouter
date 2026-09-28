@@ -555,7 +555,7 @@ public:
     std::size_t size() const;
     std::uint64_t hits() const;
     std::uint64_t misses() const;
-    void clear();
+    std::size_t clear();
 
 private:
     struct Impl;

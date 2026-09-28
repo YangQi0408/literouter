@@ -4008,6 +4008,28 @@ void group29ResponseCache(StubRelay &relay_a) {
                  "the changed endpoint did not receive the request: " + new_path.body);
     relay_a.setMode(StubRelay::Mode::Normal);
 
+    const literouter::Snapshot before_clear = proxy.snapshot();
+    LR_CHECK(before_clear.cache_entries > 0);
+    const Hit anonymous_clear = postJson(port, "/__literouter/cache/clear", "{}");
+    LR_CHECK_EQ(anonymous_clear.status, 401);
+    LR_CHECK_EQ(proxy.snapshot().cache_entries, before_clear.cache_entries);
+
+    const Hit cleared = postJson(port, "/__literouter/cache/clear", "{}", "admin-key");
+    LR_CHECK_EQ(cleared.status, 200);
+    const json clear_result = json::parse(cleared.body, nullptr, false);
+    LR_CHECK(!clear_result.is_discarded());
+    if (!clear_result.is_discarded()) {
+        LR_CHECK_EQ(clear_result.at("ok").get<bool>(), true);
+        LR_CHECK_EQ(clear_result.at("cleared").get<std::uint64_t>(), before_clear.cache_entries);
+    }
+    const literouter::Snapshot after_clear = proxy.snapshot();
+    LR_CHECK_EQ(after_clear.cache_entries, std::uint64_t{0});
+    LR_CHECK_EQ(after_clear.cache_hits, std::uint64_t{0});
+    LR_CHECK_EQ(after_clear.cache_misses, std::uint64_t{0});
+    const Hit after_clear_request = postJson(port, "/v1/chat/completions", request, "admin-key");
+    LR_CHECK_EQ(after_clear_request.status, 200);
+    LR_CHECK_EQ(after_clear_request.cache, "miss");
+
     // Turning the cache off drops what it held.
     literouter::AppConfig off = config;
     off.server.response_cache_ttl_sec = 0;

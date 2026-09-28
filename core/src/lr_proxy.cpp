@@ -4297,6 +4297,14 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         res.set_content(R"({"ok":true})", "application/json");
     });
 
+    server.Post(admin + "/cache/clear", [this](const h::Request &, h::Response &res) {
+        json root = json::object();
+        root["ok"] = true;
+        root["cleared"] = impl_->response_cache.clear();
+        res.status = 200;
+        res.set_content(dumpJson(root), "application/json");
+    });
+
     server.Post(admin + "/shutdown", [this](const h::Request &, h::Response &res) {
         res.status = 200;
         res.set_content(R"({"ok":true,"message":"shutting down"})", "application/json");

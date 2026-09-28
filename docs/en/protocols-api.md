@@ -394,7 +394,13 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 - **Request**: `POST /__literouter/reset-stats`
 - **Action**: Clears request counters, resets latencies, and forces all circuit breakers back to `Healthy`.
 
-### 5. Probe Provider & Scan Models
+### 5. Clear the Response Cache
+
+- **Request**: `POST /__literouter/cache/clear`
+- **Response**: `{"ok": true, "cleared": 3}`, where `cleared` is the number of entries removed by this operation.
+- **Action**: Removes all cached responses and resets hit/miss counters; the cache setting itself is unchanged. This endpoint is protected by the same `server.api_key` check as every other admin endpoint.
+
+### 6. Probe Provider & Scan Models
 
 - **Request**: `POST /__literouter/probe`
 - **Body** (either form):
@@ -402,7 +408,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   - a provider object (`base_url`, `api_key`, `protocol`, `headers`, `timeout_sec`) — probes an unsaved entry, which is what a form wants.
 - **Action**: Runs a live connectivity probe and fetches available model names from upstream.
 
-### 6. Prometheus Metrics
+### 7. Prometheus Metrics
 
 - **Request**: `GET /__literouter/metrics`
 - **Response**: Prometheus text format (`text/plain; version=0.0.4`), carrying the *same* numbers as `/__literouter/status` — the console is for a person, this is for a graph, and both read one snapshot.
@@ -421,12 +427,12 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
       metrics_path: /__literouter/metrics
   ```
 
-### 7. Graceful Shutdown
+### 8. Graceful Shutdown
 
 - **Request**: `POST /__literouter/shutdown`
 - **Action**: Gracefully drains connections and terminates the proxy process.
 
-### 8. Read the running config (redacted)
+### 9. Read the running config (redacted)
 
 - **Request**: `GET /__literouter/config`
 - **Response**:
@@ -440,7 +446,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   ```
 - **Redaction**: an `api_key` that is a `${VAR}` reference is returned as written — it names a variable, not a key. References containing fallback credentials, such as `${VAR:-fallback}`, are hidden too. A literal key is replaced by an empty string and marked `"api_key_source": "literal"`. Config GET never returns stored plaintext keys.
 
-### 9. Update & Persist Running Config
+### 10. Update & Persist Running Config
 
 - **Request**: `PUT /__literouter/config`
 - **Request Body**: `{ "config": <AppConfig> }` or bare `<AppConfig>` object

@@ -396,7 +396,13 @@ curl http://127.0.0.1:8787/v1/images/generations \
 - **请求**：`POST /__literouter/reset-stats`
 - **作用**：清空所有中转站的成功/失败计数、延迟统计，并将所有熔断器强制恢复为 Healthy。
 
-### 5. 存活探测与模型扫描
+### 5. 清理应答缓存
+
+- **请求**：`POST /__literouter/cache/clear`
+- **响应**：`{"ok": true, "cleared": 3}`，`cleared` 是本次移除的缓存条目数。
+- **作用**：清除全部缓存响应，并将命中/未命中计数归零；缓存开关与配置保持不变。此操作与其它管理端点一样受 `server.api_key` 保护。
+
+### 6. 存活探测与模型扫描
 
 - **请求**：`POST /__literouter/probe`
 - **请求体**（二选一）：
@@ -404,7 +410,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
   - 中转站配置 JSON（`base_url`, `api_key`, `protocol`, `headers`, `timeout_sec`）：探测尚未保存的临时条目，供表单使用。
 - **作用**：即时向该中转站发起探测，测试网络连通性，并自动拉取上游所支持的模型列表。
 
-### 6. Prometheus 指标导出
+### 7. Prometheus 指标导出
 
 - **请求**：`GET /__literouter/metrics`
 - **响应**：Prometheus 文本格式（`text/plain; version=0.0.4`），内容与 `/__literouter/status` **同源**——控制台给人看，这里给图看，两者读的是同一份快照。
@@ -423,12 +429,12 @@ curl http://127.0.0.1:8787/v1/images/generations \
       metrics_path: /__literouter/metrics
   ```
 
-### 7. 安全关闭服务
+### 8. 安全关闭服务
 
 - **请求**：`POST /__literouter/shutdown`
 - **作用**：通知正在运行的后台服务安全释放资源并优雅退出进程。
 
-### 8. 读取运行配置（脱敏）
+### 9. 读取运行配置（脱敏）
 
 - **请求**：`GET /__literouter/config`
 - **响应**：
@@ -442,7 +448,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
   ```
 - **脱敏规则**：`api_key` 是 `${VAR}` 引用时原样返回（它只是变量名，不是密钥）；带默认凭据的 `${VAR:-fallback}` 和字面量密钥均隐藏。字面量密钥替换为空字符串，并以 `"api_key_source": "literal"` 标记。配置 GET 不返回已保存的明文密钥。
 
-### 9. 更新运行配置与持久化
+### 10. 更新运行配置与持久化
 
 - **请求**：`PUT /__literouter/config`
 - **请求体**：`{ "config": <AppConfig> }` 或裸 `<AppConfig>` 对象

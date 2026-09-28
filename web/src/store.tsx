@@ -69,6 +69,7 @@ interface StoreValue {
   discard: () => void
   reload: () => Promise<void>
   resetStats: () => Promise<void>
+  clearCache: () => Promise<void>
   shutdown: () => Promise<void>
   probe: (provider: string) => Promise<ProviderProbe>
 }
@@ -333,6 +334,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [t, pollStatus, handleError])
 
+  const clearCache = useCallback(async () => {
+    try {
+      const result = await api.clearCache()
+      toast.success(t('cacheCleared', { count: String(result.cleared) }))
+      await pollStatus()
+    } catch (error) {
+      handleError(error, true)
+    }
+  }, [t, pollStatus, handleError])
+
   const shutdown = useCallback(async () => {
     try {
       await api.shutdown()
@@ -425,6 +436,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     discard,
     reload,
     resetStats,
+    clearCache,
     shutdown,
     probe,
   }
