@@ -79,8 +79,9 @@ function RuntimeRow({ icon: Icon, label, value, note, danger }: {
 
 export function Overview({ onNavigate, onInspectRelay }: { onNavigate?: (page: 'providers' | 'routes' | 'logs') => void; onInspectRelay: (provider: string) => void }) {
   const { snapshot, models, online, refresh, openKeyPrompt } = useStore()
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const endpoint = clientBaseUrl(snapshot?.base_url ?? '')
+  const modelStats = [...(snapshot?.model_stats ?? [])].sort((a, b) => b.requests - a.requests)
 
   async function copyEndpoint() {
     try {
@@ -188,6 +189,51 @@ export function Overview({ onNavigate, onInspectRelay }: { onNavigate?: (page: '
               {onNavigate ? <Button size="sm" variant="ghost" onClick={() => onNavigate('providers')}>{t('overviewManageRelays')}<ArrowRight className="size-3.5" aria-hidden="true" /></Button> : null}
             </CardHeader>
             <CardContent className="p-0"><RelayHealth onInspect={onInspectRelay} /></CardContent>
+          </Card>
+
+          <Card className="gap-0 overflow-hidden py-0">
+            <CardHeader className="px-5 py-5 sm:px-6">
+              <CardTitle className="text-base">{t('overviewModelUsage')}</CardTitle>
+              <p className="mt-2 text-xs text-muted-foreground">{t('overviewModelUsageDescription')}</p>
+            </CardHeader>
+            <CardContent className="px-0 pb-0">
+              {modelStats.length === 0 ? (
+                <p className="border-t px-5 py-8 text-center text-sm text-muted-foreground">{t('overviewNoModelUsage')}</p>
+              ) : (
+                <div className="overflow-x-auto border-t">
+                  <table className="w-full min-w-[760px] text-left text-xs">
+                    <thead className="bg-muted/35 text-[11px] text-muted-foreground">
+                      <tr>
+                        <th className="px-5 py-3 font-medium">{t('models')}</th>
+                        <th className="px-4 py-3 font-medium">{t('overviewModelRequests')}</th>
+                        <th className="px-4 py-3 font-medium">{t('overviewModelTokens')}</th>
+                        <th className="px-4 py-3 font-medium">{t('overviewModelCost')}</th>
+                        <th className="px-4 py-3 font-medium">{t('overviewModelLatency')}</th>
+                        <th className="px-5 py-3 font-medium">{t('overviewModelLastUsed')}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/65">
+                      {modelStats.map((stat) => (
+                        <tr key={stat.model}>
+                          <td className="max-w-[240px] break-all px-5 py-3 font-mono font-medium">{stat.model}</td>
+                          <td className="whitespace-nowrap px-4 py-3 tnum">
+                            <div>{humanCount(stat.requests)}</div>
+                            <div className="mt-1 text-[10px] text-muted-foreground">{t('overviewModelSuccess')} {humanCount(stat.successes)} · {t('overviewModelFailures')} {humanCount(stat.failures)}</div>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 tnum">
+                            <div>{humanCount(stat.tokens_prompt + stat.tokens_completion)}</div>
+                            <div className="mt-1 text-[10px] text-muted-foreground">{humanCount(stat.tokens_prompt)} / {humanCount(stat.tokens_completion)}</div>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 tnum">{stat.cost_usd > 0 ? `$${stat.cost_usd.toFixed(4)}` : '—'}</td>
+                          <td className="whitespace-nowrap px-4 py-3 tnum">{stat.latency_ms_avg > 0 ? humanMillis(stat.latency_ms_avg) : '—'}</td>
+                          <td className="whitespace-nowrap px-5 py-3 text-muted-foreground tnum">{stat.last_used_unix > 0 ? new Date(stat.last_used_unix * 1000).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US', { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
           </Card>
 
           <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">

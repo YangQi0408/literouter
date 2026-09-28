@@ -1169,6 +1169,7 @@ struct ProxyServer::Impl {
 
     mutable std::mutex telemetry_mutex;
     std::map<std::string, ProviderStat, std::less<>> stats;
+    std::map<std::string, ModelStat, std::less<>> model_stats;
     std::map<std::string, LatencyWindow, std::less<>> latency_windows;
     LogRing log;
     std::uint64_t total_requests = 0;
@@ -1182,8 +1183,8 @@ struct ProxyServer::Impl {
 
     // ── persisted telemetry ──────────────────────────────────────────────────
     //
-    // Counters, per-relay stats and the request ring are all in memory, so
-    // without this every restart reset `status` to zeros and emptied the log.
+    // Counters, per-relay and per-model stats, and the request ring are all in
+    // memory, so without this every restart reset `status` to zeros and emptied the log.
     // They are written to `<state dir>/telemetry-<port>.json` on a short timer and on
     // stop(), and read back once per process at the first start().
     //
@@ -1269,6 +1270,25 @@ struct ProxyServer::Impl {
         ProviderStat fresh;
         fresh.provider = std::string{provider};
         return stats.emplace(std::string{provider}, std::move(fresh)).first->second;
+    }
+
+    ModelStat &modelStatFor(std::string_view model) {
+        if (auto it = model_stats.find(model); it != model_stats.end()) {
+            return it->second;
+        }
+        constexpr std::size_t kMaxModelStats = 512;
+        if (model_stats.size() >= kMaxModelStats) {
+            auto oldest = model_stats.begin();
+            for (auto it = std::next(model_stats.begin()); it != model_stats.end(); ++it) {
+                if (it->second.last_used_unix < oldest->second.last_used_unix) {
+                    oldest = it;
+                }
+            }
+            model_stats.erase(oldest);
+        }
+        ModelStat fresh;
+        fresh.model = std::string{model};
+        return model_stats.emplace(std::string{model}, std::move(fresh)).first->second;
     }
 
     void appendLog(LogEntry entry) {
@@ -1384,6 +1404,21 @@ struct ProxyServer::Impl {
         }
         bytes_out += facts.bytes;
         noteHour(facts, facts.cost_usd, nowUnix());
+        if (!ctx.model.empty()) {
+            auto &model_stat = modelStatFor(ctx.model);
+            ++model_stat.requests;
+            if (facts.status >= 200 && facts.status < 300) {
+                ++model_stat.successes;
+            } else if (facts.status > 0) {
+                ++model_stat.failures;
+            }
+            if (entry.latency_ms > 0.0) {
+                model_stat.latency_ms_avg +=
+                    (entry.latency_ms - model_stat.latency_ms_avg) /
+                    static_cast<double>(model_stat.requests);
+            }
+            model_stat.last_used_unix = nowUnix();
+        }
         if (entry.latency_ms > 0.0) {
             latency_ms_avg = latency_ms_avg == 0.0
                                  ? entry.latency_ms
@@ -1484,6 +1519,12 @@ struct ProxyServer::Impl {
             attach(providers, toJsonString(it->second));
         }
         root["providers"] = std::move(providers);
+
+        json models = json::array();
+        for (auto it = model_stats.begin(); it != model_stats.end(); ++it) {
+            attach(models, toJsonString(it->second));
+        }
+        root["model_stats"] = std::move(models);
 
         json entries = json::array();
         const std::size_t skip = log.entries.size() > kPersistedLogEntries
@@ -1623,6 +1664,7 @@ struct ProxyServer::Impl {
         std::uint64_t completion_tokens = 0;
         double avg_latency = 0.0;
         std::map<std::string, ProviderStat, std::less<>> restored_stats;
+        std::map<std::string, ModelStat, std::less<>> restored_model_stats;
         std::deque<LogEntry> entries;
         std::uint64_t next_seq = 1;
         try {
@@ -1643,6 +1685,27 @@ struct ProxyServer::Impl {
                     }
                 }
             }
+            if (const auto it = root.find("model_stats"); it != root.end() && it->is_array()) {
+                for (const auto &item : *it) {
+                    if (!item.is_object()) {
+                        continue;
+                    }
+                    ModelStat stat;
+                    stat.model = item.value("model", std::string{});
+                    if (stat.model.empty()) {
+                        continue;
+                    }
+                    stat.requests = item.value("requests", std::uint64_t{0});
+                    stat.successes = item.value("successes", std::uint64_t{0});
+                    stat.failures = item.value("failures", std::uint64_t{0});
+                    stat.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
+                    stat.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
+                    stat.cost_usd = item.value("cost_usd", 0.0);
+                    stat.latency_ms_avg = item.value("latency_ms_avg", 0.0);
+                    stat.last_used_unix = item.value("last_used_unix", 0.0);
+                    restored_model_stats[stat.model] = std::move(stat);
+                }
+            }
             if (const auto it = root.find("log"); it != root.end() && it->is_object()) {
                 if (const auto list = it->find("entries"); list != it->end() && list->is_array()) {
                     for (const auto &item : *list) {
@@ -1657,6 +1720,17 @@ struct ProxyServer::Impl {
             recordSystem(std::format("ignoring {}: {}", pathToUtf8(state_path), error.what()),
                          "warning");
             return;
+        }
+
+        while (restored_model_stats.size() > 512) {
+            auto oldest = restored_model_stats.begin();
+            for (auto it = std::next(restored_model_stats.begin());
+                 it != restored_model_stats.end(); ++it) {
+                if (it->second.last_used_unix < oldest->second.last_used_unix) {
+                    oldest = it;
+                }
+            }
+            restored_model_stats.erase(oldest);
         }
 
         std::deque<TrafficBucket> restored_hours;
@@ -1693,6 +1767,9 @@ struct ProxyServer::Impl {
             latency_ms_avg = avg_latency;
             for (auto it = restored_stats.begin(); it != restored_stats.end(); ++it) {
                 stats[it->first] = std::move(it->second);
+            }
+            for (auto it = restored_model_stats.begin(); it != restored_model_stats.end(); ++it) {
+                model_stats[it->first] = std::move(it->second);
             }
             log.restore(std::move(entries), next_seq);
             while (restored_hours.size() > traffic_bucket_count) {
@@ -2042,7 +2119,8 @@ struct ProxyServer::Impl {
     // context it was told to expect. The two prices are the relay's own, in
     // dollars per million tokens; 0 means "not written down", and then the
     // attempt costs nothing to the counter rather than costing a guess.
-    void recordAttempt(std::string_view provider, AttemptOutcome outcome, double latency_ms,
+    void recordAttempt(std::string_view provider, std::string_view model,
+                       AttemptOutcome outcome, double latency_ms,
                        std::uint64_t bytes, std::uint64_t prompt_tokens,
                        std::uint64_t completion_tokens, std::uint64_t bytes_in = 0,
                        double cost_usd = 0.0) {
@@ -2064,6 +2142,12 @@ struct ProxyServer::Impl {
         this->cost_usd += cost_usd;
         stat.tokens_prompt += prompt_tokens;
         stat.tokens_completion += completion_tokens;
+        if (!model.empty()) {
+            auto &model_stat = modelStatFor(model);
+            model_stat.tokens_prompt += prompt_tokens;
+            model_stat.tokens_completion += completion_tokens;
+            model_stat.cost_usd += cost_usd;
+        }
         stat.last_used_unix = nowUnix();
         if (latency_ms > 0.0) {
             stat.latency_ms_last = latency_ms;
@@ -2669,7 +2753,8 @@ struct ProxyServer::Impl {
                 router.recordFailure(provider->id, upstream_model, result.error, nowUnix());
                 // No response at all: the request never reached the relay's
                 // socket, so it counts as nothing sent.
-                recordAttempt(provider->id, AttemptOutcome::Failure, result.latency_ms, 0, 0, 0);
+                recordAttempt(provider->id, ctx.model, AttemptOutcome::Failure,
+                              result.latency_ms, 0, 0, 0);
                 continue;
             }
 
@@ -2685,8 +2770,8 @@ struct ProxyServer::Impl {
                 last_status = result.status;
                 router.recordFailure(provider->id, upstream_model, last_error, nowUnix(),
                                      retryAfterSeconds(result.headers));
-                recordAttempt(provider->id, AttemptOutcome::Failure, result.latency_ms, 0, 0, 0,
-                              payload.size());
+                recordAttempt(provider->id, ctx.model, AttemptOutcome::Failure,
+                              result.latency_ms, 0, 0, 0, payload.size());
                 logFailover(ctx, provider->id, static_cast<int>(attempt), upstream_model,
                             result.latency_ms, waited_ms(), result.status,
                             std::format("{} — failing over", last_error),
@@ -2717,7 +2802,7 @@ struct ProxyServer::Impl {
             const auto [p_in, p_out] = provider->pricesFor(upstream_model, ctx.model);
             const double attempt_cost =
                 estimateCost(p_in, p_out, usage.tokens_prompt, usage.tokens_completion);
-            recordAttempt(provider->id,
+            recordAttempt(provider->id, ctx.model,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
                           result.latency_ms, result.body.size(), usage.tokens_prompt,
                           usage.tokens_completion, payload.size(), attempt_cost);
@@ -2849,7 +2934,7 @@ struct ProxyServer::Impl {
             router.recordFailure(provider.id,
                                  candidate.model.empty() ? ctx.model : candidate.model,
                                  "invalid base_url", nowUnix());
-            recordAttempt(provider.id, AttemptOutcome::Failure, 0.0, 0, 0, 0);
+            recordAttempt(provider.id, ctx.model, AttemptOutcome::Failure, 0.0, 0, 0, 0);
             return 502;
         }
 
@@ -3041,7 +3126,7 @@ struct ProxyServer::Impl {
             last_error = std::format("{}: {}", provider.id, reason);
             retireUpstreamConnection(root, provider);
             router.recordFailure(provider.id, upstream_model, reason, nowUnix());
-            recordAttempt(provider.id, AttemptOutcome::Failure,
+            recordAttempt(provider.id, ctx.model, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0);
             logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
                         (nowUnix() - attempt_started) * 1000.0, waited_ms(), 0,
@@ -3088,7 +3173,7 @@ struct ProxyServer::Impl {
             // ready as a buffered one does.
             router.recordFailure(provider.id, upstream_model, std::format("HTTP {}", status), nowUnix(),
                                  retryAfterSeconds(retry_headers));
-            recordAttempt(provider.id, AttemptOutcome::Failure,
+            recordAttempt(provider.id, ctx.model, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
             logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
                         (nowUnix() - attempt_started) * 1000.0, waited_ms(), status,
@@ -3143,7 +3228,7 @@ struct ProxyServer::Impl {
                                  : std::format("{}: HTTP {}", provider.id, status);
                 router.recordFailure(provider.id, upstream_model, last_error, nowUnix(),
                                      retryAfterSeconds(error_headers));
-                recordAttempt(provider.id, AttemptOutcome::Failure,
+                recordAttempt(provider.id, ctx.model, AttemptOutcome::Failure,
                               (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
                 logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
                             (nowUnix() - attempt_started) * 1000.0, waited_ms(), status,
@@ -3164,7 +3249,7 @@ struct ProxyServer::Impl {
             ProxyServer::accumulateUsage(body, error_usage);
             const auto [p_in, p_out] = provider.pricesFor(upstream_model, ctx.model);
             const double error_cost = estimateCost(p_in, p_out, error_usage.tokens_prompt, error_usage.tokens_completion);
-            recordAttempt(provider.id,
+            recordAttempt(provider.id, ctx.model,
                           relay_behaved ? AttemptOutcome::Success : AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, body.size(),
                           error_usage.tokens_prompt, error_usage.tokens_completion,
@@ -3360,7 +3445,8 @@ struct ProxyServer::Impl {
                             const double cost = estimateCost(stream_p_in,
                                                              stream_p_out,
                                                              tokens.prompt, tokens.completion);
-                            recordAttempt(provider_id, AttemptOutcome::Failure, latency, bytes,
+                            recordAttempt(provider_id, request_ctx.model,
+                                          AttemptOutcome::Failure, latency, bytes,
                                           tokens.prompt, tokens.completion, payload_size, cost);
                             finish(request_ctx, {.provider = provider_id,
                                                  .upstream_model = upstream_model,
@@ -3417,7 +3503,7 @@ struct ProxyServer::Impl {
                             estimateCost(stream_p_in,
                                          stream_p_out, tokens.prompt,
                                          tokens.completion);
-                        recordAttempt(provider_id,
+                        recordAttempt(provider_id, request_ctx.model,
                                       stream_ok ? AttemptOutcome::Success
                                                 : AttemptOutcome::Failure,
                                       latency, bytes, tokens.prompt, tokens.completion,
@@ -3500,7 +3586,8 @@ struct ProxyServer::Impl {
                         const double latency = (nowUnix() - attempt_started) * 1000.0;
                         const std::uint64_t bytes = bridge->bytes_out.load();
                         const std::pair<double, double> measured = phases(latency);
-                        recordAttempt(provider_id, AttemptOutcome::Aborted, latency, bytes, 0, 0,
+                        recordAttempt(provider_id, request_ctx.model,
+                                      AttemptOutcome::Aborted, latency, bytes, 0, 0,
                                       payload_size);
                         finish(request_ctx,
                                {.provider = provider_id,
@@ -4426,6 +4513,9 @@ Snapshot ProxyServer::snapshot() const {
         out.traffic_bucket_count = static_cast<int>(impl_->traffic_bucket_count);
         out.latency_ms_avg = impl_->latency_ms_avg;
         out.log_seq = impl_->log.next_seq > 0 ? impl_->log.next_seq - 1 : 0;
+        for (const auto &entry : impl_->model_stats) {
+            out.model_stats.push_back(entry.second);
+        }
         for (const auto &provider : cfg.providers) {
             if (auto it = impl_->stats.find(provider.id); it != impl_->stats.end()) {
                 out.providers.push_back(it->second);
@@ -4461,6 +4551,7 @@ void ProxyServer::resetStats() {
     {
         std::scoped_lock lock{impl_->telemetry_mutex};
         impl_->stats.clear();
+        impl_->model_stats.clear();
         impl_->latency_windows.clear();
         impl_->total_requests = 0;
         impl_->total_success = 0;

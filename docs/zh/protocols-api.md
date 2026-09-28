@@ -327,6 +327,19 @@ curl http://127.0.0.1:8787/v1/images/generations \
       "last_used_unix": 1758003600.5
     }
   ],
+  "model_stats": [
+    {
+      "model": "gpt-4o",
+      "requests": 300,
+      "successes": 298,
+      "failures": 2,
+      "tokens_prompt": 24000,
+      "tokens_completion": 9000,
+      "cost_usd": 0.0325,
+      "latency_ms_avg": 280.4,
+      "last_used_unix": 1758003600.5
+    }
+  ],
   "running": true,
   "started_unix": 1758000000.0,
   "tokens_completion": 45000,
@@ -344,6 +357,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
   `hourly` 是最近 24 个**小时桶**（`hour_unix` 为该小时起点，UTC 整点），旧到新排列：控制台的趋势图就是它，重启后会从遥测文件恢复，因此"今天的样子"不会因为重启而消失。没有流量时该数组为空。
 
   `providers` 是累计统计（自上次 `POST /__literouter/reset-stats` 或遥测文件恢复起），其中 `latency_ms_p95` 是最近 64 次尝试的最近秩（nearest-rank）p95——取窗口内实际出现过的样本值，没有样本时为 0；`health` 是熔断器当前状态（`state` 取 `unknown` / `healthy` / `degraded` / `open`）。`uptime_sec` 每次请求实时计算，因此 Web 控制台的运行时长会逐秒跳动；显示格式为 `1h 2m 5s`，且**始终保留秒**（`humanUptime`），而一般的时长显示（如熔断冷却剩余时间）仍使用会向上归整到分钟的 `humanDuration`。
+
+  `model_stats` 按客户端请求中的逻辑模型名聚合，最多保留最近使用的 512 个模型。请求数及成功/失败数按客户端请求计一次；Token 与费用累计每次上游尝试，因此故障转移中已消耗的用量也会计入。费用按当时配置的上游单价估算。数据会随遥测文件持久化，并由 `POST /__literouter/reset-stats` 清零。
 
 ### 2. 获取增量请求日志
 

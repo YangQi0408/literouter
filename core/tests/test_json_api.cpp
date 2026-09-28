@@ -59,6 +59,18 @@ void testSnapshotJson() {
     stat.last_used_unix = 1700000010.0;
     snapshot.providers.push_back(stat);
 
+    literouter::ModelStat model_stat;
+    model_stat.model = "gpt-4o";
+    model_stat.requests = 5;
+    model_stat.successes = 4;
+    model_stat.failures = 1;
+    model_stat.tokens_prompt = 120;
+    model_stat.tokens_completion = 60;
+    model_stat.cost_usd = 0.025;
+    model_stat.latency_ms_avg = 82.5;
+    model_stat.last_used_unix = 1700000020.0;
+    snapshot.model_stats.push_back(model_stat);
+
     literouter::ProviderHealth health;
     health.provider = "alpha";
     health.state = literouter::ProviderHealth::State::Degraded;
@@ -154,6 +166,19 @@ void testSnapshotJson() {
     LR_CHECK_EQ(row.at("last_error").get<std::string>(), "connection failed");
     LR_CHECK(lr_test::closeTo(row.at("cooldown_remaining").get<double>(), 25.5));
 
+    LR_CHECK(parsed.at("model_stats").is_array());
+    LR_CHECK_EQ(static_cast<long long>(parsed.at("model_stats").size()), 1);
+    const json &model = parsed.at("model_stats").at(0);
+    LR_CHECK_EQ(model.at("model").get<std::string>(), "gpt-4o");
+    LR_CHECK_EQ(model.at("requests").get<std::uint64_t>(), static_cast<std::uint64_t>(5));
+    LR_CHECK_EQ(model.at("successes").get<std::uint64_t>(), static_cast<std::uint64_t>(4));
+    LR_CHECK_EQ(model.at("failures").get<std::uint64_t>(), static_cast<std::uint64_t>(1));
+    LR_CHECK_EQ(model.at("tokens_prompt").get<std::uint64_t>(), static_cast<std::uint64_t>(120));
+    LR_CHECK_EQ(model.at("tokens_completion").get<std::uint64_t>(), static_cast<std::uint64_t>(60));
+    LR_CHECK(lr_test::closeTo(model.at("cost_usd").get<double>(), 0.025));
+    LR_CHECK(lr_test::closeTo(model.at("latency_ms_avg").get<double>(), 82.5));
+    LR_CHECK(lr_test::closeTo(model.at("last_used_unix").get<double>(), 1700000020.0));
+
     // The two arrays keep their parallel order, which is what the console
     // zips them by.
     literouter::Snapshot empty;
@@ -161,6 +186,7 @@ void testSnapshotJson() {
     LR_CHECK(!emptyParsed.is_discarded());
     LR_CHECK_EQ(static_cast<long long>(emptyParsed.at("providers").size()), 0);
     LR_CHECK_EQ(static_cast<long long>(emptyParsed.at("health").size()), 0);
+    LR_CHECK_EQ(static_cast<long long>(emptyParsed.at("model_stats").size()), 0);
     LR_CHECK_EQ(emptyParsed.at("running").get<bool>(), false);
 }
 

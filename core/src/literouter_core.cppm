@@ -597,6 +597,20 @@ struct ProviderStat {
     double cost_usd = 0.0;
 };
 
+// Completed client requests grouped by their logical model. Usage and cost
+// include every upstream attempt made while serving those requests.
+struct ModelStat {
+    std::string model;
+    std::uint64_t requests = 0;
+    std::uint64_t successes = 0;
+    std::uint64_t failures = 0;
+    std::uint64_t tokens_prompt = 0;
+    std::uint64_t tokens_completion = 0;
+    double cost_usd = 0.0;
+    double latency_ms_avg = 0.0;
+    double last_used_unix = 0.0;
+};
+
 struct ProviderHealth {
     enum class State { Unknown, Healthy, Degraded, Open };
     std::string provider;
@@ -713,6 +727,7 @@ struct Snapshot {
     double latency_ms_avg = 0.0;
     std::uint64_t log_seq = 0;    // newest seq the server has issued
     std::vector<ProviderStat> providers;
+    std::vector<ModelStat> model_stats;
     std::vector<ProviderHealth> health;
     int breakers_open = 0;
     // The most recent buckets, oldest first. Empty until there has been traffic.
@@ -1163,6 +1178,7 @@ std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text);
 std::string toJsonString(const Snapshot &snapshot);
 std::string toJsonString(const LogEntry &entry);
 std::string toJsonString(const ProviderStat &stat);
+std::string toJsonString(const ModelStat &stat);
 std::string toJsonString(const ProviderProbe &probe);
 
 // The bearer the server expects for a request carrying `authorization` /

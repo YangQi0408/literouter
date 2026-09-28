@@ -378,6 +378,20 @@ json statToJson(const ProviderStat &value) {
     return node;
 }
 
+json modelStatToJson(const ModelStat &value) {
+    json node = json::object();
+    node["model"] = value.model;
+    node["requests"] = value.requests;
+    node["successes"] = value.successes;
+    node["failures"] = value.failures;
+    node["tokens_prompt"] = value.tokens_prompt;
+    node["tokens_completion"] = value.tokens_completion;
+    node["cost_usd"] = value.cost_usd;
+    node["latency_ms_avg"] = value.latency_ms_avg;
+    node["last_used_unix"] = value.last_used_unix;
+    return node;
+}
+
 } // namespace
 
 std::string ValidationIssue::levelName() const {
@@ -575,6 +589,12 @@ std::string toJsonString(const Snapshot &snapshot) {
     }
     node["providers"] = std::move(providers);
 
+    json model_stats = json::array();
+    for (const auto &entry : snapshot.model_stats) {
+        model_stats.push_back(modelStatToJson(entry));
+    }
+    node["model_stats"] = std::move(model_stats);
+
     json health = json::array();
     for (const auto &entry : snapshot.health) {
         health.push_back(healthToJson(entry));
@@ -614,6 +634,10 @@ std::string toJsonString(const Snapshot &snapshot) {
 // this field list is a field that will eventually be added to only one of them.
 std::string toJsonString(const ProviderStat &stat) {
     return dumpJson(statToJson(stat));
+}
+
+std::string toJsonString(const ModelStat &stat) {
+    return dumpJson(modelStatToJson(stat));
 }
 
 std::string toJsonString(const LogEntry &entry) {

@@ -326,6 +326,19 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
       "last_used_unix": 1758003600.5
     }
   ],
+  "model_stats": [
+    {
+      "model": "gpt-4o",
+      "requests": 300,
+      "successes": 298,
+      "failures": 2,
+      "tokens_prompt": 24000,
+      "tokens_completion": 9000,
+      "cost_usd": 0.0325,
+      "latency_ms_avg": 280.4,
+      "last_used_unix": 1758003600.5
+    }
+  ],
   "running": true,
   "started_unix": 1758000000.0,
   "tokens_completion": 45000,
@@ -343,6 +356,8 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   `hourly` holds the last 24 **hour buckets** (`hour_unix` is the start of the hour, on the UTC hour), oldest first: it is what the console's trend chart draws, and it is restored from the telemetry file on restart so the shape of the day does not vanish with the process. The array is empty until there has been traffic.
 
   `providers` holds cumulative stats (since the last `POST /__literouter/reset-stats` or the restored telemetry file) — `latency_ms_p95` being the nearest-rank p95 over the last 64 attempts, always a sample the relay really served, and 0 when the window is empty — and `health` the breaker state, whose `state` is one of `unknown` / `healthy` / `degraded` / `open`. `uptime_sec` is computed per request, which is what lets the web console tick the uptime once a second; it is formatted as `1h 2m 5s` and always keeps the seconds (`humanUptime`), while plain durations — a breaker's remaining cooldown, for instance — still use the minute-rounding `humanDuration`.
+
+  `model_stats` groups usage by the logical model requested by the client and retains up to the 512 most recently used models. Request and outcome counts increment once per client request; tokens and estimated cost include every upstream attempt, including usage incurred during failover. Cost uses the relay prices configured at the time of each attempt. These stats are persisted with telemetry and cleared by `POST /__literouter/reset-stats`.
 
 ### 2. Incremental Request Logs
 

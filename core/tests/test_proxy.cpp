@@ -1605,6 +1605,21 @@ void group21NoFieldLies(StubRelay &relay_a, StubRelay &relay_b) {
         LR_CHECK_MSG(hour.tokens_prompt > 0, "the hour recorded no tokens");
     }
 
+    bool saw_model_tokens = false;
+    for (const auto &stat : after.model_stats) {
+        LR_CHECK_MSG(!stat.model.empty(), "ModelStat.model was never written");
+        LR_CHECK_MSG(stat.requests > 0, "ModelStat.requests was never written");
+        LR_CHECK_MSG(stat.last_used_unix > 0.0, "ModelStat.last_used_unix was never written");
+        LR_CHECK_MSG(stat.latency_ms_avg > 0.0, "ModelStat.latency_ms_avg was never written");
+        LR_CHECK_MSG(stat.successes + stat.failures <= stat.requests,
+                     "model outcomes exceed client requests");
+        if (stat.model == kRouteModel) {
+            saw_model_tokens = stat.tokens_prompt > 0 && stat.tokens_completion > 0;
+        }
+    }
+    LR_CHECK_MSG(!after.model_stats.empty(), "Snapshot.model_stats was never written");
+    LR_CHECK_MSG(saw_model_tokens, "ModelStat token fields were never written for routed traffic");
+
     for (const auto &stat : after.providers) {
         if (stat.requests == 0) {
             continue; // a relay this traffic never reached
@@ -2259,6 +2274,26 @@ void group25CostAccounting(StubRelay &relay_a, StubRelay &relay_b) {
     }
     LR_CHECK_MSG(std::abs(after.cost_usd - 2 * kPerAttempt) < 1e-12,
                  "the unpriced relay moved the total");
+    const auto find_model_stat = [](const literouter::Snapshot &value,
+                                    std::string_view name) -> const literouter::ModelStat * {
+        for (const auto &stat : value.model_stats) {
+            if (stat.model == name) return &stat;
+        }
+        return nullptr;
+    };
+    const auto *route_model = find_model_stat(after, kRouteModel);
+    LR_CHECK(route_model != nullptr);
+    if (route_model != nullptr) {
+        LR_CHECK_EQ(route_model->requests, static_cast<std::uint64_t>(3));
+        LR_CHECK_EQ(route_model->successes, static_cast<std::uint64_t>(3));
+        LR_CHECK_EQ(route_model->failures, static_cast<std::uint64_t>(0));
+        LR_CHECK_EQ(route_model->tokens_prompt, after.tokens_prompt);
+        LR_CHECK_EQ(route_model->tokens_completion, after.tokens_completion);
+        LR_CHECK_MSG(std::abs(route_model->cost_usd - 2 * kPerAttempt) < 1e-12,
+                     "model cost did not include the priced attempts across failover");
+        LR_CHECK_MSG(route_model->latency_ms_avg > 0.0 && route_model->last_used_unix > 0.0,
+                     "model request latency or last-used time was not recorded");
+    }
 
     // Model-specific pricing overrides the relay's default prices when specified.
     priced.model_prices["custom-model"] = literouter::ModelPricing{
@@ -2279,6 +2314,15 @@ void group25CostAccounting(StubRelay &relay_a, StubRelay &relay_b) {
     LR_CHECK_MSG(std::abs(model_snap.cost_usd - kCustomAttempt) < 1e-12,
                  std::format("model-specific cost is {:.9f}, expected {:.9f}",
                              model_snap.cost_usd, kCustomAttempt));
+    const auto *custom_model = find_model_stat(model_snap, "custom-model");
+    LR_CHECK(custom_model != nullptr);
+    if (custom_model != nullptr) {
+        LR_CHECK_EQ(custom_model->requests, static_cast<std::uint64_t>(1));
+        LR_CHECK_MSG(std::abs(custom_model->cost_usd - kCustomAttempt) < 1e-12,
+                     "model-specific cost was not attributed to the logical model");
+    }
+    proxy.resetStats();
+    LR_CHECK(proxy.snapshot().model_stats.empty());
 
     proxy.stop();
 }
@@ -3625,6 +3669,7 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
     std::uint64_t saved_seq = 0;
     std::size_t saved_entries = 0;
     std::uint64_t relay_requests = 0;
+    std::uint64_t model_requests = 0;
     {
         std::ifstream input{state_file, std::ios::binary};
         const std::string text{std::istreambuf_iterator<char>{input},
@@ -3645,6 +3690,13 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
                     }
                 }
             }
+            if (const auto it = doc.find("model_stats"); it != doc.end() && it->is_array()) {
+                for (const auto &item : *it) {
+                    if (item.is_object() && item.value("model", std::string{}) == kRouteModel) {
+                        model_requests = item.value("requests", std::uint64_t{0});
+                    }
+                }
+            }
             if (const auto it = doc.find("log"); it != doc.end() && it->is_object()) {
                 saved_seq = it->value("next_seq", std::uint64_t{0});
                 if (const auto list = it->find("entries");
@@ -3656,6 +3708,7 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
     }
     LR_CHECK_EQ(saved_requests, static_cast<std::uint64_t>(1));
     LR_CHECK_EQ(relay_requests, static_cast<std::uint64_t>(1));
+    LR_CHECK_EQ(model_requests, static_cast<std::uint64_t>(1));
     LR_CHECK(saved_seq >= 1);
     LR_CHECK(saved_entries >= 1);
 
@@ -3671,6 +3724,13 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
         const literouter::Snapshot restored = second.snapshot();
         LR_CHECK_EQ(restored.total_requests, static_cast<std::uint64_t>(1));
         LR_CHECK_EQ(restored.total_success, static_cast<std::uint64_t>(1));
+        LR_CHECK_EQ(restored.model_stats.size(), static_cast<std::size_t>(1));
+        if (!restored.model_stats.empty()) {
+            LR_CHECK_EQ(restored.model_stats.front().model, std::string{kRouteModel});
+            LR_CHECK_EQ(restored.model_stats.front().requests, static_cast<std::uint64_t>(1));
+            LR_CHECK_EQ(restored.model_stats.front().tokens_prompt,
+                        static_cast<std::uint64_t>(11));
+        }
         LR_CHECK_MSG(restored.log_seq >= saved_seq,
                      std::format("log_seq went backwards: {} < {}", restored.log_seq, saved_seq));
 

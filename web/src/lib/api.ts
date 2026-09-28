@@ -89,6 +89,18 @@ export interface ProviderStat {
   last_used_unix: number
 }
 
+export interface ModelStat {
+  model: string
+  requests: number
+  successes: number
+  failures: number
+  tokens_prompt: number
+  tokens_completion: number
+  cost_usd: number
+  latency_ms_avg: number
+  last_used_unix: number
+}
+
 export interface ProviderHealth {
   provider: string
   state: HealthState
@@ -147,6 +159,7 @@ export interface Snapshot {
   cache_misses: UInt64
   cache_entries: UInt64
   providers: ProviderStat[]
+  model_stats: ModelStat[]
   health: ProviderHealth[]
 }
 

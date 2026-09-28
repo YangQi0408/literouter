@@ -47,6 +47,16 @@ export const overviewEn: Record<string, string> = {
   overviewNoModels: 'No models available yet',
   overviewNoModelsDescription: 'Configure a relay and model routes to make models available here.',
   overviewDirectModel: 'Available through the gateway',
+  overviewModelUsage: 'Usage by model',
+  overviewModelUsageDescription: 'Requests, reported tokens, estimated cost, and latency for each logical model.',
+  overviewNoModelUsage: 'No model usage recorded yet',
+  overviewModelRequests: 'Requests',
+  overviewModelSuccess: 'Success',
+  overviewModelFailures: 'Failures',
+  overviewModelTokens: 'Tokens',
+  overviewModelCost: 'Estimated cost',
+  overviewModelLatency: 'Avg. latency',
+  overviewModelLastUsed: 'Last used',
 }
 
 export const overviewZh: Record<string, string> = {
@@ -97,4 +107,14 @@ export const overviewZh: Record<string, string> = {
   overviewNoModels: '暂时没有可用模型',
   overviewNoModelsDescription: '配置中转站与模型路由后，可用模型会显示在这里。',
   overviewDirectModel: '可通过网关调用',
+  overviewModelUsage: '模型用量',
+  overviewModelUsageDescription: '按逻辑模型汇总请求数、上游报告的 Token、估算费用与延迟。',
+  overviewNoModelUsage: '暂时没有模型用量记录',
+  overviewModelRequests: '请求数',
+  overviewModelSuccess: '成功',
+  overviewModelFailures: '失败',
+  overviewModelTokens: 'Token',
+  overviewModelCost: '估算费用',
+  overviewModelLatency: '平均延迟',
+  overviewModelLastUsed: '最近使用',
 }

@@ -38,7 +38,7 @@
   - **Linux / macOS**：`$XDG_STATE_HOME/literouter`（若环境变量未设则为 `~/.local/state/literouter`）
   - **Windows**：`%LOCALAPPDATA%\literouter`
 - **内容**：
-  - **`telemetry-<port>.json`**：开启 `server.persist_telemetry` 时，全局计数器、逐中转站统计、最近的请求日志与最近 24 小时的小时趋势写入此处（权限 `0600`，临时文件 + 原子重命名），供下一次启动读回；关闭该开关则不会创建该文件。文件名以实例实际绑定的端口区分——每个实例一份历史，不会互相覆盖。详见[配置文件与密钥管理](configuration.md)；
+  - **`telemetry-<port>.json`**：开启 `server.persist_telemetry` 时，全局计数器、逐中转站及逐模型统计、最近的请求日志与最近 24 小时的小时趋势写入此处（权限 `0600`，临时文件 + 原子重命名），供下一次启动读回；关闭该开关则不会创建该文件。文件名以实例实际绑定的端口区分——每个实例一份历史，不会互相覆盖。详见[配置文件与密钥管理](configuration.md)；
   - **`literouter-<port>.pid`**：记录监听实例的 PID、端口、启动时间与配置路径，停止时删除。监听套接字禁止共享同一地址与端口；PID 文件用于在启动冲突时显示占用者。
 - **示例**：
   ```bash
