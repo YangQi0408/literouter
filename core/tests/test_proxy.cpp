@@ -3521,8 +3521,18 @@ void group15WebConsole(StubRelay &relay_a, literouter::ProxyServer &proxy) {
     // CORS is for the client-facing API. The management surface is same-origin
     // for the console, and must not be readable by an arbitrary page — the log
     // it exposes can carry prompts.
-    LR_CHECK_MSG(getPath(port, "/__literouter/status").acao.empty(),
-                 "the admin API advertises no CORS origin");
+    const Hit status_hit = getPath(port, "/__literouter/status");
+    LR_CHECK_MSG(status_hit.acao.empty(), "the admin API advertises no CORS origin");
+    {
+        // This fixture runs without a config path, so there is nothing to save
+        // to. The console reads this flag to decide whether to offer Save, so it
+        // must be present and honest rather than absent.
+        const json status_doc = json::parse(status_hit.body, nullptr, false);
+        LR_CHECK_MSG(!status_doc.is_discarded(), "the status endpoint is JSON");
+        if (!status_doc.is_discarded()) {
+            LR_CHECK_EQ(status_doc.value("config_writable", true), false);
+        }
+    }
     LR_CHECK_EQ(getPath(port, "/v1/models").acao, "*");
 
     // Probing a configured relay by id resolves the secret server-side, on the
@@ -4382,6 +4392,70 @@ void group33OtlpExport(StubRelay &relay_a) {
 }
 
 
+// The console decides whether to offer Save from the snapshot, so the snapshot
+// has to answer "can this deployment write the config" the same way the save
+// itself will. Probed from the directory semantics alone, without starting a
+// listener: a server that is not running still has a config path.
+void group39ConfigWritable() {
+    LR_GROUP("39. the server reports whether a config save can land");
+
+    // No path at all: the draft is applied in memory, which is a different thing
+    // from read-only and is not what this flag reports.
+    {
+        literouter::ProxyServer proxy;
+        LR_CHECK(!proxy.snapshot().config_writable);
+    }
+
+    TempDir dir;
+
+    // A file path in a writable directory. Nothing has been written yet; the
+    // probe mirrors the atomic save (temp file then rename) rather than checking
+    // whether the file already exists.
+    {
+        literouter::ProxyServer proxy;
+        proxy.setConfigPath((dir.path() / "config.json").string());
+        LR_CHECK_MSG(proxy.snapshot().config_writable,
+                     "a writable config directory must report writable");
+    }
+
+    // A path that names a directory, not a file: saveAs refuses it, so the probe
+    // must not be fooled by the directory's parent accepting a temp file.
+    {
+        literouter::ProxyServer proxy;
+        proxy.setConfigPath(dir.path().string());
+        LR_CHECK_MSG(!proxy.snapshot().config_writable,
+                     "a config path that is a directory must not report writable");
+    }
+
+    // A directory this process genuinely cannot write is the read-only-mount
+    // case in miniature. Skipped when the mode bits do not stop us (running as
+    // root, or a filesystem that ignores them), which is detected by trying.
+    {
+        const std::filesystem::path locked = dir.path() / "locked";
+        std::error_code ec;
+        std::filesystem::create_directories(locked, ec);
+        std::filesystem::permissions(locked,
+                                     std::filesystem::perms::owner_read |
+                                         std::filesystem::perms::owner_exec,
+                                     std::filesystem::perm_options::replace, ec);
+        bool we_can_still_write = false;
+        {
+            std::ofstream probe{locked / "probe", std::ios::trunc};
+            we_can_still_write = static_cast<bool>(probe);
+        }
+        if (we_can_still_write) {
+            std::filesystem::remove(locked / "probe", ec);
+        } else {
+            literouter::ProxyServer proxy;
+            proxy.setConfigPath((locked / "config.json").string());
+            LR_CHECK_MSG(!proxy.snapshot().config_writable,
+                         "a config directory that refuses a temp file must report read-only");
+        }
+        std::filesystem::permissions(locked, std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace, ec);
+    }
+}
+
 int main() {
     // A real server writes its telemetry where LITEROUTER_STATE_DIR points; the
     // guard is what keeps a test run out of the developer's own state dir.
@@ -4478,6 +4552,10 @@ int main() {
 
         proxy.stop();
         LR_CHECK(!proxy.running());
+
+        // Uses its own short-lived servers, so it can run here before the
+        // shutdown group takes the last fixture apart.
+        group39ConfigWritable();
 
         // Last, and inside the summary: it exercises lifecycle edges that are
         // only interesting once the ordinary paths are known good.

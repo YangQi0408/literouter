@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { useTheme } from '@/lib/theme'
 import { countChanges } from '@/lib/diff'
+import { isConfigReadOnly } from '@/lib/api'
 import { useStore } from '@/store'
 
 export type Tab = 'overview' | 'providers' | 'routes' | 'logs' | 'settings'
@@ -53,6 +54,10 @@ export function AppShell({ tab, onTab, children }: { tab: Tab; onTab: (tab: Tab)
   const [refreshing, setRefreshing] = useState(false)
   const active = NAV.find((item) => item.tab === tab) ?? NAV[0]!
   const changes = working && loaded ? countChanges(working, loaded.config) : 0
+  // The server reports whether a save can land. When it cannot, say so here —
+  // the point is to explain the disabled button, not to surface a 500 after the
+  // user has already clicked.
+  const readOnly = isConfigReadOnly(snapshot)
 
   useEffect(() => {
     if (!dirty) return
@@ -154,8 +159,9 @@ export function AppShell({ tab, onTab, children }: { tab: Tab; onTab: (tab: Tab)
         <div className="flex flex-wrap items-center gap-3">
           <div className="hidden size-9 items-center justify-center rounded-xl bg-primary/10 text-primary sm:flex"><Save className="size-4" /></div>
           <div className="min-w-0"><div className="text-xs font-semibold sm:text-sm">{t('unsaved', { n: changes })}</div><div className="mt-0.5 hidden text-[11px] text-muted-foreground sm:block">{t('draftNote')}</div></div>
-          <div className="ml-auto flex items-center gap-2"><Button variant="ghost" size="sm" onClick={discard} disabled={saving}><X className="hidden size-3.5 sm:block" />{t('discard')}</Button><Button size="sm" onClick={() => void save()} disabled={saving}>{saving ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}{t(saving ? 'savingChanges' : 'saveChanges')}</Button></div>
+          <div className="ml-auto flex items-center gap-2"><Button variant="ghost" size="sm" onClick={discard} disabled={saving}><X className="hidden size-3.5 sm:block" />{t('discard')}</Button><Button size="sm" onClick={() => void save()} disabled={saving || readOnly}>{saving ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}{t(saving ? 'savingChanges' : 'saveChanges')}</Button></div>
         </div>
+        {readOnly && <div className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed text-[#d08b2f]"><TriangleAlert className="mt-px size-3.5 shrink-0" />{t('configReadOnly')}</div>}
         {saveIssues.length > 0 && <div className="mt-3 max-h-[25dvh] overflow-y-auto"><Issues issues={saveIssues} /></div>}
       </div>}
 

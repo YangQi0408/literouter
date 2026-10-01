@@ -280,6 +280,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   "cache_hits": 0,
   "cache_misses": 0,
   "config_path": "/home/you/.config/literouter/config.json",
+  "config_writable": false,
   "cost_usd": 0.075,
   "health": [
     {
@@ -352,6 +353,8 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   "version": "0.3.1"
 }
 ```
+
+  `config_path` is the config file in use (empty when the server runs in memory only); `config_writable` reports whether the server can write the config back to that file — `false` on a read-only deployment (a systemd unit that mounts the config directory read-only, for instance), which is what lets the web console grey out Save and explain why instead of failing on click.
 
   `hourly` holds the last 24 **hour buckets** (`hour_unix` is the start of the hour, on the UTC hour), oldest first: it is what the console's trend chart draws, and it is restored from the telemetry file on restart so the shape of the day does not vanish with the process. The array is empty until there has been traffic.
 

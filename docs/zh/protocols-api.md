@@ -281,6 +281,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
   "cache_hits": 0,
   "cache_misses": 0,
   "config_path": "/home/you/.config/literouter/config.json",
+  "config_writable": false,
   "cost_usd": 0.075,
   "health": [
     {
@@ -353,6 +354,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
   "version": "0.3.1"
 }
 ```
+
+  `config_path` 是当前配置文件的路径（为空表示仅内存运行，不落盘）；`config_writable` 表示服务能否把配置写回该文件——只读部署（例如 systemd 把配置目录挂载为只读）时为 `false`，Web 控制台据此置灰「保存配置」并说明原因，而不是等点击后才报错。
 
   `hourly` 是最近 24 个**小时桶**（`hour_unix` 为该小时起点，UTC 整点），旧到新排列：控制台的趋势图就是它，重启后会从遥测文件恢复，因此"今天的样子"不会因为重启而消失。没有流量时该数组为空。
 

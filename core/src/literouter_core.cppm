@@ -713,6 +713,11 @@ struct Snapshot {
     double started_unix = 0.0;
     double uptime_sec = 0.0;
     std::string config_path;
+    // Whether the Web console can write the config file back on this
+    // deployment. False when there is no config path, or its directory refuses
+    // a write — e.g. a systemd unit that mounts the config directory read-only.
+    // The console greys out Save instead of failing when the user clicks it.
+    bool config_writable = false;
     std::string version;
     std::uint64_t total_requests = 0;
     std::uint64_t total_success = 0;

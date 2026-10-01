@@ -32,6 +32,7 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
     {"no relay for this model supports streaming", "该模型没有支持流式请求的中转站"},
     // The traffic trend's window.
     {"a trend needs at least two buckets to show a shape", "趋势图至少需要两个桶才能显示出形状"},
+    {"(read-only)", "(只读)"},
     // The local response cache.
     {"the entry count cannot be negative", "缓存条目数不可为负数"},
     // Observability.

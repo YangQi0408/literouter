@@ -134,6 +134,10 @@ export interface Snapshot {
   started_unix: number
   uptime_sec: number
   config_path: string
+  /** Whether the server can write its config file back. False on a read-only
+   *  deployment (e.g. a systemd unit that mounts the config directory read-only),
+   *  where a save can never land. */
+  config_writable: boolean
   version: string
   total_requests: number
   total_success: number
@@ -161,6 +165,14 @@ export interface Snapshot {
   providers: ProviderStat[]
   model_stats: ModelStat[]
   health: ProviderHealth[]
+}
+
+/** True when the server holds a config file it cannot write, so the console's
+ *  Save can never land and should explain why instead of failing on click. A
+ *  server with no config file at all is not read-only: it applies the draft in
+ *  memory. */
+export function isConfigReadOnly(snapshot: Snapshot | null | undefined): boolean {
+  return Boolean(snapshot?.config_path) && snapshot?.config_writable === false
 }
 
 export interface ProviderProbe {

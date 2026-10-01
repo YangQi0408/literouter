@@ -178,6 +178,7 @@ const en: Record<string, string> = {
   retry: 'Try again',
   tabConfig: 'Configuration file',
   configNote: 'Read-only view of what the server holds. Literal secrets are blanked.',
+  configReadOnly: 'This deployment gives the server no write access to its config file, so this change cannot be saved. Edit the file on the host and reload.',
 
   // field hints (labels are the config keys themselves)
   hintId: 'stable slug used by routes',
@@ -355,6 +356,7 @@ const zh: Record<string, string> = {
   retry: '重试',
   tabConfig: '配置文件',
   configNote: '服务端当前配置的只读视图；明文密钥会被打码。',
+  configReadOnly: '当前部署下服务没有配置文件写权限，此修改无法保存。请在主机上编辑配置文件后重载。',
 
   hintId: '路由引用的稳定标识',
   hintBaseUrl: 'https://api.example.com/v1',

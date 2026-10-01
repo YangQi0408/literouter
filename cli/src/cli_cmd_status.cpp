@@ -131,7 +131,15 @@ void runStatus(Context &ctx) {
     header.add("address", url);
     header.add("version", s.version.empty() ? "—" : s.version);
     header.add("uptime", literouter::humanUptime(s.uptime_sec));
-    header.add("config", s.config_path.empty() ? "—" : s.config_path);
+    {
+        std::string config_line = s.config_path.empty() ? "—" : s.config_path;
+        // A read-only deployment cannot save. Flag it next to the path so an
+        // operator running `status` sees the same fact the console does.
+        if (!s.config_path.empty() && !s.config_writable) {
+            config_line += " " + std::string(literouter::i18n::tr("(read-only)"));
+        }
+        header.add("config", config_line);
+    }
     header.print();
 
     std::println("");

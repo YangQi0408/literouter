@@ -859,6 +859,48 @@ std::string existingInstance(const ServerConfig &server,
                        host, port, holder);
 }
 
+// The config is saved by writing a temp file in its own directory and renaming
+// it (see ConfigStore::saveAs), so "can the config be saved" is really "does
+// that directory accept a new file". Probed once when the path is chosen: the
+// answer cannot change under a running process, and the console would rather
+// know it up front than learn it from a 500 after the user clicks Save.
+bool configTargetWritable(const std::string &path) {
+    if (path.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::path destination{path};
+    if (const auto status = std::filesystem::symlink_status(destination, ec);
+        !ec && std::filesystem::is_symlink(status)) {
+        destination = std::filesystem::canonical(destination, ec);
+        if (ec) {
+            return false;
+        }
+    }
+    // A path that names a directory is not writable as a file; saveAs refuses it
+    // for the same reason, and the probe must not report otherwise just because
+    // the directory's parent accepts a temp file.
+    if (std::filesystem::is_directory(destination, ec)) {
+        return false;
+    }
+    std::filesystem::path parent = destination.parent_path();
+    if (parent.empty()) {
+        parent = ".";
+    }
+    // A uniquely named temp file, then removed. The nonce is only there so a
+    // stray probe can never be mistaken for, or clobber, a real file.
+    const std::filesystem::path probe =
+        parent / std::format(".literouter-write-probe-{}",
+                             std::chrono::steady_clock::now().time_since_epoch().count());
+    std::ofstream output{probe, std::ios::binary | std::ios::trunc};
+    if (!output) {
+        return false;
+    }
+    output.close();
+    std::filesystem::remove(probe, ec);
+    return true;
+}
+
 // The listening process's own record: who is on this port, since when, and with
 // which config. Written after the bind (the bound port is what identifies the
 // instance) and removed by stop().
@@ -1089,6 +1131,8 @@ struct ProxyServer::Impl {
     // Actual transport is separate from the next-start settings in config.
     ServerConfig bound_server;
     std::string config_path;
+    // Whether that path can actually be written; probed in setConfigPath().
+    bool config_writable = false;
 
     std::thread runner;
     std::atomic<bool> running{false};
@@ -1229,6 +1273,11 @@ struct ProxyServer::Impl {
         return config_path;
     }
 
+    bool configWritable() const {
+        std::scoped_lock lock{config_mutex};
+        return config_writable;
+    }
+
     void scheduleShutdown(ProxyServer *owner) {
         std::scoped_lock lock{shutdown_mutex};
         if (shutdown_scheduled) {
@@ -1257,8 +1306,10 @@ struct ProxyServer::Impl {
     }
 
     void setConfigPath(std::string path) {
+        const bool writable = configTargetWritable(path);
         std::scoped_lock lock{config_mutex};
         config_path = std::move(path);
+        config_writable = writable;
     }
 
     // ── telemetry ────────────────────────────────────────────────────────────
@@ -4506,6 +4557,7 @@ Snapshot ProxyServer::snapshot() const {
     out.breakers_open = impl_->router.openBreakerCount(nowUnix());
     out.active_requests = static_cast<std::uint64_t>(std::max(0, impl_->active_requests.load()));
     out.config_path = impl_->configPath();
+    out.config_writable = impl_->configWritable();
 
     {
         std::scoped_lock lock{impl_->telemetry_mutex};
@@ -4701,6 +4753,7 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
     s.uptime_sec = parsed.value("uptime_sec", 0.0);
     s.started_unix = parsed.value("started_unix", 0.0);
     s.config_path = parsed.value("config_path", std::string{});
+    s.config_writable = parsed.value("config_writable", false);
     s.version = parsed.value("version", std::string{});
     s.total_requests = parsed.value("total_requests", std::uint64_t{0});
     s.total_success = parsed.value("total_success", std::uint64_t{0});

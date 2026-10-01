@@ -571,6 +571,7 @@ std::string toJsonString(const Snapshot &snapshot) {
     node["started_unix"] = snapshot.started_unix;
     node["uptime_sec"] = snapshot.uptime_sec;
     node["config_path"] = snapshot.config_path;
+    node["config_writable"] = snapshot.config_writable;
     node["version"] = snapshot.version;
     node["total_requests"] = snapshot.total_requests;
     node["total_success"] = snapshot.total_success;

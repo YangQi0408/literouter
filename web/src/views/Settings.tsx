@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
+import { isConfigReadOnly } from '@/lib/api'
 import { ConfigImportError, readConfigImport } from '@/lib/config-import'
 import { clientBaseUrl } from '@/lib/present'
 import { cn } from '@/lib/utils'
@@ -278,6 +279,7 @@ export function Settings({ initialSection = 'connection' }: { initialSection?: S
                 <p className="mt-1 break-all font-mono text-xs">{loaded?.path || t('configInMemory')}</p>
               </div>
             </div>
+            {isConfigReadOnly(snapshot) ? <p role="alert" className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-xs leading-relaxed text-[#d08b2f]">{t('configReadOnly')}</p> : null}
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-sm font-semibold"><SlidersHorizontal className="size-4 text-muted-foreground" />{t('configDraft')}</div>
               <div className="flex flex-wrap gap-2">
