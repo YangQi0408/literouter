@@ -4,6 +4,11 @@ target/
 .mcpp/
 .cache/
 
+# mcpp records what it resolved in a lockfile at the workspace root. It is
+# regenerated on every build and does not pin future builds yet, so it is not
+# tracked.
+mcpp.lock
+
 # clangd's index and the compile_commands.json mcpp regenerates on every build.
 .cache/clangd/
 compile_commands.json
