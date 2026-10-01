@@ -92,7 +92,7 @@ cd literouter
 # Build entire workspace in release mode (core library + cli executable)
 mcpp build --workspace --release
 
-# The executable is produced at cli/target/<triple>/<hash>/bin/literouter
+# The executable is produced at target/<triple>/<hash>/bin/cli/literouter
 ```
 
 ---

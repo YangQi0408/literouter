@@ -92,7 +92,7 @@ cd literouter
 # 一键全量编译整个工作区（core 静态库 + cli 命令行前端）
 mcpp build --workspace --release
 
-# 编译产物位于 cli/target/<平台三元组>/<构建哈希>/bin/literouter
+# 编译产物位于 target/<平台三元组>/<构建哈希>/bin/cli/literouter
 # 可以直接运行或复制到系统的 PATH 路径中
 ```
 

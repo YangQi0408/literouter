@@ -103,7 +103,7 @@ jobs:
       - name: Verify config docs match the build (Linux)
         if: runner.os == 'Linux'
         run: |
-          bin="$(ls -t cli/target/*/*/bin/literouter | head -1)"
+          bin="$(find target -type f \( -name literouter -o -name 'literouter.exe' \) -path '*/bin/*' -exec ls -t {} + 2>/dev/null | head -1)"
           tmp="$(mktemp -d)"
           LITEROUTER_CONFIG="$tmp/seed.json" "$bin" config init --force
           printf '{"providers":[{}],"routes":[{"targets":[{"provider":"p"}]}]}' > "$tmp/minimal.json"
@@ -148,7 +148,7 @@ jobs:
       - name: CLI shutdown is graceful (Linux)
         if: runner.os == 'Linux'
         run: |
-          bin="$(ls -t cli/target/*/*/bin/literouter | head -1)"
+          bin="$(find target -type f \( -name literouter -o -name 'literouter.exe' \) -path '*/bin/*' -exec ls -t {} + 2>/dev/null | head -1)"
           tmp="$(mktemp -d)"
           port=18793
 
@@ -217,7 +217,7 @@ jobs:
         run: |
           mcpp run -p cli -- --version
 
-          bin="$(ls -t cli/target/*/*/bin/literouter* | head -1)"
+          bin="$(find target -type f -name 'literouter*' -path '*/bin/*' -exec ls -t {} + 2>/dev/null | head -1)"
           tmp="$(mktemp -d)"
 
           # Every command below is pinned to $tmp. An unpinned `config init
@@ -272,7 +272,7 @@ jobs:
 
           # `literouter*`, because the Windows artifact is literouter.exe and
           # the other Linux-only steps can assume the bare name.
-          bin="$(ls -t cli/target/*/*/bin/literouter* | head -1)"
+          bin="$(find target -type f -name 'literouter*' -path '*/bin/*' -exec ls -t {} + 2>/dev/null | head -1)"
           tmp="$(mktemp -d)"
 
           # Pinned to $tmp for the same reason as the English step: this must
@@ -313,4 +313,4 @@ jobs:
           name: literouter-${{ matrix.platform }}
           if-no-files-found: warn
           path: |
-            cli/target/**/bin/literouter*
+            target/**/bin/**/literouter*

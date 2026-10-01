@@ -25,7 +25,7 @@ So this walks the documentation against the code and reports what disagrees:
 
 Run it as CI does:
 
-  bin="$(ls -t cli/target/*/*/bin/literouter | head -1)"   # newest build; see notes
+  bin="$(find target -type f -name literouter -path '*/bin/*' -exec ls -t {} + | head -1)"   # newest build; see notes
   tmp="$(mktemp -d)"
   LITEROUTER_CONFIG="$tmp/seed.json" "$bin" config init --force
   printf '{"providers":[{}],"routes":[{"targets":[{"provider":"p"}]}]}' > "$tmp/minimal.json"
@@ -35,8 +35,8 @@ Run it as CI does:
   python3 scripts/check_config_docs.py --seed "$tmp/seed.json" --defaults "$tmp/defaults.json"
 
 `ls -t` because a checkout that has been rebuilt a few times keeps one directory
-per source fingerprint under `cli/target/<triple>/`, and an older one names an
-older binary — `mcpp clean --stale` drops the ones no build still uses.
+per source fingerprint under `target/<triple>/`, and an older one names an older
+binary — `mcpp clean --stale` drops the ones no build still uses.
 """
 
 from __future__ import annotations

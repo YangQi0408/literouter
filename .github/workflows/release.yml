@@ -195,12 +195,12 @@ jobs:
           mkdir -p "$staging" dist-release
 
           if [ "$RUNNER_OS" = "Windows" ]; then
-            binary="$(find cli/target -type f -name literouter.exe | head -n 1)"
+            binary="$(find target -type f -name literouter.exe -path '*/bin/*' | head -n 1)"
             cp "$binary" "$staging/literouter.exe"
             cp "$binary" "dist-release/$package.exe"
             cp "$binary" "dist-release/literouter-windows-x86_64.exe"
           else
-            binary="$(find cli/target -type f -name literouter | head -n 1)"
+            binary="$(find target -type f -name literouter -path '*/bin/*' | head -n 1)"
             if [ "$RUNNER_OS" = "Linux" ]; then
               python3 scripts/patch_elf_interp.py "$binary"
               patchelf --set-rpath '$ORIGIN' "$binary" 2>/dev/null || true
