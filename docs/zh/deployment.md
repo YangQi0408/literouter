@@ -113,7 +113,9 @@ mcpp build --workspace --release
    sudo useradd --system --no-create-home --home-dir /var/lib/literouter --shell /usr/sbin/nologin literouter 2>/dev/null || true
 
    # 2. 创建配置目录与状态持久化目录并设置权限
-   sudo install -d -o root -g literouter -m 0750 /etc/literouter
+   #    配置目录对服务组可写（0770）：服务保存配置时会在同一目录写临时文件再
+   #    原子改名，因此需要「目录」本身可写，只给 config.json 文件写权限是不够的。
+   sudo install -d -o root -g literouter -m 0770 /etc/literouter
    sudo install -d -o literouter -g literouter -m 0750 /var/lib/literouter
 
    # 3. 初始化配置文件（若尚不存在）
@@ -142,9 +144,19 @@ mcpp build --workspace --release
 
 **安全特性**：
 - `User=literouter`：以专用的低权限账户运行；
-- `ProtectSystem=strict` 与 `ProtectHome=true`：将整机文件系统挂载为只读，仅允许写入 `/var/lib/literouter` 遥测状态目录；
+- `ProtectSystem=strict` 与 `ProtectHome=true`：将整机文件系统挂载为只读，仅放行两条写路径——`/var/lib/literouter` 遥测状态目录，以及 `/etc/literouter` 配置目录（Web 控制台「保存配置」依赖它）。配置目录仍由 `root` 拥有，仅对服务组可写（`0770`）；
 - `NoNewPrivileges=true` / `PrivateTmp=true`：彻底杜绝提权隐患；
 - 采用 `SIGTERM` 优雅停机（超时 30 秒），确保正在进行的流式应答平稳输出完毕，并将最新遥测计数完整刷写至磁盘。
+
+> **想改成「配置对服务只读」？** 这是可选的强化姿态：在单元里把 `ReadWritePaths` 中的 `/etc/literouter` 去掉、再加回 `ReadOnlyPaths=/etc/literouter`（目录权限也回到 `0750 root:literouter`）。此时 Web 控制台的「保存配置」会返回 `write_failed`，请改用 `sudo` 编辑 `/etc/literouter/config.json`，再执行 `POST /__literouter/reload`、或重启服务、或开启 `server.reload_on_change` 来生效。
+
+> **已经在跑旧版部署？** 配置目录的可写权限与单元都不会被自动更新，需要手动补齐一次：
+> ```bash
+> sudo chmod g+w /etc/literouter                       # 0750 -> 0770
+> sudo cp deploy/literouter.service /etc/systemd/system/
+> sudo systemctl daemon-reload && sudo systemctl restart literouter
+> ```
+> 之后 Web 控制台的「保存配置」即可用。
 
 ---
 

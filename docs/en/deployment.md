@@ -112,7 +112,10 @@ The repository provides a hardened systemd unit file [deploy/literouter.service]
    sudo useradd --system --no-create-home --home-dir /var/lib/literouter --shell /usr/sbin/nologin literouter 2>/dev/null || true
 
    # 2. Prepare directories with secure permissions
-   sudo install -d -o root -g literouter -m 0750 /etc/literouter
+   #    The config directory is group-writable by the service (0770): saving from
+   #    the Web console writes a temp file next to the config and renames it, so
+   #    the directory itself must be writable, not just the file.
+   sudo install -d -o root -g literouter -m 0770 /etc/literouter
    sudo install -d -o literouter -g literouter -m 0750 /var/lib/literouter
 
    # 3. Initialize default config if not present
@@ -136,9 +139,19 @@ The repository provides a hardened systemd unit file [deploy/literouter.service]
 
 **Security Hardening Highlights**:
 - Runs under dedicated unprivileged user `User=literouter`;
-- `ProtectSystem=strict` and `ProtectHome=true`: file system is mounted read-only except for state directory `/var/lib/literouter`;
+- `ProtectSystem=strict` and `ProtectHome=true`: the file system is mounted read-only except for two paths — the state directory `/var/lib/literouter` and the config directory `/etc/literouter` (the Web console's "save configuration" needs it). The config directory stays owned by `root` and is only group-writable by the service (`0770`);
 - `NoNewPrivileges=true` and `PrivateTmp=true` block privilege escalation;
 - Uses graceful `SIGTERM` stop with 30s timeout to allow in-flight streaming requests to finish cleanly.
+
+> **Prefer the config read-only to the service?** That is an optional hardened posture: drop `/etc/literouter` from `ReadWritePaths` in the unit, add back `ReadOnlyPaths=/etc/literouter` (and set the directory back to `0750 root:literouter`). The Web console's "save configuration" then returns `write_failed`; edit `/etc/literouter/config.json` with `sudo` and apply it with `POST /__literouter/reload`, a service restart, or `server.reload_on_change`.
+
+> **Already running an older deployment?** Neither the directory mode nor the unit updates itself, so apply the change once by hand:
+> ```bash
+> sudo chmod g+w /etc/literouter                       # 0750 -> 0770
+> sudo cp deploy/literouter.service /etc/systemd/system/
+> sudo systemctl daemon-reload && sudo systemctl restart literouter
+> ```
+> The Web console's "save configuration" then works.
 
 ---
 

@@ -22,9 +22,11 @@ Type=simple
 User=literouter
 Group=literouter
 
-# The config holds API keys, so it lives under /etc and is read-only to the
-# service. StateDirectory is created by systemd with the right ownership and is
-# the only thing the service writes.
+# The config holds API keys, so it lives under /etc. Its directory is owned by
+# root and group-writable by the service so the Web console can save it back
+# atomically: the save writes a temp file next to the config and renames it, so
+# the directory itself must be writable, not just the file. The telemetry/state
+# file lives under /var/lib so it survives restarts independently of the config.
 Environment=LITEROUTER_CONFIG=/etc/literouter/config.json
 Environment=LITEROUTER_STATE_DIR=/var/lib/literouter
 # Uncomment to force a language regardless of the system locale:
@@ -65,9 +67,10 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
 # ProtectSystem=strict makes everything read-only; these are the two paths the
-# service legitimately needs.
-ReadWritePaths=/var/lib/literouter
-ReadOnlyPaths=/etc/literouter
+# service legitimately writes: the state directory, and the config directory so
+# the Web console can save configuration. Listing /etc/literouter here is what
+# keeps the config writable under ProtectSystem=strict.
+ReadWritePaths=/var/lib/literouter /etc/literouter
 
 [Install]
 WantedBy=multi-user.target

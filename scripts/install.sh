@@ -154,7 +154,10 @@ if ! id literouter >/dev/null 2>&1; then
     useradd --system --no-create-home --home-dir "$STATE_DIR" --shell /usr/sbin/nologin literouter
 fi
 install -d -o literouter -g literouter -m 0750 "$STATE_DIR"
-install -d -o root -g literouter -m 0750 "$CONFIG_DIR"
+# 0770, not 0750: the service saves the config by writing a temp file next to it
+# and renaming it, so it needs write access to the directory to allow the Web
+# console to save configuration. root stays the owner; only the group can write.
+install -d -o root -g literouter -m 0770 "$CONFIG_DIR"
 if [ ! -f "$CONFIG_DIR/config.json" ]; then
     LITEROUTER_CONFIG="$CONFIG_DIR/config.json" "$TARGET" config init --force >/dev/null
     chown literouter:literouter "$CONFIG_DIR/config.json"
