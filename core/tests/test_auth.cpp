@@ -356,6 +356,10 @@ void testVertexOAuth2() {
 } // namespace
 
 int main() {
+    // The stub relays below are reached through core's own upstream client, so
+    // an exported HTTPS_PROXY in the developer's shell would tunnel them.
+    const lr_test::ProxyEnvironment proxy_env;
+
     testSimpleProtocolHeaders();
     testBedrockSigV4();
     testVertexOAuth2();

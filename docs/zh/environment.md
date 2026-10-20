@@ -12,6 +12,9 @@
 | `LITEROUTER_STATE_DIR` | 覆盖运行时状态目录（持久化遥测等） | `~/.local/state/literouter` | 核心 / CLI |
 | `LITEROUTER_LANG` | 强制指定终端输出语言（`auto`, `zh`, `en`） | `auto` (跟随系统) | CLI |
 | `LITEROUTER_CA_BUNDLE` | 指定用于上游与管理客户端 HTTPS 校验的自定义 CA 根证书包绝对路径 | 自动探测系统 CA 信任库 | 核心 |
+| `LITEROUTER_PROXY` | 指定上游请求经过的 HTTP 代理，优先级高于 `HTTPS_PROXY` / `HTTP_PROXY` | 未设置 (直连) | 核心 |
+| `HTTPS_PROXY` / `HTTP_PROXY` 等 | 标准代理环境变量，`https` 上游走 `HTTPS_PROXY`，未设时回退 `HTTP_PROXY` | 未设置 (直连) | 核心 |
+| `NO_PROXY` / `no_proxy` | 逗号分隔的直连名单（域名后缀、IP、CIDR），命中者不经过代理 | 未设置 (全部走代理) | 核心 |
 | `LITEROUTER_WEB_DIR` | 指定内置 Web 控制台的产物目录，改为运行时按请求读取而不是编译期 `#embed` | 未设置 (使用编译期内嵌产物) | 核心 |
 | `NO_COLOR` | 遵循 no-color.org 规范，设为非空值时禁用终端彩色输出 | 未设置 (开启彩色) | CLI |
 
@@ -62,7 +65,37 @@
   export LITEROUTER_CA_BUNDLE="/etc/corp-pki/enterprise-ca.pem"
   ```
 
-### 5. `LITEROUTER_WEB_DIR`
+### 5. 代理环境变量（`LITEROUTER_PROXY` / `HTTPS_PROXY` / `NO_PROXY`）
+
+内网部署下中转站往往只能经企业代理访问，literouter 因此按 curl 的习惯读取标准代理环境变量。代理是**机器与启动它的 shell 的属性**，不是某个中转站的属性，所以它只从环境变量读取，不放进配置文件——一份在多台机器之间拷贝的配置文件，在每台机器上都会是错的。
+
+**解析顺序（命中即止）：**
+
+1. `LITEROUTER_PROXY`
+2. `HTTPS_PROXY`，其次 `https_proxy`
+3. `HTTP_PROXY`，其次 `http_proxy`（curl 对 https 目标的回退行为）
+
+值可以是完整 URL，也可以是裸的 `host:port`；scheme 只支持 `http` 与 `https`（不支持 SOCKS5）。带凭据时按 `http://user:pass@proxy:3128` 书写，密码中的特殊字符需百分号转义（`p%40ss` 表示 `p@ss`），literouter 会以 Basic `Proxy-Authorization` 发送。未写端口时，`http` 默认 `8080`，`https` 默认 `443`。
+
+```bash
+# 企业代理，带凭据
+export HTTPS_PROXY="http://user:p%40ss@proxy.corp:3128"
+
+# 或只覆盖 literouter，不影响同一 shell 里的其他工具
+export LITEROUTER_PROXY="proxy.corp:3128"
+
+# 本地中转站与 OTLP collector 不要经过代理
+export NO_PROXY="localhost,127.0.0.1,.corp.example"
+```
+
+**行为要点：**
+
+- **本地回环永远直连**：`serve` 启动时的实例探测与 `literouter status` 面向本机实例，不会走代理，因此这两个命令在代理环境下仍可用。
+- **`NO_PROXY` 支持域名后缀、IP 字面量与 CIDR**（如 `10.0.0.0/8`、`[::1]`），`*` 表示全部直连。
+- **代理配置变更需要重启**：连接池按代理配置分桶，但只在建立连接时读取；改完环境变量请重启 `literouter`。
+- **值非法时直连并告警**：无法解析的代理值（例如 `socks5://...`、端口非法）不会被猜测使用，而是回退直连并在 stderr 打印一条说明，避免把请求悄悄送到非预期的代理上。
+
+### 6. `LITEROUTER_WEB_DIR`
 指定内置 Web 控制台的产物目录。
 
 正常构建下 `web/dist`（`index.html` / `app.css` / `app.js` / `favicon.svg`）会在**编译期**通过 `#embed` 嵌进 `core`，运行时不需要任何外部文件。当 `#embed` 不可用时（例如 ISO 严格模式的 GCC 尚未实现该特性），构建会跳过内嵌，此时用这个变量指向磁盘上的产物目录，服务端改为按请求读取：
@@ -73,7 +106,7 @@ export LITEROUTER_WEB_DIR=/opt/literouter/web-dist
 
 目录必须包含 `index.html`，否则控制台页面无法加载。改前端后仍需 `npm --prefix web run build` 重新生成产物。
 
-### 6. 上游密钥环境变量
+### 7. 上游密钥环境变量
 任何在配置文件中以 `${VAR_NAME}` 或 `${VAR:-fallback}` 声明的环境变量，均应在运行 `literouter` 之前在系统或 Shell 中导出：
 
 ```bash

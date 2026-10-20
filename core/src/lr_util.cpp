@@ -191,6 +191,186 @@ std::string caBundleSummary() {
     return path.empty() ? std::string{} : pathToUtf8(path);
 }
 
+// ── upstream proxy ───────────────────────────────────────────────────────────
+
+namespace {
+
+// Percent-decoding, because a proxy URL carries credentials and `p%40ss` is how
+// a password containing `@` has to be written. Only the userinfo is decoded;
+// the host is not, since a proxy host is a hostname and not a path.
+std::string percentDecode(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '%' && i + 2 < text.size()) {
+            const auto hexValue = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            const int high = hexValue(text[i + 1]);
+            const int low = hexValue(text[i + 2]);
+            if (high >= 0 && low >= 0) {
+                out.push_back(static_cast<char>((high << 4) | low));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(text[i]);
+    }
+    return out;
+}
+
+// The first of `names` that is set to a non-empty value.
+const char *firstSetEnv(std::initializer_list<const char *> names) {
+    for (const char *name : names) {
+        if (const char *value = std::getenv(name); value != nullptr && *value != '\0') {
+            return value;
+        }
+    }
+    return nullptr;
+}
+
+// A proxy URL with its `user:pass@` replaced by `<credentials>@`, for use in
+// messages. A malformed value is reported to stderr, and a proxy URL carries a
+// password as a matter of course — printing the operator's proxy credentials
+// into a log or a terminal scrollback would be a worse bug than the one the
+// message is reporting.
+std::string redactUserinfo(std::string_view url) {
+    const auto scheme = url.find("://");
+    const auto start = scheme == std::string_view::npos ? 0 : scheme + 3;
+    const auto at = url.rfind('@');
+    if (at == std::string_view::npos || at < start) {
+        return std::string{url};
+    }
+    return std::format("{}<credentials>@{}", url.substr(0, start), url.substr(at + 1));
+}
+
+} // namespace
+
+UpstreamProxy resolveUpstreamProxy() {
+    UpstreamProxy proxy;
+
+    const char *raw = firstSetEnv({"LITEROUTER_PROXY", "HTTPS_PROXY", "https_proxy",
+                                   "HTTP_PROXY", "http_proxy"});
+    if (raw == nullptr) {
+        return proxy;
+    }
+
+    // A view into a temporary would dangle the moment the full expression ends,
+    // so the trimmed copy is materialised first — the same trap splitBaseUrl()
+    // warns about.
+    const std::string trimmed = trim(raw);
+    std::string_view rest{trimmed};
+    if (rest.empty()) {
+        return proxy;
+    }
+
+    // A scheme is optional; `proxy.corp:3128` is as common as the URL form.
+    // Anything that is not a proxy scheme is a mistake worth reporting rather
+    // than a hostname to guess at. The value is redacted before it is quoted:
+    // see redactUserinfo().
+    if (const auto sep = rest.find("://"); sep != std::string_view::npos) {
+        proxy.scheme = toLower(rest.substr(0, sep));
+        rest = rest.substr(sep + 3);
+        if (proxy.scheme != "http" && proxy.scheme != "https") {
+            proxy.warning = std::format(
+                "ignoring upstream proxy `{}`: scheme `{}` is not supported (use http:// or https://)",
+                redactUserinfo(raw), proxy.scheme);
+            return proxy;
+        }
+    }
+
+    // A proxy URL may carry a path or a trailing slash, neither of which means
+    // anything for CONNECT. Drop them before looking for credentials.
+    if (const auto slash = rest.find('/'); slash != std::string_view::npos) {
+        rest = rest.substr(0, slash);
+    }
+
+    std::string_view authority = rest;
+    if (const auto at = rest.rfind('@'); at != std::string_view::npos) {
+        const std::string_view userinfo = rest.substr(0, at);
+        authority = rest.substr(at + 1);
+        if (const auto colon = userinfo.find(':'); colon != std::string_view::npos) {
+            proxy.username = percentDecode(userinfo.substr(0, colon));
+            proxy.password = percentDecode(userinfo.substr(colon + 1));
+        } else {
+            proxy.username = percentDecode(userinfo);
+        }
+    }
+
+    std::string_view host = authority;
+    std::string_view port_text;
+    // Bracketed IPv6 literal: the colons inside it are not a port separator.
+    if (authority.size() >= 2 && authority.front() == '[') {
+        if (const auto close = authority.find(']'); close != std::string_view::npos) {
+            host = authority.substr(1, close - 1);
+            const std::string_view tail = authority.substr(close + 1);
+            if (!tail.empty() && tail.front() == ':') {
+                port_text = tail.substr(1);
+            }
+        } else {
+            proxy.warning = std::format("ignoring upstream proxy `{}`: unterminated IPv6 literal",
+                                        redactUserinfo(raw));
+            return proxy;
+        }
+    } else if (const auto colon = authority.rfind(':'); colon != std::string_view::npos) {
+        host = authority.substr(0, colon);
+        port_text = authority.substr(colon + 1);
+    }
+
+    if (host.empty()) {
+        proxy.warning = std::format("ignoring upstream proxy `{}`: no host",
+                                    redactUserinfo(raw));
+        return proxy;
+    }
+    if (!port_text.empty()) {
+        int port = 0;
+        const auto [end, error] =
+            std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
+        if (error != std::errc{} || end != port_text.data() + port_text.size() ||
+            port <= 0 || port > 65535) {
+            proxy.warning = std::format("ignoring upstream proxy `{}`: `{}` is not a port",
+                                        redactUserinfo(raw), port_text);
+            return proxy;
+        }
+        proxy.port = port;
+    } else {
+        // 8080 is the conventional proxy port and what curl assumes; 443 is the
+        // honest answer only for the https scheme, which is why the default
+        // follows the scheme rather than being one fixed number.
+        proxy.port = proxy.scheme == "https" ? 443 : 8080;
+    }
+
+    proxy.host = std::string{host};
+    proxy.enabled = true;
+    return proxy;
+}
+
+std::vector<std::string> resolveNoProxyList() {
+    std::vector<std::string> out;
+    const char *raw = firstSetEnv({"NO_PROXY", "no_proxy"});
+    if (raw == nullptr) {
+        return out;
+    }
+    // No splitOn() helper exists in this codebase and the list is the only
+    // comma-separated environment variable it reads, so the loop is local.
+    std::string_view rest{raw};
+    while (!rest.empty()) {
+        const auto comma = rest.find(',');
+        const std::string item = trim(rest.substr(0, comma));
+        if (!item.empty()) {
+            out.push_back(item);
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        rest = rest.substr(comma + 1);
+    }
+    return out;
+}
+
 // ── secrets ──────────────────────────────────────────────────────────────────
 
 std::string resolveSecret(std::string_view raw) {

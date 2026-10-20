@@ -177,6 +177,30 @@ void runDoctor(Context &ctx) {
                                  ? dim("tls trust store    library defaults (no system "
                                        "bundle found)")
                                  : dim("tls trust store    " + ca));
+        // The proxy belongs here for the same reason the trust store does: when
+        // every relay reports "connection failed", "this process is tunnelling
+        // somewhere" and "this process is not" are the two answers that differ,
+        // and neither is visible from a probe result. An operator who exported
+        // HTTPS_PROXY in one shell and started the service from another has no
+        // other way to find out.
+        const literouter::UpstreamProxy proxy = literouter::resolveUpstreamProxy();
+        if (proxy.enabled) {
+            const std::string credentials = proxy.username.empty() ? "" : " (credentials set)";
+            step.lines.push_back(dim(std::format("upstream proxy     {}://{}:{}{}",
+                                                 proxy.scheme, proxy.host, proxy.port,
+                                                 credentials)));
+            const auto no_proxy = literouter::resolveNoProxyList();
+            if (!no_proxy.empty()) {
+                std::string joined;
+                for (const auto &entry : no_proxy) {
+                    joined += joined.empty() ? entry : ", " + entry;
+                }
+                step.lines.push_back(dim("proxy bypass       " + joined));
+            }
+        }
+        if (!proxy.warning.empty()) {
+            step.lines.push_back(paint("upstream proxy     " + proxy.warning, "33"));
+        }
 #ifdef _WIN32
         if (ca.empty()) {
             step.hints.push_back(

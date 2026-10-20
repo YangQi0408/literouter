@@ -126,6 +126,53 @@ private:
     std::optional<std::string> previous_;
 };
 
+// Silences the standard proxy environment for the rest of the scope.
+//
+// Every stub relay in the core tests listens on loopback and is reached through
+// the same upstream client the product uses, so a machine with HTTPS_PROXY
+// exported — every developer inside a corporate network, and some CI images —
+// would have the whole suite tunnel to 127.0.0.1 through a proxy and fail for a
+// reason that has nothing to do with the code under test. Tests that are ABOUT
+// the proxy set their own values on top of this, and each EnvGuard restores
+// whatever the shell had when the scope ends.
+//
+// NO_PROXY is cleared rather than set to "*": "no proxy is configured" and "a
+// proxy is configured but bypassed for everything" are different states, and a
+// suite should run in the first one.
+class ProxyEnvironment {
+public:
+    ProxyEnvironment() { clear(); }
+
+    void clear() {
+        literouter_.clear();
+        https_upper_.clear();
+        https_lower_.clear();
+        http_upper_.clear();
+        http_lower_.clear();
+        no_proxy_upper_.clear();
+        no_proxy_lower_.clear();
+    }
+
+    // Named accessors, so a resolution test can set one variable at a time
+    // without reaching for the environment directly.
+    EnvGuard &literouter() { return literouter_; }
+    EnvGuard &httpsUpper() { return https_upper_; }
+    EnvGuard &httpsLower() { return https_lower_; }
+    EnvGuard &httpUpper() { return http_upper_; }
+    EnvGuard &httpLower() { return http_lower_; }
+    EnvGuard &noProxyUpper() { return no_proxy_upper_; }
+    EnvGuard &noProxyLower() { return no_proxy_lower_; }
+
+private:
+    EnvGuard literouter_{"LITEROUTER_PROXY"};
+    EnvGuard https_upper_{"HTTPS_PROXY"};
+    EnvGuard https_lower_{"https_proxy"};
+    EnvGuard http_upper_{"HTTP_PROXY"};
+    EnvGuard http_lower_{"http_proxy"};
+    EnvGuard no_proxy_upper_{"NO_PROXY"};
+    EnvGuard no_proxy_lower_{"no_proxy"};
+};
+
 } // namespace lr_test
 
 #define LR_GROUP(name) ::lr_test::group(name)

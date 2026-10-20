@@ -184,6 +184,40 @@ std::vector<std::string> parseModelIds(std::string_view body) {
     return out;
 }
 
+// ── upstream proxy ───────────────────────────────────────────────────────────
+//
+// A relay behind a corporate network is reached through a proxy, and every
+// request literouter makes has to go the same way. The proxy is a property of
+// the machine rather than of a relay, so it comes from the environment (see
+// resolveUpstreamProxy) and not from the config file.
+//
+// Applied to the client once, at construction, which is why it belongs in
+// configure() beside the timeouts and the trust store: a client is built,
+// configured and then pooled, and the pool key covers everything configure()
+// reads so an edited environment never silently reuses a socket dialled a
+// different way.
+//
+// Deliberately NOT cached in a function-local static. configure() runs once per
+// client construction rather than once per request, so caching would buy
+// nothing, and a frozen first read is untestable: a test could never point the
+// proxy at a stub after an earlier call had resolved the environment to empty.
+
+// A malformed proxy variable is worth saying out loud exactly once — the
+// alternative is an operator wondering why their proxy is being ignored. There
+// is no logger in core, and this is a startup-shaped diagnostic rather than a
+// per-request one, so it goes to stderr. `std::cerr`, not std::println(stderr,
+// ...): the latter does not compile against this toolchain's libc++ when the
+// unit has done `import std;`.
+void reportProxyWarningOnce(const std::string &warning) {
+    if (warning.empty()) {
+        return;
+    }
+    static std::once_flag reported;
+    std::call_once(reported, [&warning] {
+        std::cerr << "literouter: " << warning << '\n';
+    });
+}
+
 void configure(h::Client &client, const ProviderConfig &provider) {
     client.set_follow_location(true);
     // Blocking mode: the proxy's own worker thread is the concurrency unit, so
@@ -192,6 +226,22 @@ void configure(h::Client &client, const ProviderConfig &provider) {
     client.set_read_timeout(provider.timeout_sec, 0);
     client.set_write_timeout(provider.timeout_sec, 0);
     client.set_keep_alive(true);
+    // Tunnelling. httplib sends CONNECT for an https upstream and an absolute
+    // request line for an http one, and re-dials the proxy on its own after a
+    // pooled socket dies, so nothing here has to know which leg it is on.
+    if (const UpstreamProxy proxy = resolveUpstreamProxy(); proxy.enabled) {
+        reportProxyWarningOnce(proxy.warning);
+        client.set_proxy(proxy.host, proxy.port);
+        if (!proxy.username.empty()) {
+            client.set_proxy_basic_auth(proxy.username, proxy.password);
+        }
+        // A local relay or a loopback OTLP collector must not be tunnelled,
+        // which is what NO_PROXY is for; the empty list leaves the proxy
+        // applied to every host, as before.
+        if (const auto no_proxy = resolveNoProxyList(); !no_proxy.empty()) {
+            client.set_no_proxy(no_proxy);
+        }
+    }
     // An enterprise relay behind a private CA is the one case where the trust
     // store is a decision rather than a default; LITEROUTER_CA_BUNDLE covers it,
     // and resolveCaBundle() covers the far more common case of mcpp's
@@ -241,8 +291,31 @@ const std::string& cachedCaBundlePath() {
 }
 
 std::string poolKey(std::string_view root, const ProviderConfig &provider) {
-    return std::format("{}|{}|{}|{}", root, provider.connect_timeout_sec, provider.timeout_sec,
-                       cachedCaBundlePath());
+    // The proxy belongs in the key for the same reason the timeouts do: it
+    // changes which socket is dialled, so a client configured against a
+    // different proxy is a different connection and not a cache hit.
+    //
+    // NO_PROXY belongs in it for a sharper reason: it decides whether the proxy
+    // applies to a *particular host* at all. Leaving it out made a client built
+    // while NO_PROXY was unset (proxy applied to everything) a cache hit for a
+    // request that should have bypassed the proxy — the bypass would silently
+    // not happen, which is the direction that costs a tunnelled loopback call.
+    const UpstreamProxy proxy = resolveUpstreamProxy();
+    std::string proxy_part;
+    if (proxy.enabled) {
+        // The password is deliberately NOT part of the key. It does not change
+        // which socket is dialled — CONNECT authenticates once, on a connection
+        // that is then reused — and a map key is a long-lived string that has no
+        // business holding a credential. Host, port and username are what
+        // distinguish one proxy endpoint from another.
+        proxy_part = std::format("{}://{}@{}", proxy.scheme, proxy.username, proxy.host);
+        for (const auto &pattern : resolveNoProxyList()) {
+            proxy_part += ',';
+            proxy_part += pattern;
+        }
+    }
+    return std::format("{}|{}|{}|{}|{}", root, provider.connect_timeout_sec,
+                       provider.timeout_sec, cachedCaBundlePath(), proxy_part);
 }
 
 // A strong reference to this thread's client for `key`, dialing one if the pool

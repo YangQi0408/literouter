@@ -616,6 +616,9 @@ int main() {
     const lr_test::EnvGuard stateEnv{"LITEROUTER_STATE_DIR"};
     stateEnv.assign(
         (std::filesystem::temp_directory_path() / "literouter-test-malformed").string());
+    // The fixture relays are reached through core's own upstream client, so an
+    // exported HTTPS_PROXY in the developer's shell would tunnel them.
+    const lr_test::ProxyEnvironment proxy_env;
 
     testTruncatedBodyFailsOver();
     testHeadersThenCloseFailsOver();

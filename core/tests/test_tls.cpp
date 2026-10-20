@@ -57,6 +57,11 @@ private:
     lr_test::EnvGuard curl_{"CURL_CA_BUNDLE"};
 };
 
+// Every proxy variable, saved and restored together. The resolution order only
+// means anything when the lower-precedence ones are in a known state, and a
+// check that fails halfway must not leave the shell's environment changed.
+// The clearing and the named accessors both live in lr_test::ProxyEnvironment.
+
 bool fileExists(const std::filesystem::path &path) {
     std::error_code ec;
     return !path.empty() && std::filesystem::is_regular_file(path, ec);
@@ -189,6 +194,197 @@ void testPrecedence() {
     environment.literouter().assign(missing.string());
     LR_CHECK_EQ(literouter::resolveCaBundle().string(), third.path().string());
     checkResolvedPathIsUsable("with a broken override above a working one");
+}
+
+// ── upstream proxy resolution ────────────────────────────────────────────────
+//
+// The environment is the only input, so every branch is reachable from a test
+// without a socket. The one invariant that matters is the same one
+// resolveCaBundle() has: a variable that cannot be used must produce "no proxy"
+// and a warning, never a proxy pointed somewhere unintended.
+
+void testProxyAbsentMeansDirect() {
+    LR_GROUP("resolveUpstreamProxy: no variable set means connect directly");
+    lr_test::ProxyEnvironment environment;
+
+    const auto proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK(!proxy.enabled);
+    LR_CHECK(proxy.warning.empty());
+    LR_CHECK_EQ(proxy.host, "");
+}
+
+void testProxyPrecedence() {
+    LR_GROUP("resolveUpstreamProxy: LITEROUTER_PROXY > HTTPS_PROXY > HTTP_PROXY");
+    lr_test::ProxyEnvironment environment;
+
+    // HTTPS_PROXY is the one curl prefers for an https upstream, which is what
+    // every real relay is.
+    environment.httpUpper().assign("http://from-http:1111");
+    auto proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK(proxy.enabled);
+    LR_CHECK_EQ(proxy.host, "from-http");
+    LR_CHECK_EQ(proxy.port, 1111);
+
+    environment.httpsUpper().assign("http://from-https:2222");
+    proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK_EQ(proxy.host, "from-https");
+    LR_CHECK_EQ(proxy.port, 2222);
+
+    environment.literouter().assign("http://from-literal:3333");
+    proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK_EQ(proxy.host, "from-literal");
+    LR_CHECK_EQ(proxy.port, 3333);
+
+    // The lowercase spelling of a higher-precedence variable still beats the
+    // uppercase spelling of a lower-precedence one.
+    environment.literouter().clear();
+    environment.httpsUpper().clear();
+    environment.httpsLower().assign("http://from-https-lower:4444");
+    proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK_EQ(proxy.host, "from-https-lower");
+    LR_CHECK_EQ(proxy.port, 4444);
+
+    // HTTP_PROXY's lowercase form is last.
+    environment.httpsLower().clear();
+    environment.httpUpper().clear();
+    environment.httpLower().assign("http://from-http-lower:5555");
+    proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK_EQ(proxy.host, "from-http-lower");
+    LR_CHECK_EQ(proxy.port, 5555);
+}
+
+void testProxyUrlShapes() {
+    LR_GROUP("resolveUpstreamProxy: bare host:port, credentials, IPv6, default port");
+    lr_test::ProxyEnvironment environment;
+
+    // A scheme is optional — `proxy.corp:3128` is as common as the URL form.
+    environment.literouter().assign("proxy.corp:3128");
+    auto proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK(proxy.enabled);
+    LR_CHECK_EQ(proxy.scheme, "http");
+    LR_CHECK_EQ(proxy.host, "proxy.corp");
+    LR_CHECK_EQ(proxy.port, 3128);
+
+    // Credentials are split on the LAST `@`, so a password containing one
+    // survives, and both halves are percent-decoded.
+    environment.literouter().assign("http://user:p%40ss%3Aword@proxy.corp:3128");
+    proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK_EQ(proxy.username, "user");
+    LR_CHECK_EQ(proxy.password, "p@ss:word");
+    LR_CHECK_EQ(proxy.host, "proxy.corp");
+
+    // A username with no password is still a username.
+    environment.literouter().assign("http://solo@proxy.corp");
+    proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK_EQ(proxy.username, "solo");
+    LR_CHECK_EQ(proxy.password, "");
+    LR_CHECK_EQ(proxy.host, "proxy.corp");
+
+    // A trailing slash or path means nothing for CONNECT and is dropped.
+    environment.literouter().assign("http://proxy.corp:8080/");
+    proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK_EQ(proxy.host, "proxy.corp");
+    LR_CHECK_EQ(proxy.port, 8080);
+
+    // No port: 8080 for a plaintext proxy, 443 for a TLS one.
+    environment.literouter().assign("http://proxy.corp");
+    LR_CHECK_EQ(literouter::resolveUpstreamProxy().port, 8080);
+    environment.literouter().assign("https://proxy.corp");
+    proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK_EQ(proxy.scheme, "https");
+    LR_CHECK_EQ(proxy.port, 443);
+
+    // A bracketed IPv6 literal keeps its brackets out of the port split.
+    environment.literouter().assign("http://[::1]:3128");
+    proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK_EQ(proxy.host, "::1");
+    LR_CHECK_EQ(proxy.port, 3128);
+}
+
+void testProxyRejectsUnusableValues() {
+    LR_GROUP("resolveUpstreamProxy: an unusable value is ignored, and said so");
+    lr_test::ProxyEnvironment environment;
+
+    // The invariant: a value that cannot be used yields NO proxy and a warning.
+    // Returning a half-built proxy here is how a typo turns into every request
+    // being tunnelled somewhere unintended.
+    for (const char *bad : {"socks5://proxy.corp:1080", "http://proxy.corp:notaport",
+                            "http://proxy.corp:99999", "http://proxy.corp:0", "http://",
+                            "http://[::1", ":3128"}) {
+        environment.literouter().assign(bad);
+        const auto proxy = literouter::resolveUpstreamProxy();
+        LR_CHECK_MSG(!proxy.enabled, std::format("`{}` was accepted as a proxy", bad));
+        LR_CHECK_MSG(!proxy.warning.empty(),
+                     std::format("`{}` was refused without a warning", bad));
+    }
+
+    // An empty value is not a mistake, it is "unset".
+    environment.literouter().assign("");
+    const auto proxy = literouter::resolveUpstreamProxy();
+    LR_CHECK(!proxy.enabled);
+    LR_CHECK(proxy.warning.empty());
+
+    // A warning goes to stderr and can be pasted into an issue, so it must not
+    // carry the proxy password — a malformed URL is exactly when the operator
+    // has just typed one. Every refusal path is checked, because the redaction
+    // is applied per message and a new message could forget it.
+    for (const char *bad : {"socks5://user:s3cret@proxy.corp:1080",
+                            "http://user:s3cret@proxy.corp:notaport",
+                            "http://user:s3cret@[::1", "http://user:s3cret@"}) {
+        environment.literouter().assign(bad);
+        const auto refused = literouter::resolveUpstreamProxy();
+        LR_CHECK_MSG(!refused.enabled, std::format("`{}` was accepted", bad));
+        LR_CHECK_MSG(refused.warning.find("s3cret") == std::string::npos,
+                     std::format("the warning for `{}` leaked the password: {}", bad,
+                                 refused.warning));
+    }
+
+    // The host stays visible wherever the value had one: it is what the
+    // operator needs in order to see which value was refused. The two values
+    // above that carry no host at all are excluded on purpose.
+    for (const char *bad : {"socks5://user:s3cret@proxy.corp:1080",
+                            "http://user:s3cret@proxy.corp:notaport"}) {
+        environment.literouter().assign(bad);
+        const auto refused = literouter::resolveUpstreamProxy();
+        LR_CHECK_MSG(refused.warning.find("proxy.corp") != std::string::npos,
+                     std::format("the warning for `{}` lost the host: {}", bad,
+                                 refused.warning));
+    }
+}
+
+void testNoProxyList() {
+    LR_GROUP("resolveNoProxyList: comma-separated, trimmed, wildcard kept");
+    lr_test::ProxyEnvironment environment;
+
+    LR_CHECK(literouter::resolveNoProxyList().empty());
+
+    environment.noProxyUpper().assign("localhost, 127.0.0.1,.corp.example");
+    auto list = literouter::resolveNoProxyList();
+    LR_CHECK_EQ(list.size(), 3u);
+    LR_CHECK_EQ(list[0], "localhost");
+    LR_CHECK_EQ(list[1], "127.0.0.1");
+    LR_CHECK_EQ(list[2], ".corp.example");
+
+    // Empty entries are dropped rather than handed to httplib as "" patterns.
+    environment.noProxyUpper().assign("a,,  ,b,");
+    list = literouter::resolveNoProxyList();
+    LR_CHECK_EQ(list.size(), 2u);
+    LR_CHECK_EQ(list[0], "a");
+    LR_CHECK_EQ(list[1], "b");
+
+    // `*` is preserved verbatim: httplib reads it as "bypass everything", so
+    // it must not be trimmed away or treated as a hostname.
+    environment.noProxyUpper().assign("*");
+    list = literouter::resolveNoProxyList();
+    LR_CHECK_EQ(list.size(), 1u);
+    LR_CHECK_EQ(list[0], "*");
+
+    // The lowercase spelling is honoured when the uppercase one is absent.
+    environment.noProxyUpper().clear();
+    environment.noProxyLower().assign("only.lower");
+    list = literouter::resolveNoProxyList();
+    LR_CHECK_EQ(list.size(), 1u);
+    LR_CHECK_EQ(list[0], "only.lower");
 }
 
 void testDirectoriesAreNotBundles() {
@@ -445,6 +641,11 @@ int main() {
     testEmptyOverrideIsIgnored();
     testPrecedence();
     testDirectoriesAreNotBundles();
+    testProxyAbsentMeansDirect();
+    testProxyPrecedence();
+    testProxyUrlShapes();
+    testProxyRejectsUnusableValues();
+    testNoProxyList();
     testListenerUrls();
     testHttpsListener();
     testInvalidListenerCredentials();

@@ -12,6 +12,9 @@ This document lists all environment variables supported by `literouter`, their d
 | `LITEROUTER_STATE_DIR` | Absolute path override for runtime state (persisted telemetry, etc.) | `~/.local/state/literouter` | Core / CLI |
 | `LITEROUTER_LANG` | Terminal language override (`auto`, `zh`, `en`) | `auto` (system locale) | CLI |
 | `LITEROUTER_CA_BUNDLE` | Custom CA bundle for upstream and management-client HTTPS verification | Auto-detected system CA trust store | Core |
+| `LITEROUTER_PROXY` | HTTP proxy for upstream requests; takes precedence over `HTTPS_PROXY` / `HTTP_PROXY` | Unset (direct) | Core |
+| `HTTPS_PROXY` / `HTTP_PROXY` etc. | Standard proxy variables: an `https` upstream uses `HTTPS_PROXY`, falling back to `HTTP_PROXY` | Unset (direct) | Core |
+| `NO_PROXY` / `no_proxy` | Comma-separated bypass list (domain suffixes, IPs, CIDR); matches connect directly | Unset (everything proxied) | Core |
 | `LITEROUTER_WEB_DIR` | Directory to serve the built-in web console from, reading it per request instead of using the compile-time `#embed` | Unset (embedded bundle) | Core |
 | `NO_COLOR` | Adheres to no-color.org; disables ANSI terminal colors when set | Unset (colors enabled) | CLI |
 
@@ -61,7 +64,37 @@ Points to a custom certificate authority bundle for corporate proxies or private
   export LITEROUTER_CA_BUNDLE="/etc/ssl/certs/corp-ca.pem"
   ```
 
-### 5. `LITEROUTER_WEB_DIR`
+### 5. Proxy Variables (`LITEROUTER_PROXY` / `HTTPS_PROXY` / `NO_PROXY`)
+
+Inside a corporate network a relay is usually reachable only through a proxy, so literouter reads the standard proxy environment variables the way curl does. The proxy is a property of **the machine and the shell that started the process**, not of an individual relay, which is why it is read from the environment rather than stored in the config file — a config file copied between machines would be wrong about it on every one of them.
+
+**Resolution order, first hit wins:**
+
+1. `LITEROUTER_PROXY`
+2. `HTTPS_PROXY`, then `https_proxy`
+3. `HTTP_PROXY`, then `http_proxy` (curl's fallback for https targets)
+
+The value may be a full URL or a bare `host:port`. Only `http` and `https` schemes are supported (no SOCKS5). Credentials go in the URL as `http://user:pass@proxy:3128`; percent-escape any character that is special in a URL (`p%40ss` for `p@ss`), and literouter sends them as Basic `Proxy-Authorization`. When no port is given, `http` defaults to `8080` and `https` to `443`.
+
+```bash
+# A corporate proxy with credentials
+export HTTPS_PROXY="http://user:p%40ss@proxy.corp:3128"
+
+# Or override for literouter alone, leaving other tools in this shell untouched
+export LITEROUTER_PROXY="proxy.corp:3128"
+
+# Keep a local relay and an OTLP collector off the proxy
+export NO_PROXY="localhost,127.0.0.1,.corp.example"
+```
+
+**Behaviour worth knowing:**
+
+- **Loopback is always direct.** `serve`'s pre-bind instance check and `literouter status` both talk to a local instance, so they never go through the proxy and both keep working behind one.
+- **`NO_PROXY` understands domain suffixes, IP literals and CIDR** (`10.0.0.0/8`, `[::1]`); `*` bypasses the proxy for everything.
+- **Changing the proxy needs a restart.** The connection pool is keyed by the proxy configuration, but it is read when a connection is dialled; restart `literouter` after editing the environment.
+- **An unusable value means direct, plus a warning.** A proxy string that cannot be parsed (`socks5://...`, a bad port) is never guessed at: literouter falls back to a direct connection and prints one line to stderr, rather than quietly sending requests to a proxy nobody intended.
+
+### 6. `LITEROUTER_WEB_DIR`
 Directory to serve the built-in web console from.
 
 In a normal build the `web/dist` assets (`index.html`, `app.css`, `app.js`, `favicon.svg`) are embedded into `core` at **compile time** via `#embed`, so the running binary needs no external files. When `#embed` is unavailable — for example an ISO-strict GCC that does not implement the feature yet — the build skips the embedding, and this variable points at the directory on disk so the server reads the assets per request instead:
@@ -72,7 +105,7 @@ export LITEROUTER_WEB_DIR=/opt/literouter/web-dist
 
 The directory must contain `index.html`, or the console page cannot load. Rebuilding the front end still means `npm --prefix web run build`.
 
-### 6. Secret Environment Variables
+### 7. Secret Environment Variables
 Any environment variables referenced in `config.json` via `${VAR_NAME}` or `${VAR:-fallback}` should be exported before starting `literouter`:
 
 ```bash

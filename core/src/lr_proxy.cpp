@@ -809,6 +809,60 @@ std::int64_t currentProcessId() {
 
 // ── single instance ─────────────────────────────────────────────────────────
 
+// ── admin transport ─────────────────────────────────────────────────────────
+
+// True when `root` names this machine. `serve`'s pre-bind instance check and
+// `status` both talk to a loopback literouter, and tunnelling that through a
+// corporate proxy would break the two commands that have to work before
+// anything else does.
+bool isLoopbackRoot(std::string_view root) {
+    const auto sep = root.find("://");
+    std::string_view authority = sep == std::string_view::npos ? root : root.substr(sep + 3);
+    if (const auto slash = authority.find('/'); slash != std::string_view::npos) {
+        authority = authority.substr(0, slash);
+    }
+    std::string_view host = authority;
+    // A bracketed IPv6 literal keeps its brackets; anything else loses the port.
+    if (host.size() >= 2 && host.front() == '[') {
+        if (const auto close = host.find(']'); close != std::string_view::npos) {
+            host = host.substr(0, close + 1);
+        }
+    } else if (const auto colon = host.rfind(':'); colon != std::string_view::npos) {
+        host = host.substr(0, colon);
+    }
+    return host == "127.0.0.1" || host == "localhost" || host == "[::1]" ||
+           host == "::1" || startsWith(host, "127.");
+}
+
+// The transport half of an admin client, which the three admin clients below
+// share so a change here cannot reach only two of them: the trust store, and the
+// upstream proxy. Timeouts stay with each caller because they differ — the
+// instance check waits on a peer that may be mid-start, the admin calls do not.
+void applyAdminTransport(h::Client &client, std::string_view root) {
+    if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
+        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
+        // which opens the file through the C library's narrow-path call — the
+        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
+        client.set_ca_cert_path(bundle.string());
+    }
+    client.enable_server_certificate_verification(true);
+
+    // A remote instance behind the corporate proxy is reached through it, the
+    // same way a relay is; a loopback one never is.
+    if (isLoopbackRoot(root)) {
+        return;
+    }
+    if (const UpstreamProxy proxy = resolveUpstreamProxy(); proxy.enabled) {
+        client.set_proxy(proxy.host, proxy.port);
+        if (!proxy.username.empty()) {
+            client.set_proxy_basic_auth(proxy.username, proxy.password);
+        }
+        if (const auto no_proxy = resolveNoProxyList(); !no_proxy.empty()) {
+            client.set_no_proxy(no_proxy);
+        }
+    }
+}
+
 // A literouter already answering on this address, if there is one.
 //
 // Identify the other end before binding so the error can name its pid and
@@ -825,13 +879,7 @@ std::string existingInstance(const ServerConfig &server,
     ServerConfig target = server;
     if (wildcard) target.host = (host == "::" || host == "[::]") ? "::1" : "127.0.0.1";
     h::Client client{serverBaseUrl(target)};
-    if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
-        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
-        // which opens the file through the C library's narrow-path call — the
-        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
-        client.set_ca_cert_path(bundle.string());
-    }
-    client.enable_server_certificate_verification(true);
+    applyAdminTransport(client, serverBaseUrl(target));
     client.set_connection_timeout(0, 400000);
     client.set_read_timeout(0, 400000);
     const auto res = client.Get("/health");
@@ -4710,13 +4758,7 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
     }
 
     h::Client client{root};
-    if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
-        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
-        // which opens the file through the C library's narrow-path call — the
-        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
-        client.set_ca_cert_path(bundle.string());
-    }
-    client.enable_server_certificate_verification(true);
+    applyAdminTransport(client, root);
     client.set_connection_timeout(2, 0);
     client.set_read_timeout(5, 0);
 
@@ -4832,13 +4874,7 @@ std::optional<h::Client> makeAdminClient(std::string_view base_url, std::string_
         return std::nullopt;
     }
     h::Client client{root};
-    if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
-        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
-        // which opens the file through the C library's narrow-path call — the
-        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
-        client.set_ca_cert_path(bundle.string());
-    }
-    client.enable_server_certificate_verification(true);
+    applyAdminTransport(client, root);
     client.set_connection_timeout(2, 0);
     client.set_read_timeout(5, 0);
     if (!api_key.empty()) {

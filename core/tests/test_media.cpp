@@ -178,6 +178,9 @@ int main() {
     Scratch scratch;
     lr_test::EnvGuard state_dir{"LITEROUTER_STATE_DIR"};
     state_dir.assign(scratch.path.string());
+    // The media stubs are reached through core's own upstream client, so an
+    // exported HTTPS_PROXY in the developer's shell would tunnel them.
+    const lr_test::ProxyEnvironment proxy_env;
     MediaStub first, second;
     LR_CHECK(first.start());
     LR_CHECK(second.start());

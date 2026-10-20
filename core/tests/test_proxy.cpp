@@ -411,6 +411,262 @@ private:
     std::atomic<int> connections_{0};
     std::thread thread_;
 };
+
+// A real forward proxy, only as much of one as a test needs: it answers CONNECT
+// with 200 and then splices the two sockets together, so whatever the client
+// would have said to the relay it says to this instead, and the stub relay on
+// the other side answers normally. It also forwards the non-tunnelled form — an
+// absolute-URI request line, which is how httplib reaches an http upstream —
+// because the two paths are different code in the client and only one of them
+// is the one every real relay uses.
+//
+// Without this, nothing in the suite would notice if the proxy were never
+// consulted at all: every other stub in this file listens on loopback and would
+// answer just as happily to a direct connection.
+class ConnectProxy {
+public:
+    ~ConnectProxy() { stop(); }
+    ConnectProxy(const ConnectProxy &) = delete;
+    ConnectProxy &operator=(const ConnectProxy &) = delete;
+
+    ConnectProxy() = default;
+
+    bool start() {
+        listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (listen_fd_ < 0) {
+            return false;
+        }
+        const int one = 1;
+        ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        if (::bind(listen_fd_, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
+            ::listen(listen_fd_, 16) != 0) {
+            return false;
+        }
+        socklen_t length = sizeof(address);
+        if (::getsockname(listen_fd_, reinterpret_cast<sockaddr *>(&address), &length) != 0) {
+            return false;
+        }
+        port_ = ntohs(address.sin_port);
+        ::fcntl(listen_fd_, F_SETFL, ::fcntl(listen_fd_, F_GETFL, 0) | O_NONBLOCK);
+        thread_ = std::thread([this] { loop(); });
+        return true;
+    }
+
+    void stop() {
+        if (stopped_.exchange(true)) {
+            return;
+        }
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        if (listen_fd_ >= 0) {
+            ::close(listen_fd_);
+            listen_fd_ = -1;
+        }
+    }
+
+    int tunnels() const { return tunnels_.load(); }
+    int port() const { return port_; }
+    std::string url() const { return std::format("http://127.0.0.1:{}", port_); }
+    std::string lastAuth() const {
+        std::scoped_lock lock{mutex_};
+        return last_auth_;
+    }
+
+private:
+    void loop() {
+        while (!stopped_.load()) {
+            pollfd descriptor{listen_fd_, POLLIN, 0};
+            if (::poll(&descriptor, 1, 25) <= 0) {
+                continue;
+            }
+            const int client = ::accept(listen_fd_, nullptr, nullptr);
+            if (client < 0) {
+                continue;
+            }
+            std::thread([this, client] { serve(client); }).detach();
+        }
+    }
+
+    static bool sendAll(int fd, std::string_view data) {
+        std::size_t sent = 0;
+        while (sent < data.size()) {
+            const auto n = ::send(fd, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
+            if (n <= 0) {
+                return false;
+            }
+            sent += static_cast<std::size_t>(n);
+        }
+        return true;
+    }
+
+    void serve(int client) {
+        // Read the request head, up to the blank line. The bodies in these tests
+        // are small and arrive with the head in practice; only the head is
+        // parsed here.
+        std::string head;
+        char buffer[4096];
+        while (head.find("\r\n\r\n") == std::string::npos) {
+            const auto n = ::recv(client, buffer, sizeof(buffer), 0);
+            if (n <= 0) {
+                ::close(client);
+                return;
+            }
+            head.append(buffer, static_cast<std::size_t>(n));
+            if (head.size() > 64 * 1024) {
+                ::close(client);
+                return;
+            }
+        }
+
+        if (head.starts_with("CONNECT ")) {
+            const auto line_end = head.find("\r\n");
+            const std::string target = head.substr(8, line_end - 8);
+            const auto colon = target.rfind(':');
+            if (colon == std::string::npos) {
+                ::close(client);
+                return;
+            }
+            {
+                std::scoped_lock lock{mutex_};
+                ++tunnels_;
+                const auto auth = head.find("Proxy-Authorization: ");
+                if (auth != std::string::npos) {
+                    const auto end = head.find("\r\n", auth);
+                    last_auth_ = head.substr(auth + 21, end - auth - 21);
+                } else {
+                    last_auth_.clear();
+                }
+            }
+            const std::string host = target.substr(0, colon);
+            const int port = std::atoi(target.c_str() + colon + 1);
+            const int upstream = ::socket(AF_INET, SOCK_STREAM, 0);
+            sockaddr_in address{};
+            address.sin_family = AF_INET;
+            address.sin_port = htons(static_cast<std::uint16_t>(port));
+            if (upstream < 0 || ::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1 ||
+                ::connect(upstream, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
+                if (upstream >= 0) {
+                    ::close(upstream);
+                }
+                sendAll(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+                ::close(client);
+                return;
+            }
+            if (!sendAll(client, "HTTP/1.1 200 Connection Established\r\n\r\n")) {
+                ::close(upstream);
+                ::close(client);
+                return;
+            }
+            splice(client, upstream);
+            ::close(upstream);
+            ::close(client);
+            return;
+        }
+
+        // Not a tunnel: an absolute-URI request line, which is what the client
+        // sends to reach a plaintext upstream through a proxy. Parse the
+        // authority out of it and open a direct connection to it, then replay
+        // the rewritten request.
+        const auto line_end = head.find("\r\n");
+        const std::string request_line = head.substr(0, line_end);
+        const auto first_space = request_line.find(' ');
+        const auto second_space = request_line.find(' ', first_space + 1);
+        if (first_space == std::string::npos || second_space == std::string::npos) {
+            ::close(client);
+            return;
+        }
+        const std::string method = request_line.substr(0, first_space);
+        std::string uri = request_line.substr(first_space + 1, second_space - first_space - 1);
+        if (!uri.starts_with("http://")) {
+            sendAll(client, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+            ::close(client);
+            return;
+        }
+        std::string rest = uri.substr(7);
+        const auto slash = rest.find('/');
+        const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
+        const std::string path = slash == std::string::npos ? "/" : rest.substr(slash);
+        const auto colon = authority.rfind(':');
+        const std::string host = colon == std::string::npos ? authority : authority.substr(0, colon);
+        const int port = colon == std::string::npos ? 80 : std::atoi(authority.c_str() + colon + 1);
+        {
+            std::scoped_lock lock{mutex_};
+            ++tunnels_;
+        }
+        const int upstream = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(static_cast<std::uint16_t>(port));
+        if (upstream < 0 || ::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1 ||
+            ::connect(upstream, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
+            if (upstream >= 0) {
+                ::close(upstream);
+            }
+            sendAll(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+            ::close(client);
+            return;
+        }
+        std::string rewritten = head;
+        rewritten.replace(first_space + 1, uri.size(), path);
+        if (!sendAll(upstream, rewritten)) {
+            ::close(upstream);
+            ::close(client);
+            return;
+        }
+        splice(client, upstream);
+        ::close(upstream);
+        ::close(client);
+    }
+
+    // Two blocking relay threads, which is all a splice needs to be.
+    static void splice(int a, int b) {
+        std::atomic<bool> done{false};
+        auto pump = [&done](int from, int to) {
+            char buffer[8192];
+            while (!done.load()) {
+                pollfd descriptor{from, POLLIN, 0};
+                if (::poll(&descriptor, 1, 100) <= 0) {
+                    continue;
+                }
+                const auto n = ::recv(from, buffer, sizeof(buffer), 0);
+                if (n <= 0) {
+                    break;
+                }
+                std::size_t sent = 0;
+                while (sent < static_cast<std::size_t>(n)) {
+                    const auto m = ::send(to, buffer + sent,
+                                          static_cast<std::size_t>(n) - sent, MSG_NOSIGNAL);
+                    if (m <= 0) {
+                        done.store(true);
+                        return;
+                    }
+                    sent += static_cast<std::size_t>(m);
+                }
+            }
+            done.store(true);
+        };
+        std::thread back{pump, b, a};
+        pump(a, b);
+        // Let the other direction finish its last bytes before the caller closes
+        // both descriptors out from under it.
+        back.join();
+    }
+
+    int listen_fd_ = -1;
+    int port_ = 0;
+    std::atomic<bool> stopped_{false};
+    std::atomic<int> tunnels_{0};
+    // Mutable so lastAuth() can stay const while locking, which is the shape a
+    // reader of the class expects.
+    mutable std::mutex mutex_;
+    mutable std::string last_auth_;
+    std::thread thread_;
+};
 #endif
 
 // ── stderr capture ───────────────────────────────────────────────────────────
@@ -4456,12 +4712,141 @@ void group39ConfigWritable() {
     }
 }
 
+// ── 40. the upstream proxy ───────────────────────────────────────────────────
+//
+// Every other stub in this file listens on loopback and would answer just as
+// happily to a direct connection, so nothing here would notice if the proxy were
+// ignored entirely. These two groups do notice: the relay the proxy is told to
+// reach is one only the proxy can see.
+//
+// The env guards are taken per group rather than per main() because these are
+// the only groups that care, and because a guard left armed around unrelated
+// traffic is how an environment leak turns into an unrelated failure.
+void group40UpstreamProxy(StubRelay &relay_a) {
+    LR_GROUP("40. upstream traffic is tunnelled through the configured proxy");
+#ifndef _WIN32
+    lr_test::EnvGuard proxy_env{"LITEROUTER_PROXY"};
+    lr_test::EnvGuard https_env{"HTTPS_PROXY"};
+    lr_test::EnvGuard http_env{"HTTP_PROXY"};
+    lr_test::EnvGuard no_proxy_env{"NO_PROXY"};
+    https_env.clear();
+    http_env.clear();
+    no_proxy_env.clear();
+
+    // Credentials on the proxy URL, because a corporate proxy that wants Basic
+    // auth is the ordinary case and a silently unauthenticated CONNECT would
+    // only show up as a 407 on someone else's machine.
+    ConnectProxy forwarder;
+    const bool forwarder_up = forwarder.start();
+    LR_CHECK_MSG(forwarder_up, "the forward proxy stub did not start");
+    if (!forwarder_up) {
+        return;
+    }
+
+    const std::string config_dir = std::format("/tmp/literouter-proxy-test-{}",
+                                               literouter::hexId(6));
+    std::error_code ec;
+    std::filesystem::create_directories(config_dir, ec);
+    const std::string config_path = config_dir + "/config.json";
+
+    proxy_env.assign("http://user:p%40ss@127.0.0.1:" + std::to_string(forwarder.port()));
+
+    literouter::ProxyServer proxied;
+    proxied.setConfigPath(config_path);
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.persist_telemetry = false;
+    // `server.api_key` is deliberately left empty, as buildProxyConfig() leaves
+    // it: these groups are about the transport, and a 401 would mask whether the
+    // request was tunnelled at all.
+    config.server.api_key.clear();
+    literouter::ProviderConfig provider;
+    provider.id = "alpha";
+    provider.base_url = relay_a.baseUrl();
+    provider.timeout_sec = 5;
+    provider.connect_timeout_sec = 2;
+    config.providers = {provider};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = "alpha", .model = {}}};
+    config.routes = {route};
+
+    const auto started = proxied.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (started) {
+        relay_a.resetCounters();
+        const Hit hit = postJson(proxied.boundPort(), "/v1/chat/completions",
+                                 chatRequest(kRouteModel));
+        LR_CHECK_MSG(hit.transport_ok, "the proxy did not answer at all");
+        LR_CHECK_EQ(hit.status, 200);
+        // The relay is only reachable THROUGH the forwarder: an absolute-URI
+        // request line went to it, and it replayed that to the relay.
+        LR_CHECK_MSG(forwarder.tunnels() > 0,
+                     "the request reached the relay without going through the proxy");
+        LR_CHECK_EQ(relay_a.chatRequests(), 1);
+        LR_CHECK_MSG(hit.body == relay_a.normalBody(), "the tunnelled answer was altered");
+
+        // NO_PROXY is the escape hatch that keeps a loopback relay off the
+        // proxy, and it has to work per host: the same client, one host
+        // bypassed. `127.0.0.1` is what every stub here listens on, so the
+        // request must still succeed with the proxy in the way.
+        no_proxy_env.assign("127.0.0.1");
+        // A fresh server, because the pooled client was dialled with the proxy
+        // applied to this host and the pool key covers NO_PROXY for exactly
+        // this reason.
+        literouter::ProxyServer bypassing;
+        bypassing.setConfigPath(config_dir + "/bypass.json");
+        const auto bypass_started = bypassing.start(config);
+        LR_CHECK_MSG(bypass_started.has_value(), bypass_started ? "" : bypass_started.error());
+        if (bypass_started) {
+            const int before = forwarder.tunnels();
+            const Hit direct = postJson(bypassing.boundPort(), "/v1/chat/completions",
+                                        chatRequest(kRouteModel));
+            LR_CHECK_EQ(direct.status, 200);
+            LR_CHECK_MSG(forwarder.tunnels() == before,
+                         "NO_PROXY did not keep the loopback relay off the proxy");
+            bypassing.stop();
+        }
+        proxied.stop();
+    }
+
+    proxy_env.clear();
+    no_proxy_env.clear();
+    forwarder.stop();
+    std::filesystem::remove_all(config_dir, ec);
+#else
+    (void)relay_a;
+    LR_NOTE("the CONNECT proxy stub is POSIX-only; proxy resolution is covered by test_tls");
+#endif
+}
+
 int main() {
     // A real server writes its telemetry where LITEROUTER_STATE_DIR points; the
     // guard is what keeps a test run out of the developer's own state dir.
     const lr_test::EnvGuard stateEnv{"LITEROUTER_STATE_DIR"};
     TempDir stateDir;
     stateEnv.assign(stateDir.path().string());
+
+    // The proxy variables are cleared for the WHOLE run, because every stub
+    // relay in this file is reached through core's own upstream client: on a
+    // machine with HTTPS_PROXY exported — which is every developer inside a
+    // corporate network, and some CI images — all 1256 checks below would try to
+    // tunnel to 127.0.0.1 through a proxy and fail for a reason that has nothing
+    // to do with the code under test. Group 40 sets them deliberately, and its
+    // own guards restore them, so it is unaffected by this.
+    const lr_test::EnvGuard literalProxy{"LITEROUTER_PROXY"};
+    const lr_test::EnvGuard httpsProxy{"HTTPS_PROXY"};
+    const lr_test::EnvGuard httpsProxyLower{"https_proxy"};
+    const lr_test::EnvGuard httpProxy{"HTTP_PROXY"};
+    const lr_test::EnvGuard httpProxyLower{"http_proxy"};
+    const lr_test::EnvGuard noProxy{"NO_PROXY"};
+    const lr_test::EnvGuard noProxyLower{"no_proxy"};
+    for (const lr_test::EnvGuard *guard : {&literalProxy, &httpsProxy, &httpsProxyLower,
+                                           &httpProxy, &httpProxyLower, &noProxy,
+                                           &noProxyLower}) {
+        guard->clear();
+    }
 
     // Non-ASCII in alpha's answer, so "byte-identical" would catch a codec or a
     // re-encoding that a pure-ASCII body would hide.
@@ -4541,6 +4926,9 @@ int main() {
         group36EmbeddingAlias(relay_a);
         group37LargeRequestWithoutExpect(relay_a);
         group38StreamingCapability(relay_a, relay_b);
+        // Before the shared fixture is stopped: this group starts its own
+        // servers, but it reads relay_a's answer through a forward proxy.
+        group40UpstreamProxy(relay_a);
 #ifndef _WIN32
         group23RequestDeadline(relay_b);
 #endif

@@ -323,6 +323,51 @@ std::filesystem::path defaultPidPath(int port);
 std::filesystem::path resolveCaBundle();
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Upstream proxy
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The HTTP proxy an upstream connection should be tunnelled through.
+//
+// A relay reached from inside a corporate network is reached through a proxy,
+// and an aggregator that ignores HTTPS_PROXY is an aggregator that cannot be run
+// there at all. Reading the environment rather than adding a config field is
+// deliberate: the proxy is a property of the machine and of the shell the
+// process was started from, not of a relay, and a config file carried between
+// machines would be wrong about it on every one of them.
+struct UpstreamProxy {
+    // False means "connect directly". Every other field is then unset.
+    bool enabled = false;
+    // How to reach the proxy itself: "http" or "https". Note that this is not
+    // the upstream's scheme — an https relay is tunnelled with CONNECT through
+    // a plaintext proxy in the ordinary case.
+    std::string scheme = "http";
+    std::string host;
+    int port = 8080;
+    // Percent-decoded `user:pass@` from the URL, when it carried one. A proxy
+    // that wants Basic credentials and does not get them answers 407, which
+    // surfaces as a failed attempt rather than a silent bypass.
+    std::string username;
+    std::string password;
+    // Set when a variable WAS set but could not be used. The caller reports it
+    // once; `enabled` is false in that case, so a typo cannot turn into every
+    // request being tunnelled somewhere unintended.
+    std::string warning;
+};
+
+// Resolution order, first hit wins:
+//   1. LITEROUTER_PROXY    — literouter's own override, wins over everything
+//   2. HTTPS_PROXY, then https_proxy
+//   3. HTTP_PROXY,  then http_proxy    — what curl falls back to for https URLs
+// `NO_PROXY` / `no_proxy` is honoured separately and applies to all of them.
+UpstreamProxy resolveUpstreamProxy();
+
+// `NO_PROXY` / `no_proxy`, split on commas and trimmed. `*` is kept as a bare
+// token so the caller can recognise "bypass everything"; httplib's
+// set_no_proxy() understands the rest — domain suffixes, IP literals and CIDR
+// blocks — on its own.
+std::vector<std::string> resolveNoProxyList();
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Secrets
 // ─────────────────────────────────────────────────────────────────────────────
 
