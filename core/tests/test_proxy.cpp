@@ -5209,6 +5209,14 @@ void group43AdminAndCompletions(StubRelay &relay) {
     streaming["stream"] = true;
     const auto stream = postJson(port, "/v1/completions", streaming.dump());
     LR_CHECK_MSG(stream.status == 200 && stream.body == join(relay.sseChunks()), stream.body);
+    const lr_test::EnvGuard tls_proxy{"LITEROUTER_PROXY"};
+    tls_proxy.assign(std::format("https://user:proxy-secret@127.0.0.1:{}", port));
+    relay.resetCounters();
+    const auto proxy_refusal = postJson(port, "/v1/chat/completions", chatRequest("legacy-model", true));
+    LR_CHECK_MSG(proxy_refusal.status >= 400 && relay.chatRequests() == 0 && proxy_refusal.body.find("proxy-secret") == std::string::npos,
+                 "HTTPS proxy was downgraded or leaked a credential");
+    LR_CHECK_MSG(literouter::fetchStatus(std::format("http://127.0.0.1:{}", port)).reachable,
+                 "an unsupported upstream proxy broke local administration");
     proxy.stop();
     relay.setMode(StubRelay::Mode::Normal);
 }

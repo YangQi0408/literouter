@@ -66,6 +66,41 @@ int readInt(const json &node, const char *key, int fallback) {
     return it->get<int>();
 }
 
+std::optional<std::string> checkConfigNumbers(const json &root) {
+    const auto check = [](const json &node, std::string_view path,
+                          std::initializer_list<const char *> fields) -> std::optional<std::string> {
+        if (!node.is_object()) return {};
+        for (const char *field : fields) {
+            const auto value = node.find(field);
+            if (value == node.end() || !value->is_number()) continue;
+            bool valid = false;
+            if (value->is_number_unsigned()) {
+                valid = value->get<std::uint64_t>() <= static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+            } else if (value->is_number_integer()) {
+                const auto n = value->get<std::int64_t>();
+                valid = n >= std::numeric_limits<int>::min() && n <= std::numeric_limits<int>::max();
+            }
+            if (!valid) return std::format("{}{}{}: {}", path, path.empty() ? "" : ".", field,
+                                           i18n::tr("expected a 32-bit integer"));
+        }
+        return {};
+    };
+    if (auto error = check(root, "", {"schema"})) return error;
+    if (const auto server = root.find("server"); server != root.end()) {
+        if (auto error = check(*server, "server", {"port", "max_attempts", "request_deadline_sec",
+                "session_affinity_sec", "circuit_failure_threshold", "circuit_cooldown_sec", "log_capacity",
+                "log_body_limit", "traffic_bucket_sec", "traffic_bucket_count", "response_cache_ttl_sec",
+                "response_cache_max_entries"})) return error;
+    }
+    if (const auto providers = root.find("providers"); providers != root.end() && providers->is_array()) {
+        for (std::size_t i = 0; i < providers->size(); ++i) {
+            if (auto error = check((*providers)[i], std::format("providers[{}]", i),
+                    {"priority", "weight", "timeout_sec", "connect_timeout_sec", "max_concurrent", "requests_per_minute"})) return error;
+        }
+    }
+    return {};
+}
+
 double readDouble(const json &node, const char *key, double fallback) {
     if (!node.is_object()) {
         return fallback;
@@ -521,6 +556,7 @@ std::expected<AppConfig, std::string> appConfigFromJson(std::string_view text) {
     if (!root.is_object()) {
         return std::unexpected(std::string{"config root must be a JSON object"});
     }
+    if (auto error = checkConfigNumbers(root)) return std::unexpected(*error);
 
     AppConfig out;
     out.schema = readInt(root, "schema", out.schema);
@@ -706,11 +742,11 @@ std::string toJsonString(const ProviderProbe &probe) {
 std::expected<ConfigMigration, std::string> migrateConfigJson(std::string_view text,
                                                              std::string &rewritten) {
     const json root = json::parse(text, nullptr, false);
-    if (root.is_discarded() || !root.is_object()) {
-        return std::unexpected(std::string{"config is not a JSON object"});
-    }
+    if (root.is_discarded()) return std::unexpected(std::string{"config is not valid JSON"});
+    if (!root.is_object()) return std::unexpected(std::string{"config root must be a JSON object"});
+    if (auto error = checkConfigNumbers(root)) return std::unexpected(*error);
     ConfigMigration migration;
-    migration.from_schema = root.value("schema", 1);
+    migration.from_schema = readInt(root, "schema", 1);
     migration.to_schema = kConfigSchema;
     if (migration.from_schema > kConfigSchema) {
         return std::unexpected(std::format(

@@ -219,6 +219,7 @@ void reportProxyWarningOnce(const std::string &warning) {
 }
 
 void configure(h::Client &client, const ProviderConfig &provider) {
+    reportProxyWarningOnce(resolveUpstreamProxy().warning);
     client.set_follow_location(true);
     // Blocking mode: the proxy's own worker thread is the concurrency unit, so
     // httplib should not peel off a second one per request.
@@ -369,6 +370,11 @@ UpstreamResult upstreamPostRaw(const ProviderConfig &provider, std::string_view 
                               std::string_view accept, int timeout_sec_override) {
     UpstreamResult out;
     const double started = nowUnix();
+
+    if (const auto proxy = resolveUpstreamProxy(); proxy.scheme == "https" && !proxy.warning.empty()) {
+        out.error = proxy.warning;
+        return out;
+    }
 
     std::string root;
     std::string prefix;
@@ -543,6 +549,10 @@ UpstreamFailure classifyUpstreamFailure(
 ProviderProbe probeProvider(const ProviderConfig &provider, int timeout_sec) {
     ProviderProbe probe;
     const double started = nowUnix();
+    if (const auto proxy = resolveUpstreamProxy(); proxy.scheme == "https" && !proxy.warning.empty()) {
+        probe.detail = proxy.warning;
+        return probe;
+    }
 
     std::string root;
     std::string prefix;

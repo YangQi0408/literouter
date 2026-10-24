@@ -2,6 +2,8 @@
 
 This document provides a comprehensive guide to the `literouter` configuration file structure, field descriptions, secure secret expansion mechanism, and rule validation engine.
 
+Numeric integer fields must be JSON integers within the signed 32-bit range. Fractional and out-of-range values are refused with a field path, not truncated or wrapped. Prices must be finite nonnegative numbers.
+
 ---
 
 ## Table of Contents

@@ -75,7 +75,7 @@
 2. `HTTPS_PROXY`，其次 `https_proxy`
 3. `HTTP_PROXY`，其次 `http_proxy`（curl 对 https 目标的回退行为）
 
-值可以是完整 URL，也可以是裸的 `host:port`；scheme 只支持 `http` 与 `https`（不支持 SOCKS5）。带凭据时按 `http://user:pass@proxy:3128` 书写，密码中的特殊字符需百分号转义（`p%40ss` 表示 `p@ss`），literouter 会以 Basic `Proxy-Authorization` 发送。未写端口时，`http` 默认 `8080`，`https` 默认 `443`。
+值可以是 `http://` URL 或裸的 `host:port`，默认端口 `8080`。HTTPS **目标站点**仍通过 CONNECT 隧道进行 TLS 校验，但不支持到**代理自身**的 TLS 连接（`https://proxy...`）：此配置下请求明确失败，不发送凭据，也不回退直连。不支持 SOCKS5。凭据按 `http://user:pass@proxy:3128` 书写，特殊字符需百分号转义（`p%40ss` 表示 `p@ss`）；Basic `Proxy-Authorization` 在 HTTP 代理连接上发送，仅在可信网络使用。
 
 ```bash
 # 企业代理，带凭据

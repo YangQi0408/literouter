@@ -565,12 +565,18 @@ ValidationReport validate(const AppConfig &config) {
         }
         const std::string label = entry.id.empty() ? where : entry.id;
 
-        if (entry.price_in_per_million < 0.0 || entry.price_out_per_million < 0.0) {
+        if (!std::isfinite(entry.price_in_per_million) || !std::isfinite(entry.price_out_per_million)) {
+            addIssue(report, ValidationIssue::Level::Error, where + ".price_in_per_million",
+                     "prices must be finite numbers");
+        } else if (entry.price_in_per_million < 0.0 || entry.price_out_per_million < 0.0) {
             addIssue(report, ValidationIssue::Level::Error, where + ".price_in_per_million",
                      "prices are dollars per million tokens and cannot be negative");
         }
         for (const auto &[model, pricing] : entry.model_prices) {
-            if (pricing.price_in_per_million < 0.0 || pricing.price_out_per_million < 0.0) {
+            if (!std::isfinite(pricing.price_in_per_million) || !std::isfinite(pricing.price_out_per_million)) {
+                addIssue(report, ValidationIssue::Level::Error,
+                         std::format("{}.model_prices[\"{}\"]", where, model), "prices must be finite numbers");
+            } else if (pricing.price_in_per_million < 0.0 || pricing.price_out_per_million < 0.0) {
                 addIssue(report, ValidationIssue::Level::Error,
                          std::format("{}.model_prices[\"{}\"]", where, model),
                          "prices are dollars per million tokens and cannot be negative");

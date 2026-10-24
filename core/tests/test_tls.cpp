@@ -286,13 +286,18 @@ void testProxyUrlShapes() {
     LR_CHECK_EQ(proxy.host, "proxy.corp");
     LR_CHECK_EQ(proxy.port, 8080);
 
-    // No port: 8080 for a plaintext proxy, 443 for a TLS one.
+    // HTTPS proxy transport is rejected, never silently downgraded to HTTP.
     environment.literouter().assign("http://proxy.corp");
     LR_CHECK_EQ(literouter::resolveUpstreamProxy().port, 8080);
     environment.literouter().assign("https://proxy.corp");
     proxy = literouter::resolveUpstreamProxy();
     LR_CHECK_EQ(proxy.scheme, "https");
-    LR_CHECK_EQ(proxy.port, 443);
+    LR_CHECK_MSG(!proxy.enabled && !proxy.warning.empty(), "HTTPS proxy was downgraded");
+    const literouter::ProviderConfig unused{.id = "unused", .base_url = "http://127.0.0.1:1"};
+    const auto post = literouter::upstreamPost(unused, "/completions", "{}");
+    LR_CHECK_MSG(!post.ok && post.error == proxy.warning, post.error);
+    const auto probe = literouter::probeProvider(unused);
+    LR_CHECK_MSG(!probe.reachable && probe.detail == proxy.warning, probe.detail);
 
     // A bracketed IPv6 literal keeps its brackets out of the port split.
     environment.literouter().assign("http://[::1]:3128");
@@ -308,7 +313,7 @@ void testProxyRejectsUnusableValues() {
     // The invariant: a value that cannot be used yields NO proxy and a warning.
     // Returning a half-built proxy here is how a typo turns into every request
     // being tunnelled somewhere unintended.
-    for (const char *bad : {"socks5://proxy.corp:1080", "http://proxy.corp:notaport",
+    for (const char *bad : {"https://proxy.corp:443", "socks5://proxy.corp:1080", "http://proxy.corp:notaport",
                             "http://proxy.corp:99999", "http://proxy.corp:0", "http://",
                             "http://[::1", ":3128"}) {
         environment.literouter().assign(bad);
@@ -328,7 +333,7 @@ void testProxyRejectsUnusableValues() {
     // carry the proxy password — a malformed URL is exactly when the operator
     // has just typed one. Every refusal path is checked, because the redaction
     // is applied per message and a new message could forget it.
-    for (const char *bad : {"socks5://user:s3cret@proxy.corp:1080",
+    for (const char *bad : {"https://user:s3cret@proxy.corp:443", "socks5://user:s3cret@proxy.corp:1080",
                             "http://user:s3cret@proxy.corp:notaport",
                             "http://user:s3cret@[::1", "http://user:s3cret@"}) {
         environment.literouter().assign(bad);

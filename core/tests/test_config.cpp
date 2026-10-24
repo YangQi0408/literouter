@@ -412,6 +412,16 @@ void testMinimalDocuments() {
 
 void testStructurallyWrongInput() {
     LR_GROUP("structurally wrong input is refused with a message");
+    for (const auto *text : {R"({"schema":3.5})", R"({"schema":4294967299})",
+                            R"({"server":{"port":8787.9}})", R"({"server":{"log_capacity":4294967297}})",
+                            R"({"providers":[{"timeout_sec":1.9}]})", R"({"providers":[{"weight":4294967297}]})",
+                            R"({"providers":[{"max_concurrent":2147483648}]})"}) {
+        const auto invalid = literouter::appConfigFromJson(text);
+        LR_CHECK_MSG(!invalid && invalid.error().find(literouter::i18n::tr("expected a 32-bit integer")) != std::string::npos, text);
+        std::string rewritten = "untouched";
+        const auto migration = literouter::migrateConfigJson(text, rewritten);
+        LR_CHECK_MSG(!migration && rewritten == "untouched", "migration truncated a numeric field");
+    }
 
     struct Case {
         const char *text;
@@ -771,6 +781,18 @@ void testDefaultPaths() {
 
 void testValidateProviders() {
     LR_GROUP("validate(): providers");
+    for (const double value : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        AppConfig config;
+        ProviderConfig provider;
+        provider.id = "prices";
+        provider.base_url = "https://prices.example/v1";
+        provider.price_in_per_million = value;
+        provider.model_prices["m"].price_out_per_million = value;
+        config.providers = {provider};
+        const auto report = literouter::validate(config);
+        LR_CHECK_MSG(findIssueContaining(report, "finite", kError) != nullptr && report.count(kError) == 2,
+                     "non-finite prices passed validation");
+    }
     {
         AppConfig config;
         config.providers = {ProviderConfig{.id = "dup", .base_url = "https://a.example/v1"},

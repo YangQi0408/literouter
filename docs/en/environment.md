@@ -74,7 +74,7 @@ Inside a corporate network a relay is usually reachable only through a proxy, so
 2. `HTTPS_PROXY`, then `https_proxy`
 3. `HTTP_PROXY`, then `http_proxy` (curl's fallback for https targets)
 
-The value may be a full URL or a bare `host:port`. Only `http` and `https` schemes are supported (no SOCKS5). Credentials go in the URL as `http://user:pass@proxy:3128`; percent-escape any character that is special in a URL (`p%40ss` for `p@ss`), and literouter sends them as Basic `Proxy-Authorization`. When no port is given, `http` defaults to `8080` and `https` to `443`.
+The value may be an `http://` URL or a bare `host:port`, defaulting to port `8080`. HTTPS **destinations** remain TLS-verified through CONNECT, but TLS connections to the **proxy itself** (`https://proxy...`) are not supported and requests fail explicitly without sending credentials or falling back to a direct connection. SOCKS5 is not supported. Credentials go in the URL as `http://user:pass@proxy:3128`; percent-escape special characters (`p%40ss` for `p@ss`). Basic `Proxy-Authorization` is sent over the HTTP proxy leg, so use it only on a trusted network.
 
 ```bash
 # A corporate proxy with credentials

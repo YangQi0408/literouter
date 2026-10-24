@@ -361,7 +361,8 @@ std::filesystem::path resolveCaBundle();
 struct UpstreamProxy {
     // False means "connect directly". Every other field is then unset.
     bool enabled = false;
-    // How to reach the proxy itself: "http" or "https". Note that this is not
+    // How to reach the proxy itself: only "http" is supported. "https" is
+    // returned disabled with a warning and must not silently downgrade. This is not
     // the upstream's scheme — an https relay is tunnelled with CONNECT through
     // a plaintext proxy in the ordinary case.
     std::string scheme = "http";

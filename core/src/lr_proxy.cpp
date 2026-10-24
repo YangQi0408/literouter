@@ -3135,6 +3135,10 @@ struct ProxyServer::Impl {
                     bool opaque_response = false,
                     std::shared_ptr<UpstreamSlot> slot = nullptr,
                     int stripped_state = 0) {
+        if (const auto proxy = resolveUpstreamProxy(); proxy.scheme == "https" && !proxy.warning.empty()) {
+            last_error = proxy.warning;
+            return 502;
+        }
         std::string root;
         std::string prefix;
         std::string scheme;
@@ -4864,6 +4868,10 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
         out.error = std::format("invalid address `{}`", base_url);
         return out;
     }
+    if (!isLoopbackRoot(root)) {
+        const auto proxy = resolveUpstreamProxy();
+        if (proxy.scheme == "https" && !proxy.warning.empty()) { out.error = proxy.warning; return out; }
+    }
 
     h::Client client{root};
     applyAdminTransport(client, root);
@@ -4980,6 +4988,10 @@ std::optional<h::Client> makeAdminClient(std::string_view base_url, std::string_
     if (!splitBaseUrl(base_url, root, prefix, scheme)) {
         error = std::format("invalid address `{}`", base_url);
         return std::nullopt;
+    }
+    if (!isLoopbackRoot(root)) {
+        const auto proxy = resolveUpstreamProxy();
+        if (proxy.scheme == "https" && !proxy.warning.empty()) { error = proxy.warning; return std::nullopt; }
     }
     h::Client client{root};
     applyAdminTransport(client, root);

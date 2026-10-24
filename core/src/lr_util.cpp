@@ -274,9 +274,13 @@ UpstreamProxy resolveUpstreamProxy() {
     if (const auto sep = rest.find("://"); sep != std::string_view::npos) {
         proxy.scheme = toLower(rest.substr(0, sep));
         rest = rest.substr(sep + 3);
+        if (proxy.scheme == "https") {
+            proxy.warning = "HTTPS proxy transport is not supported; use an http:// proxy URL (HTTPS upstreams still use CONNECT)";
+            return proxy;
+        }
         if (proxy.scheme != "http" && proxy.scheme != "https") {
             proxy.warning = std::format(
-                "ignoring upstream proxy `{}`: scheme `{}` is not supported (use http:// or https://)",
+                "ignoring upstream proxy `{}`: scheme `{}` is not supported (use http://)",
                 redactUserinfo(raw), proxy.scheme);
             return proxy;
         }
@@ -337,10 +341,9 @@ UpstreamProxy resolveUpstreamProxy() {
         }
         proxy.port = port;
     } else {
-        // 8080 is the conventional proxy port and what curl assumes; 443 is the
-        // honest answer only for the https scheme, which is why the default
-        // follows the scheme rather than being one fixed number.
-        proxy.port = proxy.scheme == "https" ? 443 : 8080;
+        // Only plaintext HTTP proxy transport is supported; HTTPS destinations
+        // use CONNECT and retain their normal TLS verification inside it.
+        proxy.port = 8080;
     }
 
     proxy.host = std::string{host};

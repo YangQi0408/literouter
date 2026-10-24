@@ -19,6 +19,9 @@ namespace literouter::i18n {
 namespace {
 
 const std::unordered_map<std::string_view, const char*> kZhTranslations = {
+    {"expected a 32-bit integer", "应为 32 位整数"},
+    {"prices must be finite numbers", "价格必须是有限数值"},
+    {"HTTPS proxy transport is not supported; use an http:// proxy URL (HTTPS upstreams still use CONNECT)", "不支持到代理服务器的 HTTPS 连接；请使用 http:// 代理地址（HTTPS 上游仍通过 CONNECT 隧道访问）"},
     {"values below 1 disable failure-count circuit breaking; Retry-After is still honored", "小于 1 时禁用按失败次数熔断；仍遵守 Retry-After"},
     {"cross-origin management writes are not allowed", "不允许跨源写入管理接口"},
     {"legacy completions require an OpenAI or Azure provider", "传统补全接口需要 OpenAI 或 Azure 中转站"},
