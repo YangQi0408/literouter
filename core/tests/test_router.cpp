@@ -529,7 +529,42 @@ void testRetryAfterWindow() {
     }
 }
 
+void testBreakerRegressions() {
+    LR_GROUP("breaker options, recovery order and model-scoped aggregates");
+    AppConfig config;
+    config.server.circuit_failure_threshold = 1;
+    config.server.circuit_cooldown_sec = 30;
+    config.providers = {relay("a"), relay("b")};
+    config.providers[0].models.clear();
+    config.providers[1].models.clear();
+    config.routes = {RouteConfig{.model = "m", .targets = {{.provider = "a"}, {.provider = "b"}}}};
+    Router router;
+    router.setConfig(config);
+    const double now = literouter::nowUnix();
+    router.recordFailure("b", "m", "older failure", now - 5);
+    router.recordFailure("a", "m", "newer failure", now);
+    auto chain = router.candidatesFor("m");
+    LR_CHECK_MSG(chain.size() == 2 && chain.front().provider == "b", "recovery ignored earlier cooldown expiry");
+    const auto rows = router.health(now);
+    for (const auto &row : rows) {
+        LR_CHECK_MSG(row.total_failures == 1 && row.state == ProviderHealth::State::Open && row.cooldown_remaining > 0,
+                     std::format("{} reports {} failures / {} / {}s", row.provider, row.total_failures, row.stateName(), row.cooldown_remaining));
+    }
+    config.server.skip_open_circuits = false;
+    router.setConfig(config);
+    chain = router.candidatesFor("m");
+    LR_CHECK_MSG(chain.front().provider == "a" && !chain[0].skipped && !chain[1].skipped, "disabled skipping still changed declaration order");
+    config.server.circuit_failure_threshold = 0;
+    router.resetHealth();
+    router.setConfig(config);
+    router.recordFailure("a", "m", "ordinary failure", now);
+    LR_CHECK_MSG(!router.circuitOpen("a", "m", now), "zero threshold tripped the breaker");
+    router.recordFailure("a", "m", "Retry-After", now, 60);
+    LR_CHECK_MSG(router.circuitOpen("a", "m", now), "explicit Retry-After was ignored");
+}
+
 int main() {
+    testBreakerRegressions();
     testRouteOrderIsAuthorOrder();
     testDisabledProviderDroppedFromChain();
     testPassThroughOrdering();

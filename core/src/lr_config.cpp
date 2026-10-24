@@ -484,7 +484,7 @@ ValidationReport validate(const AppConfig &config) {
     }
     if (config.server.circuit_failure_threshold < 1) {
         addIssue(report, ValidationIssue::Level::Warning, "server.circuit_failure_threshold",
-                 "values below 1 disable circuit breaking entirely");
+                 "values below 1 disable failure-count circuit breaking; Retry-After is still honored");
     }
     if (config.server.circuit_cooldown_sec < 1) {
         addIssue(report, ValidationIssue::Level::Warning, "server.circuit_cooldown_sec",

@@ -62,14 +62,17 @@ std::vector<Candidate> Router::candidatesFor(std::string_view model) const {
         if (!seen.insert(key).second) {
             return;
         }
-        candidate.priority = provider.priority * 1000 + static_cast<int>(ordinal);
+        candidate.priority = static_cast<int>(std::clamp<std::int64_t>(
+            static_cast<std::int64_t>(provider.priority) * 1000 + static_cast<std::int64_t>(ordinal),
+            std::numeric_limits<int>::min(), std::numeric_limits<int>::max()));
         const bool has_model_state = std::ranges::any_of(model_health_, [&](const auto &entry) {
             const auto split = entry.first.find('\0');
             return split != std::string::npos &&
                    std::string_view{entry.first.data(), split} == provider.id;
         });
-        candidate.skipped = circuitOpen(provider.id, candidate.model, now) ||
-                            (!has_model_state && circuitOpen(provider.id, now));
+        candidate.skipped = config_.server.skip_open_circuits &&
+                            (circuitOpen(provider.id, candidate.model, now) ||
+                             (!has_model_state && circuitOpen(provider.id, now)));
         out.push_back(std::move(candidate));
     };
 
@@ -128,6 +131,22 @@ std::vector<Candidate> Router::candidatesFor(std::string_view model) const {
         }
     }
 
+    if (std::ranges::any_of(out, [](const auto &c) { return c.skipped; })) {
+        const auto expiry = [&](const Candidate &candidate) {
+            const auto model = model_health_.find(modelKey(candidate.provider, candidate.model));
+            if (model != model_health_.end()) return model->second.open_until_unix;
+            const auto provider = health_.find(candidate.provider);
+            return provider == health_.end() ? 0.0 : provider->second.open_until_unix;
+        };
+        // Sort only the cooling slots: retain declaration positions for healthy
+        // candidates and let capability filtering still pick the right recovery
+        // probe if an otherwise-healthy candidate cannot serve this endpoint.
+        std::vector<Candidate> cooling;
+        for (const auto &candidate : out) if (candidate.skipped) cooling.push_back(candidate);
+        std::stable_sort(cooling.begin(), cooling.end(), [&](const auto &a, const auto &b) { return expiry(a) < expiry(b); });
+        std::size_t index = 0;
+        for (auto &candidate : out) if (candidate.skipped) candidate = std::move(cooling[index++]);
+    }
     return out;
 }
 
@@ -167,7 +186,7 @@ std::vector<ProviderHealth> Router::health(double now_unix) const {
         bool model_seen = false;
         bool model_open = false;
         bool model_failed = false;
-        bool all_models_open = !provider.models.empty();
+        bool all_models_open = true;
         for (const auto &[key, state] : model_health_) {
             const auto split = key.find('\0');
             if (split == std::string::npos ||
@@ -180,7 +199,7 @@ std::vector<ProviderHealth> Router::health(double now_unix) const {
             model_failed = model_failed || state.consecutive_failures > 0;
             view.consecutive_failures = std::max(view.consecutive_failures,
                                                  state.consecutive_failures);
-            view.total_failures += state.total_failures;
+            // The provider aggregate already includes model-scoped failures.
             if (!state.last_error.empty()) {
                 view.last_error = state.last_error;
             }
@@ -272,10 +291,6 @@ void Router::recordSuccess(std::string_view provider, double latency_ms, double 
     if (latency_ms > 0.0) {
         state.last_error.clear();
     }
-    auto &provider_state = slot(provider);
-    provider_state.consecutive_failures = 0;
-    provider_state.open_until_unix = 0.0;
-    provider_state.state = ProviderHealth::State::Healthy;
     (void)now_unix;
 }
 
@@ -309,7 +324,8 @@ void Router::recordFailure(std::string_view provider, std::string reason, double
     // us when it will be ready, and the configured cooldown is the floor under
     // it (never a reason to come back sooner than the operator allowed).
     const bool asked_to_wait = cooldown_hint_sec > 0.0;
-    if (asked_to_wait || state.consecutive_failures >= config_.server.circuit_failure_threshold) {
+    if (asked_to_wait || (config_.server.circuit_failure_threshold > 0 &&
+                         state.consecutive_failures >= config_.server.circuit_failure_threshold)) {
         state.state = ProviderHealth::State::Open;
         state.open_until_unix =
             now_unix + std::max<double>(config_.server.circuit_cooldown_sec, cooldown_hint_sec);
@@ -327,7 +343,8 @@ void Router::recordFailure(std::string_view provider, std::string_view model,
     state.last_error = truncateUtf8(reason, 240);
     state.state = ProviderHealth::State::Degraded;
     if (cooldown_hint_sec > 0.0 ||
-        state.consecutive_failures >= config_.server.circuit_failure_threshold) {
+        (config_.server.circuit_failure_threshold > 0 &&
+         state.consecutive_failures >= config_.server.circuit_failure_threshold)) {
         state.state = ProviderHealth::State::Open;
         state.open_until_unix = now_unix +
             std::max<double>(config_.server.circuit_cooldown_sec, cooldown_hint_sec);

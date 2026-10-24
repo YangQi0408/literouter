@@ -98,7 +98,7 @@ curl http://127.0.0.1:8787/v1/messages \
 ### 向量嵌入 (Embeddings) 与旧版补全 (Completions)
 
 - **向量嵌入**：`POST /v1/embeddings`
-- **传统补全**：`POST /v1/completions`
+- **传统补全**：`POST /v1/completions` 向 OpenAI `/completions` 或 Azure deployment 的 `/completions` 路径原样转发基于 prompt 的请求及响应/SSE，不转换成 Chat，模型别名仍生效。其他报文协议的中转站跳过；候选链完全不支持时返回 `400 unsupported_completions_protocol`，不发送或丢弃 prompt。显式自定义 `chat_path` 也覆盖传统补全路径。
 
 ### 音频与图像
 

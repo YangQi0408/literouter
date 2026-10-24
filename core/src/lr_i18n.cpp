@@ -19,7 +19,9 @@ namespace literouter::i18n {
 namespace {
 
 const std::unordered_map<std::string_view, const char*> kZhTranslations = {
+    {"values below 1 disable failure-count circuit breaking; Retry-After is still honored", "小于 1 时禁用按失败次数熔断；仍遵守 Retry-After"},
     {"cross-origin management writes are not allowed", "不允许跨源写入管理接口"},
+    {"legacy completions require an OpenAI or Azure provider", "传统补全接口需要 OpenAI 或 Azure 中转站"},
     {"configured server.api_key resolves to empty; authentication remains closed", "配置的 server.api_key 解析为空；鉴权将保持拒绝访问"},
     {"PEM certificate chain absolute path for HTTPS", "HTTPS 的 PEM 证书链绝对路径"},
     {"Unencrypted PEM private key absolute path for HTTPS", "HTTPS 的未加密 PEM 私钥绝对路径"},

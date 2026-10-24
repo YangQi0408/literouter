@@ -232,12 +232,14 @@ struct ServerConfig {
     // Off by default: a config that changes under a running proxy is a surprise
     // unless the operator asked for it.
     bool reload_on_change = false;
-    // Consecutive upstream failures that trip a relay's breaker.
+    // Consecutive upstream failures that trip a relay's breaker. 0 disables
+    // failure-count tripping; explicit Retry-After windows remain enforced.
     int circuit_failure_threshold = 3;
     // How long a tripped breaker stays open, in seconds.
     int circuit_cooldown_sec = 30;
-    // A relay that is already open is skipped — unless every candidate is
-    // open, in which case the least-recently-failed one is tried anyway.
+    // Skip cooling candidates while healthy compatible candidates remain.
+    // If all are cooling, try only the earliest cooldown expiry. False keeps
+    // recording health but does not let breakers filter or reorder traffic.
     bool skip_open_circuits = true;
     // Ring buffer depth for the request log.
     int log_capacity = 200;

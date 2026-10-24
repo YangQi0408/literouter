@@ -205,7 +205,7 @@ Client actions should never trip an upstream's health status:
 
 ### All-Tripped Graceful Degrade
 
-If all configured providers for a model are in the `Open` state, `literouter` will not blindly fail. Instead, it **selects the provider whose last failure is oldest** (longest elapsed cooldown) to attempt recovery.
+With `skip_open_circuits: true`, open candidates are removed while any healthy candidate remains. If all candidates are open, only the candidate whose **cooldown expires first** is allowed one recovery attempt; ties keep declaration order. With the option off, breaker state remains observable but does not filter or reorder the candidate chain.
 
 ---
 

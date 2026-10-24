@@ -97,7 +97,7 @@ curl http://127.0.0.1:8787/v1/messages \
 ### Embeddings & Legacy Completions
 
 - **Embeddings**: `POST /v1/embeddings`
-- **Legacy Completions**: `POST /v1/completions`
+- **Legacy Completions**: `POST /v1/completions` forwards the original prompt-based body and response/SSE without Chat conversion to OpenAI `/completions` or Azure's deployment `/completions` path. Model aliases still apply. Providers in other wire formats are skipped; an exclusively non-OpenAI chain returns `400 unsupported_completions_protocol` without sending or dropping the prompt. An explicit custom `chat_path` overrides the legacy path too.
 
 ### Audio and Images
 

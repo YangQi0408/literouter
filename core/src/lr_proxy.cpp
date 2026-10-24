@@ -2419,12 +2419,17 @@ struct ProxyServer::Impl {
 
     // ── candidate ordering ───────────────────────────────────────────────────
 
-    // Healthy first, author order second. The proxy only reaches a skipped
-    // candidate once everything healthy has been tried, and by then "least
-    // recently failed" is the best remaining guess.
+    // Skip cooling candidates unless this entire compatible chain is cooling.
+    // Router orders that recovery chain by the earliest cooldown expiry.
     static std::vector<Candidate> order(std::vector<Candidate> candidates) {
-        std::stable_partition(candidates.begin(), candidates.end(),
-                              [](const Candidate &candidate) { return !candidate.skipped; });
+        const bool usable = std::ranges::any_of(candidates, [](const auto &c) { return !c.skipped; });
+        if (usable) {
+            std::erase_if(candidates, [](const auto &c) { return c.skipped; });
+        } else if (!candidates.empty()) {
+            // Router orders the recovery candidates by earliest cooldown expiry.
+            candidates.resize(1);
+            candidates.front().skipped = false;
+        }
         return candidates;
     }
 
@@ -2617,6 +2622,7 @@ struct ProxyServer::Impl {
     void serveJson(const h::Request &req, h::Response &res, std::string_view kind,
                    const MediaRequest *multipart = nullptr) {
         const bool media = kind == "audio" || kind == "images";
+        const bool legacy_completion = req.path == "/v1/completions";
         RequestContext ctx;
         ctx.id = hexId(6);
         ctx.kind = std::string{kind};
@@ -2702,7 +2708,19 @@ struct ProxyServer::Impl {
         // at all. Streaming is excluded by construction: a cached answer is one
         // body, and the client asked for an event stream. Media is excluded
         // because its request is multipart and its answer can be binary.
-        auto candidates = order(router.candidatesFor(ctx.model));
+        auto candidates = router.candidatesFor(ctx.model);
+        if (legacy_completion && !candidates.empty()) {
+            std::erase_if(candidates, [&](const auto &candidate) {
+                const auto *provider = ctx.config.provider(candidate.provider);
+                return provider == nullptr || wireShapeOf(provider->protocol) != WireShape::OpenAi;
+            });
+            if (candidates.empty()) {
+                sendError(res, 400, "legacy completions require an OpenAI or Azure provider",
+                          "invalid_request_error", "unsupported_completions_protocol");
+                finish(ctx, {.status = res.status, .message = "legacy completions require an OpenAI or Azure provider"});
+                return;
+            }
+        }
         const bool cacheable = !media && !ctx.stream && response_cache.enabled();
         const std::string cache_key =
             cacheable ? requestCacheKey(req, ctx.config, candidates, ingress_protocol,
@@ -2757,6 +2775,9 @@ struct ProxyServer::Impl {
                 return;
             }
         }
+        // Capabilities are filtered before breaker recovery and attempt budgets:
+        // an incompatible healthy provider must not hide a compatible cooling one.
+        candidates = order(std::move(candidates));
         // Share this order with the read-only `explain` endpoint so its preview
         // cannot drift from the chain a request would actually try.
         applyRoutingPolicy(ctx.model, ctx.config, candidates);
@@ -2849,10 +2870,19 @@ struct ProxyServer::Impl {
             const bool same_protocol =
                 media || wireShapeOf(ingress_protocol) == wireShapeOf(egress_protocol);
 
-            const std::string path =
+            std::string path =
                 media ? req.path.substr(3)
                       : (kind == "embeddings" ? provider->embeddings_path
                                               : resolveChatPath(*provider, upstream_model, effective_stream));
+            if (legacy_completion) {
+                if (provider->chat_path.empty() || provider->chat_path == "/chat/completions") {
+                    if (const auto at = path.find("/chat/completions"); at != std::string::npos) {
+                        path.replace(at, std::string_view{"/chat/completions"}.size(), "/completions");
+                    } else {
+                        path = "/completions";
+                    }
+                }
+            }
             std::string payload = req.body;
             // How many Responses fields the relay below did not get to see, so
             // the log line can say the workaround actually fired instead of

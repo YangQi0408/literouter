@@ -128,6 +128,10 @@ public:
                      [this](const httplib::Request &req, httplib::Response &res) {
                          serveChat(req, res);
                      });
+        server_.Post(path_prefix_ + "/completions",
+                     [this](const httplib::Request &req, httplib::Response &res) { serveChat(req, res); });
+        server_.Post(path_prefix_ + R"(/openai/deployments/(.*?)/completions)",
+                     [this](const httplib::Request &req, httplib::Response &res) { serveChat(req, res); });
         server_.Post(path_prefix_ + "/embeddings",
                      [this](const httplib::Request &req, httplib::Response &res) {
                          serveChat(req, res);
@@ -288,6 +292,9 @@ private:
                 response = {{"id", "resp_echo"}, {"object", "response"}, {"status", "completed"},
                             {"output", json::array({json{{"type", "message"}, {"role", "assistant"},
                                 {"content", json::array({json{{"type", "output_text"}, {"text", content}}})}}})}};
+            } else if (req.path.ends_with("/completions") && !req.path.ends_with("/chat/completions")) {
+                response = {{"id", "completion_echo"}, {"object", "text_completion"},
+                            {"choices", json::array({json{{"index", 0}, {"text", content}, {"finish_reason", "stop"}}})}};
             } else {
                 response = {{"id", "chat_echo"}, {"object", "chat.completion"},
                             {"choices", json::array({json{{"index", 0},
@@ -5150,7 +5157,7 @@ void group42SecurityRegressions(StubRelay &relay) {
 }
 
 void group43AdminAndCompletions(StubRelay &relay) {
-    LR_GROUP("43. management writes reject foreign origins");
+    LR_GROUP("43. management writes reject foreign origins and legacy completions retain their wire contract");
     literouter::AppConfig cfg;
     cfg.server.port = 0;
     cfg.server.persist_telemetry = false;
@@ -5177,7 +5184,33 @@ void group43AdminAndCompletions(StubRelay &relay) {
     const auto forwarded = client.Post("/__literouter/reset-stats", {{"Origin", "https://gateway.example"}, {"Host", "gateway.example"}, {"X-Forwarded-Proto", "https"}}, "", "text/plain");
     LR_CHECK_MSG(forwarded && forwarded->status == 200, "same-origin TLS reverse proxy was refused");
     LR_CHECK_MSG(postJson(port, "/__literouter/reset-stats", "{}").status == 200, "CLI write without Origin was refused");
+    const std::string prompt = R"({"model":"legacy-model","prompt":"THE REAL PROMPT","max_tokens":32})";
+    relay.setMode(StubRelay::Mode::RequestEcho);
+    const auto reply = postJson(port, "/v1/completions", prompt);
+    LR_CHECK_MSG(reply.status == 200, reply.body);
+    LR_CHECK_MSG(literouter::endsWith(relay.lastChatPath(), "/completions") && !literouter::endsWith(relay.lastChatPath(), "/chat/completions"), relay.lastChatPath());
+    const auto forwarded_body = json::parse(relay.lastChatBody());
+    LR_CHECK_MSG(forwarded_body["prompt"] == "THE REAL PROMPT" && forwarded_body["model"] == "renamed" && !forwarded_body.contains("messages"), forwarded_body.dump());
+    const auto legacy_response = json::parse(reply.body);
+    LR_CHECK_MSG(legacy_response["object"] == "text_completion" && legacy_response["choices"][0]["text"] == relay.lastChatPath() + "|" + relay.lastChatBody(), reply.body);
+    cfg.providers[0].protocol = "azure";
+    proxy.updateConfig(cfg);
+    const auto azure = postJson(port, "/v1/completions", prompt);
+    LR_CHECK_MSG(azure.status == 200 && relay.lastChatPath().find("/openai/deployments/renamed/completions") != std::string::npos, azure.body + relay.lastChatPath());
+    cfg.providers[0].protocol = "anthropic";
+    proxy.updateConfig(cfg);
+    relay.resetCounters();
+    const auto unsupported = postJson(port, "/v1/completions", prompt);
+    LR_CHECK_MSG(unsupported.status == 400 && relay.chatRequests() == 0 && unsupported.body.find("unsupported_completions_protocol") != std::string::npos, unsupported.body);
+    relay.setMode(StubRelay::Mode::Stream);
+    cfg.providers[0].protocol = "openai";
+    proxy.updateConfig(cfg);
+    json streaming = json::parse(prompt);
+    streaming["stream"] = true;
+    const auto stream = postJson(port, "/v1/completions", streaming.dump());
+    LR_CHECK_MSG(stream.status == 200 && stream.body == join(relay.sseChunks()), stream.body);
     proxy.stop();
+    relay.setMode(StubRelay::Mode::Normal);
 }
 
 int main() {
