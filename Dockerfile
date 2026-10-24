@@ -61,6 +61,11 @@ RUN --mount=type=cache,target=/root/.mcpp/registry/data \
 # does not exist in the runtime stage. Rewritten in place, then staged where the
 # runtime stage can find it without guessing a build hash.
 #
+# The binary lives under the *workspace* `target/`, not `<member>/target/`: mcpp
+# builds a virtual workspace into one root-level tree keyed by
+# `target/<triple>/<hash>/bin/<member>/<name>`, and `mcpp build -p cli` writes
+# there too. CI and release.yml both search `target/` for exactly this reason.
+#
 # The binary is picked by modification time, newest first, rather than by
 # `find | head -1`. `find` returns entries in directory order, so if more than
 # one build tree is ever present it silently stages an arbitrary — and possibly
@@ -68,7 +73,8 @@ RUN --mount=type=cache,target=/root/.mcpp/registry/data \
 # should be exactly one; newest-first keeps the stage honest if that ever stops
 # being true.
 RUN set -eu; \
-    bin="$(find cli/target -type f -name literouter -printf '%T@ %p\n' \
+    bin="$(find target -type f -name literouter -path '*/bin/*' \
+            -printf '%T@ %p\n' \
             | sort -nr | head -1 | cut -d' ' -f2-)"; \
     test -n "$bin"; \
     python3 scripts/patch_elf_interp.py "$bin"; \
