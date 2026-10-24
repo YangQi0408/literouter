@@ -24,6 +24,12 @@ This document covers installation methods, background service setup (systemd / l
   - [Nginx Configuration (Must Disable Buffering)](#nginx-configuration-must-disable-buffering)
   - [Caddy Configuration](#caddy-configuration)
 - [5. Upgrades & Uninstallation](#5-upgrades--uninstallation)
+  - [Upgrades](#upgrades)
+  - [Uninstallation](#uninstallation)
+- [6. Runtime Footprint](#6-runtime-footprint)
+  - [Idle and Concurrent Measurements](#idle-and-concurrent-measurements)
+  - [Threads and File Descriptors](#threads-and-file-descriptors)
+  - [Large Bodies and the Body-Logging Switch](#large-bodies-and-the-body-logging-switch)
 
 ---
 
@@ -449,3 +455,62 @@ ai.example.com {
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --uninstall
 ```
 This safely disables and removes the systemd service and binary while preserving `/etc/literouter` and `/var/lib/literouter` against accidental data loss.
+
+---
+
+## 6. Runtime Footprint
+
+`literouter`'s footprint is small. A cheap always-on box or a small cloud instance carries it comfortably: there is no database and no separate worker process, and resident memory sits in the single-digit megabytes, so it can run side by side with an editor, a browser and a local model client on the same machine.
+
+The numbers below are **measured**, on a 12-logical-core / 13.8 GB Linux x86-64 machine running the `0.4.0` release build. The harness was a local mock upstream (no real inference time; ~0.1 ms per answer), a keep-alive client, and `/proc/<pid>/status` sampled every 200 ms.
+
+### Idle and Concurrent Measurements
+
+| Scenario | Throughput (req/s) | p50 latency | Resident (RSS) | Peak |
+|---|---|---|---|---|
+| **Idle (no traffic)** | — | — | **8.9 MB** | 8.9 MB |
+| Buffered, 1 concurrent | 1,286 | 0.72 ms | 10.2 MB | 10.3 MB |
+| Buffered, 8 concurrent | **5,012** | 1.5 ms | 10.3 MB | 10.3 MB |
+| Buffered, 32 concurrent | 4,759 | 6.0 ms | 12.1 MB | 12.1 MB |
+| Buffered, 128 concurrent | 4,955 | 5.9 ms | 12.2 MB | 12.2 MB |
+| Streamed (SSE), 8 concurrent | 3,415 | 2.2 ms | 11.8 MB | 11.8 MB |
+| Streamed (SSE), 32 concurrent | 3,059 | 9.5 ms | 13.0 MB | 13.0 MB |
+| Streamed (SSE), 128 concurrent | 3,093 | 9.7 ms | 13.3 MB | 13.3 MB |
+
+**What to take from this:**
+
+- **Memory barely tracks concurrency.** Going from 1 to 128 concurrent clients moved RSS from 10.2 MB to 12.2 MB. The proxy does not buffer payloads: each body is pumped through as it arrives, so concurrency does not translate into memory.
+- **Throughput saturates around 8 concurrent** (~5,000 req/s); more pressure only lengthens the queue. This is the ceiling of loopback against a mock upstream — a real relay's own latency becomes the bottleneck long before this.
+- **It does not grow while it runs.** 60 seconds at 16 concurrent (about 80,000 requests) held RSS flat at 161.5 MB (the baseline was elevated because an 8 MB-body run preceded it), with a least-squares trend of about **+0.3 MB/minute** — allocator noise, not a leak. The telemetry ring is capped hard at `server.log_capacity` (measured at 200 and 400: the entry count matched exactly).
+- A real LLM call takes seconds, so the numbers above leave several orders of magnitude of headroom.
+
+### Threads and File Descriptors
+
+| Item | Measured | Notes |
+|---|---|---|
+| Idle threads | **11** | The `max(8, cores - 1)` base worker pool |
+| Peak threads under load | **35** | Grows to 4× the base pool when saturated |
+| Idle shrink-back | 3 seconds | Returns to 11 once the burst ends |
+| Idle FDs | **5** | Listening socket plus a few internal handles |
+| FDs at 500 concurrent | **536** | Roughly "concurrency + 12" |
+
+> ⚠️ **Raise the FD limit past about 1,000 concurrent requests.** Each in-flight request holds one client FD and one upstream FD, and Linux defaults `ulimit -n` to 1024. Set `LimitNOFILE=65535` in the systemd unit, or start under `ulimit -n 65535`, to go beyond that.
+>
+> Threads do **not** grow with concurrency: 500 concurrent requests still peak at 35 threads, with the rest queued. That queueing is why p99 latency climbs sharply under heavy load (7.4 s at 500 concurrent). A single-user gateway does not normally reach that range.
+
+### Large Bodies and the Body-Logging Switch
+
+**Large request bodies** multiply memory use, because a request's full body has to be held in memory while it is forwarded:
+
+| Body size | Concurrency | RSS delta |
+|---|---|---|
+| 4 MB | 1 | +37.8 MB |
+| 8 MB | 4 | +228 MB at peak |
+
+That memory is released once the request finishes, and repeated runs do not accumulate it (four consecutive 8 MB runs left RSS oscillating in the 161–196 MB range with no upward trend). A single body is capped at **64 MB** (`kMaxRequestBody`).
+
+> ⚠️ **`server.log_bodies` is a performance switch, not only a privacy one.** When it is on, every request and response body is truncated and stored in the ring buffer. Measured at 32 KB bodies and 8 concurrent: 1,514 req/s and p50 5.5 ms with it off, **17 req/s and p50 426 ms with it on — roughly 89× slower**. Leave it off (the default) and turn it on only to diagnose a specific request.
+
+**Response caching** (`server.response_cache_ttl_sec`) lifts throughput on repeated requests at almost no memory cost: measured 5,000+ req/s at p50 0.7 ms, with entries bounded by `response_cache_max_entries`.
+
+**Telemetry persistence** (`server.persist_telemetry`) produces a file whose size is set by `log_capacity`, not by total request count: about 408 KB at `log_capacity = 400`.

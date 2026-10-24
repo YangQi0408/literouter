@@ -227,6 +227,15 @@ void configure(h::Client &client, const ProviderConfig &provider) {
     client.set_read_timeout(provider.timeout_sec, 0);
     client.set_write_timeout(provider.timeout_sec, 0);
     client.set_keep_alive(true);
+    // The same Nagle problem as the server socket, on the leg that carries the
+    // request. A chat request goes out as a header block followed by the body;
+    // with Nagle on, the second write waits for the first to be ACKed, and a
+    // relay that delays that ACK adds its timer before the body has even
+    // arrived. Measured on loopback against a stub answering in 0.1 ms: 0.7 ms
+    // with TCP_NODELAY, 42 ms without — and every request paid it, buffered
+    // ones included, which is what made it read as a proxy-wide latency floor
+    // rather than a streaming quirk.
+    client.set_tcp_nodelay(true);
     // Tunnelling. httplib sends CONNECT for an https upstream and an absolute
     // request line for an http one, and re-dials the proxy on its own after a
     // pooled socket dies, so nothing here has to know which leg it is on.

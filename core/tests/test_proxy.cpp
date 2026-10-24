@@ -108,6 +108,13 @@ public:
         CapacityBadRequest,
         EmptyError,
         Stream,
+        // Same transcript as Stream, but written back to back with no pause.
+        // That is what makes Nagle observable: the 5 ms pause in Stream() is
+        // long enough that each chunk is ACKed before the next is written, so
+        // the socket never has a second segment to hold back. A relay that has
+        // the whole answer ready (or emits tokens faster than the timer) writes
+        // a burst, and that is the case Nagle ruins.
+        StreamBurst,
         HeaderEcho,
         RequestEcho
     };
@@ -275,6 +282,9 @@ private:
         case Mode::Stream:
             serveStream(res);
             return;
+        case Mode::StreamBurst:
+            serveStreamBurst(res);
+            return;
         case Mode::HeaderEcho: {
             const std::string content = req.get_header_value("X-Custom-Feature") + "|" +
                                         req.get_header_value("User-Agent");
@@ -318,6 +328,23 @@ private:
                     // the bridge's queueing observable instead of a single
                     // memcpy that would pass even if the pump were bypassed.
                     std::this_thread::sleep_for(5ms);
+                }
+                sink.done();
+                return true;
+            });
+    }
+
+    // The whole transcript in one burst, which is what a fast relay does and
+    // what makes the write pattern — not the relay's think time — the thing
+    // under measurement.
+    void serveStreamBurst(httplib::Response &res) {
+        const auto chunks = std::make_shared<std::vector<std::string>>(sseChunks());
+        res.set_chunked_content_provider(
+            "text/event-stream", [chunks](std::size_t, httplib::DataSink &sink) {
+                for (const auto &chunk : *chunks) {
+                    if (!sink.write(chunk.data(), chunk.size())) {
+                        return false;
+                    }
                 }
                 sink.done();
                 return true;
@@ -859,6 +886,27 @@ struct Hit {
     std::string retry_after;
 };
 
+// Wall-clock for one request, in milliseconds, or a negative value when the
+// request never completed. Used by the Nagle group, where the interesting
+// quantity is elapsed time rather than the payload — and where the client
+// deliberately keeps TCP_NODELAY on and TCP_QUICKACK off, which is what an
+// ordinary Linux client does and what makes the penalty visible.
+double timeBuffered(int port, const std::string &body) {
+    httplib::Client client{"127.0.0.1", port};
+    client.set_connection_timeout(2, 0);
+    client.set_read_timeout(10, 0);
+    client.set_write_timeout(10, 0);
+    client.set_tcp_nodelay(true);
+    httplib::Headers headers{{"Content-Type", "application/json"}};
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = client.Post("/v1/chat/completions", headers, body, "application/json");
+    const auto finished = std::chrono::steady_clock::now();
+    if (!result) {
+        return -1.0;
+    }
+    return std::chrono::duration<double, std::milli>(finished - started).count();
+}
+
 Hit postJson(int port, const std::string &path, const std::string &body,
              const std::string &key = {}, const httplib::Headers &extra_headers = {}, bool compress = false) {
     httplib::Client client{"127.0.0.1", port};
@@ -1216,6 +1264,60 @@ void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxySe
     const auto *alphaHealth = healthOf(snapshot, "alpha");
     LR_CHECK(alphaHealth != nullptr &&
              alphaHealth->state == literouter::ProviderHealth::State::Degraded);
+
+    LR_GROUP("4c. the upstream leg is not paced by Nagle");
+
+    // This group guards the *upstream* socket (Client::set_tcp_nodelay in
+    // lr_upstream.cpp's configure()). It is the leg that was measurably broken:
+    // a request goes out as a header block followed by the body, so with Nagle
+    // on the body waits for the headers to be ACKed and a relay that delays that
+    // ACK adds its timer before the body has arrived. Against a relay answering
+    // in 0.1 ms, that turned every request — buffered or streamed — into a
+    // 42 ms one, which read as "literouter adds 42 ms to everything".
+    //
+    // The relay writes its whole transcript in one burst, which is what makes
+    // the write pattern the variable under test. The `Stream` mode's 5 ms pause
+    // per chunk is longer than the delayed-ACK timer, so with that stub each
+    // chunk is ACKed before the next is written and the socket never has a
+    // second segment to hold back — it would pass even with Nagle on.
+    //
+    // The server-side socket is fixed in the same commit but is *not* asserted
+    // here: reproducing its penalty needs a client whose kernel delays ACKs,
+    // and the httplib client this test can build re-arms quick ACKs often enough
+    // that the stall does not appear (verified by removing the server-side fix
+    // and watching this group still pass). Asserting it would be a test that
+    // cannot fail. It was measured end to end instead, with a client that does
+    // not re-arm: 42.15 ms before the fix, 0.90 ms after.
+    proxy.resetStats();
+    relay_a.setMode(StubRelay::Mode::StreamBurst);
+    relay_a.resetCounters();
+    relay_b.resetCounters();
+
+    const double bufferedMs = timeBuffered(port, chatRequest(kRouteModel, false));
+    const double streamedMs = timeBuffered(port, chatRequest(kRouteModel, true));
+
+    LR_CHECK_MSG(bufferedMs >= 0.0, "the buffered control request never completed");
+    LR_CHECK_MSG(streamedMs >= 0.0, "the streamed request never completed");
+    if (bufferedMs >= 0.0 && streamedMs >= 0.0) {
+        // No think time anywhere in this path, so both legs belong in the low
+        // single-digit milliseconds. 30 ms sits well below the ~42 ms one
+        // delayed-ACK stall costs and well above a healthy run.
+        constexpr double kBudgetMs = 30.0;
+        LR_CHECK_MSG(bufferedMs <= kBudgetMs,
+                     std::format("a buffered request took {:.1f} ms against a relay with no "
+                                 "think time; the upstream socket is being paced "
+                                 "(is Client::set_tcp_nodelay(true) still in configure()?)",
+                                 bufferedMs));
+        LR_CHECK_MSG(streamedMs <= kBudgetMs,
+                     std::format("a streamed answer with no think time took {:.1f} ms; the "
+                                 "upstream socket is being paced "
+                                 "(is Client::set_tcp_nodelay(true) still in configure()?)",
+                                 streamedMs));
+    }
+
+    // Put the relay back so the groups after this one see the transcript they
+    // expect.
+    relay_a.setMode(StubRelay::Mode::Stream);
 }
 
 void group5ModelList(StubRelay &relay_a, literouter::ProxyServer &proxy) {

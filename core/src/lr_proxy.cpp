@@ -3955,6 +3955,17 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     });
     server.set_payload_max_length(kMaxRequestBody);
     server.set_keep_alive_max_count(64);
+    // SSE is the leg this whole proxy exists for, and it is the one leg that
+    // writes a burst of tiny payloads back to back. With Nagle on (httplib's
+    // default) the first chunk leaves immediately and every following one waits
+    // for the previous to be ACKed; a client that delays that ACK — the default
+    // on Linux and Windows — then adds its timer to every single chunk. Measured
+    // on loopback against a relay that answers in 0.1 ms: the buffered path
+    // (one large write) stays at 0.7 ms, the streamed path sat at 42 ms for the
+    // whole answer, and the same stream dropped to 0.9 ms the moment the client
+    // ACKed immediately. The cost is a handful of extra small packets per
+    // answer, which is exactly what the proxy already emits one frame at a time.
+    server.set_tcp_nodelay(true);
     // 0 means "no write deadline". A streamed answer can legitimately idle for
     // a long time between tokens, and a write timeout would cut it off.
     server.set_write_timeout(0, 0);
