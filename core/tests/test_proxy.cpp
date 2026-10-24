@@ -4915,13 +4915,26 @@ void group40UpstreamProxy(StubRelay &relay_a) {
         const Hit hit = postJson(proxied.boundPort(), "/v1/chat/completions",
                                  chatRequest(kRouteModel));
         LR_CHECK_MSG(hit.transport_ok, "the proxy did not answer at all");
-        LR_CHECK_EQ(hit.status, 200);
+        // What the process under test resolved from the environment, printed on
+        // failure: "503 and nothing reached the forwarder" is a sentence that
+        // could mean a dozen things, and the resolved endpoint is the one of them
+        // the test cannot see for itself.
+        const literouter::UpstreamProxy resolved = literouter::resolveUpstreamProxy();
+        const std::string proxy_detail = std::format(
+            "status={} tunnels={} relay_calls={} body={} | resolved proxy: enabled={} {}:{} user={} warning={} | forwarder: {}:{}",
+            hit.status, forwarder.tunnels(), relay_a.chatRequests(),
+            literouter::truncateUtf8(hit.body, 300), resolved.enabled, resolved.host,
+            resolved.port, resolved.username, resolved.warning, "127.0.0.1", forwarder.port());
+        LR_CHECK_MSG(hit.status == 200, "the proxied request did not succeed: " + proxy_detail);
         // The relay is only reachable THROUGH the forwarder: an absolute-URI
         // request line went to it, and it replayed that to the relay.
         LR_CHECK_MSG(forwarder.tunnels() > 0,
-                     "the request reached the relay without going through the proxy");
-        LR_CHECK_EQ(relay_a.chatRequests(), 1);
-        LR_CHECK_MSG(hit.body == relay_a.normalBody(), "the tunnelled answer was altered");
+                     "the request reached the relay without going through the proxy: " +
+                         proxy_detail);
+        LR_CHECK_MSG(relay_a.chatRequests() == 1,
+                     "the relay was not asked exactly once: " + proxy_detail);
+        LR_CHECK_MSG(hit.body == relay_a.normalBody(),
+                     "the tunnelled answer was altered: " + proxy_detail);
 
         // NO_PROXY is the escape hatch that keeps a loopback relay off the
         // proxy, and it has to work per host: the same client, one host
