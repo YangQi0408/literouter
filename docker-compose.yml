@@ -10,13 +10,15 @@
 # history away.
 services:
   literouter:
-    build:
-      context: .
-      # Uncomment to build against a base whose glibc is known good on your
-      # host, e.g. when tracking a newer Debian.
-      # args:
-      #   RUNTIME_BASE: debian:trixie-slim
-    image: literouter:local
+    # The published image. Releases build it from the Linux binary they publish,
+    # so pulling is seconds — `docker build .` would instead compile from source
+    # inside the image, which takes about twelve minutes of toolchain download
+    # and fails when a fetch crosses xlings' ten-minute deadline.
+    #
+    # Pin a version (`:0.4.0`) rather than tracking `:latest` if you want
+    # upgrades to be a decision. To build locally anyway, use
+    # `docker compose build` (see docs/*/deployment.md).
+    image: ghcr.io/yangqi0408/literouter:latest
     container_name: literouter
     restart: unless-stopped
     # Published to the host's loopback on purpose. The console at /ui can read

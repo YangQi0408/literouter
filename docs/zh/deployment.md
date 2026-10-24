@@ -313,13 +313,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -Uninstal
 
 ### 使用 Docker Compose 快速部署
 
-项目根目录提供了开箱即用的 [docker-compose.yml](../../docker-compose.yml)：
+**直接拉取官方镜像（推荐）**。每次发布都会由 CI 用当次发布的 Linux 二进制打包镜像并推送到 GHCR，因此拉取只需几秒：
+
+```bash
+docker pull ghcr.io/yangqi0408/literouter:latest
+```
+
+项目根目录提供了开箱即用的 [docker-compose.yml](../../docker-compose.yml)，它默认就指向这个镜像：
 
 ```yaml
 services:
   literouter:
-    image: literouter:local
-    build: .
+    image: ghcr.io/yangqi0408/literouter:latest
     container_name: literouter
     restart: unless-stopped
     # 强烈建议绑定到宿主机回环地址 127.0.0.1，避免无意暴露日志与提示词
@@ -347,6 +352,14 @@ services:
 docker compose up -d
 docker compose logs -f
 ```
+
+> **关于 `docker compose build`**：仓库里的 Dockerfile 仍然支持从源码构建（`docker compose build` 或 `docker build .`），但**不建议日常使用**——它需要在镜像内下载完整的 LLVM 工具链（约 242MB），一次冷构建约 12 分钟，且当某个依赖下载超过 mcpp 的 xlings 10 分钟期限时会直接失败。官方镜像就是为了绕开这条路径而存在的。若你确实要从源码构建且网络较慢，请给构建注入代理：
+>
+> ```bash
+> docker build --network host \
+>   --build-arg HTTP_PROXY=http://127.0.0.1:7890 \
+>   --build-arg HTTPS_PROXY=http://127.0.0.1:7890 .
+> ```
 
 **首次启动的初始化**：
 

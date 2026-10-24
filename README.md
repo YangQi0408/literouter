@@ -58,9 +58,14 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 
 ### 方式 3：Docker / Docker Compose 容器化运行
 ```bash
+# 拉取官方镜像（发布时由 CI 打包，秒级完成）
+docker pull ghcr.io/yangqi0408/literouter:latest
+
 # 一行命令拉起（端口绑定回环，持久化配置与状态）
 docker compose up -d
 ```
+
+> 官方镜像由发布流程用当次发布的 Linux 二进制构建，无需本地编译。若改用 `docker compose build` 从源码构建，需在镜像内下载完整 LLVM 工具链，冷构建约 12 分钟。
 
 ### 方式 4：从源码编译（开发者 / 特殊架构）
 ```bash

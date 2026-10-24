@@ -58,9 +58,14 @@ Download the standalone binary for your platform from [GitHub Releases](https://
 
 ### Option 3: Docker / Docker Compose
 ```bash
+# Pull the published image (CI packages it at release time, takes seconds)
+docker pull ghcr.io/yangqi0408/literouter:latest
+
 # Run with docker compose (binds to loopback, persistent config & state)
 docker compose up -d
 ```
+
+> The published image is built by the release workflow from the Linux binary it just published, so nothing compiles locally. Building from source with `docker compose build` instead downloads the full LLVM toolchain and takes about twelve minutes cold.
 
 ### Option 4: Build from Source (Developers)
 ```bash

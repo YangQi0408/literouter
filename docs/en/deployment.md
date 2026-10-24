@@ -294,13 +294,18 @@ For containerized hosts (Synology/QNAP NAS, Unraid, Proxmox, or cloud servers):
 
 ### Quickstart with Docker Compose
 
-Use the included [docker-compose.yml](../../docker-compose.yml):
+**Pull the published image (recommended).** Every release has CI package the Linux binary it just published into an image on GHCR, so pulling takes seconds:
+
+```bash
+docker pull ghcr.io/yangqi0408/literouter:latest
+```
+
+The included [docker-compose.yml](../../docker-compose.yml) already points at it:
 
 ```yaml
 services:
   literouter:
-    image: literouter:local
-    build: .
+    image: ghcr.io/yangqi0408/literouter:latest
     container_name: literouter
     restart: unless-stopped
     # Strongly recommended: bind to host loopback 127.0.0.1
@@ -328,6 +333,14 @@ services:
 docker compose up -d
 docker compose logs -f
 ```
+
+> **On `docker compose build`**: the Dockerfile still supports building from source (`docker compose build` or `docker build .`), but it is not the recommended path — it downloads the full LLVM toolchain (~242 MB) inside the image, which takes about twelve minutes cold and fails outright when a fetch crosses mcpp's ten-minute xlings deadline. The published image exists to avoid that path. If you do build from source behind a slow network, give the build a proxy:
+>
+> ```bash
+> docker build --network host \
+>   --build-arg HTTP_PROXY=http://127.0.0.1:7890 \
+>   --build-arg HTTPS_PROXY=http://127.0.0.1:7890 .
+> ```
 
 **First-run initialisation**:
 
