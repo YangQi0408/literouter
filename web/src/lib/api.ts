@@ -228,6 +228,10 @@ export interface ProviderConfig {
   aws_access_key: string
   aws_secret_key: string
   aws_session_token: string
+  /** Drop the Responses API's server-side state (item ids, `encrypted*` fields,
+   *  `previous_response_id`) before forwarding. Only a relay whose protocol is
+   *  `openai_responses` carries that state. */
+  strip_responses_state: boolean
   /** Relay-side in-flight limit; 0 is unlimited. Relay-side, not a request constraint. */
   max_concurrent: number
   /** Relay-side rolling-minute start limit; 0 is unlimited. */

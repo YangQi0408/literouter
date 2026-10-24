@@ -1213,6 +1213,46 @@ std::string adaptResponsesToChat(std::string_view responses_request_json) {
     return dumpJson(chat);
 }
 
+std::string stripResponsesState(std::string_view responses_request_json, int &stripped) {
+    stripped = 0;
+    json root = json::parse(responses_request_json, nullptr, false);
+    if (root.is_discarded() || !root.is_object()) {
+        return std::string{responses_request_json};
+    }
+    if (root.contains("previous_response_id")) {
+        root.erase("previous_response_id");
+        ++stripped;
+    }
+    if (auto input = root.find("input"); input != root.end() && input->is_array()) {
+        for (auto &item : *input) {
+            if (!item.is_object()) continue;
+            if (item.contains("id")) {
+                item.erase("id");
+                ++stripped;
+            }
+            // `encrypted_content` is the one Azure rejects today; the prefix is
+            // matched rather than the single name because the API has grown a
+            // second spelling of the same idea and any of them is a value that
+            // only the resource that produced it can verify.
+            for (auto field = item.begin(); field != item.end();) {
+                if (field.key().starts_with("encrypted")) {
+                    field = item.erase(field);
+                    ++stripped;
+                } else {
+                    ++field;
+                }
+            }
+        }
+    }
+    // Only re-serialised when something was actually removed: an untouched
+    // request keeps the client's exact bytes, key order and formatting included,
+    // which is what the same-protocol fast path is for.
+    if (stripped == 0) {
+        return std::string{responses_request_json};
+    }
+    return dumpJson(root);
+}
+
 std::string adaptChatToResponses(std::string_view chat_completion_response_json,
                                  std::string_view requested_model) {
     const json root = json::parse(chat_completion_response_json, nullptr, false);

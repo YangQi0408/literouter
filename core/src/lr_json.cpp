@@ -141,6 +141,7 @@ ProviderConfig providerFromJson(const json &node) {
     out.aws_access_key = readString(node, "aws_access_key");
     out.aws_secret_key = readString(node, "aws_secret_key");
     out.aws_session_token = readString(node, "aws_session_token");
+    out.strip_responses_state = readBool(node, "strip_responses_state", false);
     out.max_concurrent = readInt(node, "max_concurrent", 0);
     out.requests_per_minute = readInt(node, "requests_per_minute", 0);
     out.price_in_per_million = readDouble(node, "price_in_per_million", 0.0);
@@ -213,6 +214,11 @@ json providerToJson(const ProviderConfig &value) {
     }
     if (!value.aws_session_token.empty()) {
         node["aws_session_token"] = value.aws_session_token;
+    }
+    // Written only when on: it is a workaround for one kind of relay, and a
+    // `false` on every other relay would be a line that says nothing.
+    if (value.strip_responses_state) {
+        node["strip_responses_state"] = value.strip_responses_state;
     }
     if (value.max_concurrent > 0) {
         node["max_concurrent"] = value.max_concurrent;

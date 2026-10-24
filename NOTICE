@@ -7,3 +7,15 @@ THIRD_PARTY_NOTICES.md.
 
 This product includes software developed by the OpenSSL Project for use in the
 OpenSSL Toolkit (https://www.openssl.org/).
+
+The Responses-API state strip (`ProviderConfig::strip_responses_state`,
+`stripResponsesState()` in `core/src/lr_protocol.cpp`) is a port of
+codex-strip-proxy by AnnaofArendelle, originally distributed as
+`codex_strip_proxy.py`:
+
+  https://github.com/AnnaofArendelle/codex-strip-proxy
+
+The technique it implements — removing item ids, `encrypted*` fields and
+`previous_response_id` from a `/v1/responses` request so that a relay pooling
+several Azure OpenAI resources can serve it — was worked out and measured
+there. This port keeps the same behaviour and attribution.

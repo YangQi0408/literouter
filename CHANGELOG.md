@@ -5,6 +5,24 @@
 
 ---
 
+## [0.4.0] - 2026-10-23
+
+详细说明见 [docs/release-notes/v0.4.0.md](docs/release-notes/v0.4.0.md)。
+
+### Added
+- 新增中转站选项 `strip_responses_state`（默认关闭）：转发 `/v1/responses` 请求前剥离 Responses 的服务端状态——`input` 中每个 item 的 `id`、item 上任何 `encrypted*` 字段（加密思维链）以及顶层 `previous_response_id`。用于在多个 Azure OpenAI 资源间轮转且无会话粘性的中转站，避免会话落到其他资源时被拒为 400（`The requested item was created under a different Azure OpenAI resource`）。
+- 剥离生效时请求日志记录剥离字段数（`… · stripped N Responses state fields`），缓冲与流式路径一致。
+- 该选项在非 Responses 报文形态的中转站上会得到一条 `config validate` 告警，而不是静默无效。
+- CLI 新增 `providers add --strip-responses-state`；`providers list --json` 输出该字段。
+- Web 控制台在 `openai_responses` 中转站的编辑器中提供「无状态 Responses 请求」开关，中英文文案齐备。
+
+### Changed
+- 无字段可剥离的请求仍按客户端原始字节转发，同协议直通的零解析、零拷贝性质不变。
+
+### Notes
+- 该实现移植自 [codex-strip-proxy](https://github.com/AnnaofArendelle/codex-strip-proxy)（作者 AnnaofArendelle），署名见 `NOTICE`。
+- 开启后模型不再跨轮接续隐藏思维链，每轮重新推理；对话内容与工具调用不受影响。
+
 ## [0.3.1] - 2026-09-27
 
 详细说明见 [docs/release-notes/v0.3.1.md](docs/release-notes/v0.3.1.md)。

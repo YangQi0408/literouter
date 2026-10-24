@@ -154,6 +154,9 @@ AppConfig fullyPopulated() {
     primary.api_version = "2024-08-01-preview";
     primary.max_concurrent = 4;
     primary.requests_per_minute = 120;
+    // On, so the round trip proves the flag survives a write and a read: the
+    // writer omits it while it is false, which would make this a no-op test.
+    primary.strip_responses_state = true;
 
     // The key is a reference on purpose: this is the field whose round trip
     // must stay a reference rather than an expanded secret.
@@ -248,6 +251,8 @@ void checkProviderEqual(const ProviderConfig &actual, const ProviderConfig &expe
     LR_CHECK_MSG(actual.connect_timeout_sec == expected.connect_timeout_sec,
                  where("connect_timeout_sec"));
     LR_CHECK_MSG(actual.supports_stream == expected.supports_stream, where("supports_stream"));
+    LR_CHECK_MSG(actual.strip_responses_state == expected.strip_responses_state,
+                 where("strip_responses_state"));
     LR_CHECK_MSG(actual.models == expected.models, where("models"));
     LR_CHECK_MSG(actual.headers == expected.headers, where("headers"));
     LR_CHECK_MSG(actual.chat_path == expected.chat_path, where("chat_path"));
@@ -1093,6 +1098,9 @@ void testProviderReaderDefaults() {
     LR_CHECK_EQ(actual.aws_access_key, fallback.aws_access_key);
     LR_CHECK_EQ(actual.aws_secret_key, fallback.aws_secret_key);
     LR_CHECK_EQ(actual.aws_session_token, fallback.aws_session_token);
+    LR_CHECK_MSG(actual.strip_responses_state == fallback.strip_responses_state,
+                 std::format("strip_responses_state: reader={} contract={}",
+                             actual.strip_responses_state, fallback.strip_responses_state));
     LR_CHECK_MSG(actual.max_concurrent == fallback.max_concurrent,
                  std::format("max_concurrent: reader={} contract={}", actual.max_concurrent,
                              fallback.max_concurrent));
@@ -1293,6 +1301,31 @@ void testValidateProtocolCredentials() {
         bogus.protocol = "telepathy";
         const auto report = validateOne(bogus);
         LR_CHECK(findIssue(report, "providers[0].protocol", kWarning) != nullptr);
+    }
+    {
+        // The Responses-state strip only has anything to strip on a relay that
+        // speaks that wire shape. Left unsaid, an operator would enable it on an
+        // OpenAI relay and go on reading Azure's 400s.
+        ProviderConfig responses;
+        responses.id = "r";
+        responses.base_url = "https://relay.example/v1";
+        responses.protocol = "openai_responses";
+        responses.strip_responses_state = true;
+        LR_CHECK(findIssue(validateOne(responses), "providers[0].strip_responses_state",
+                           kWarning) == nullptr);
+
+        ProviderConfig chat = responses;
+        chat.protocol = "openai";
+        LR_CHECK(findIssue(validateOne(chat), "providers[0].strip_responses_state",
+                           kWarning) != nullptr);
+
+        // `azure` is OpenAI's JSON under another name, so it is just as
+        // incapable of carrying Responses state — the check follows the wire
+        // shape, not the protocol name.
+        ProviderConfig azure = responses;
+        azure.protocol = "azure";
+        LR_CHECK(findIssue(validateOne(azure), "providers[0].strip_responses_state",
+                           kWarning) != nullptr);
     }
 }
 

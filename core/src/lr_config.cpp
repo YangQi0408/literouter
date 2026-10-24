@@ -655,6 +655,16 @@ ValidationReport validate(const AppConfig &config) {
                                  "route that names it explicitly",
                                  label));
         }
+        // A workaround that silently cannot fire is worse than one that is off:
+        // the operator would go on reading 400s from Azure while believing the
+        // strip was the fix. Only the Responses wire shape carries the state.
+        if (entry.strip_responses_state &&
+            wireShapeOf(entry.protocol.empty() ? "openai" : entry.protocol) != WireShape::Responses) {
+            addIssue(report, ValidationIssue::Level::Warning, where + ".strip_responses_state",
+                     "only a relay speaking the Responses wire shape (`protocol: "
+                     "openai_responses`) carries the state this option strips; it has no "
+                     "effect here");
+        }
     }
 
     // ── routes ───────────────────────────────────────────────────────────────

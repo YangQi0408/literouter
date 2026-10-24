@@ -43,6 +43,13 @@ const std::unordered_map<std::string_view, const char*> kZhTranslations = {
     {"credentials_file is not a readable regular file", "credentials_file 不是可读取的普通文件"},
     {"Bedrock signs every request against a region and cannot guess one",
      "Bedrock 的每个请求都要按区域签名，无法自行推断区域"},
+    // The Responses-state strip, which only one wire shape can honour.
+    {"only a relay speaking the Responses wire shape (`protocol: openai_responses`) "
+     "carries the state this option strips; it has no effect here",
+     "只有 `protocol: openai_responses` 的中转站才携带该选项要剥离的状态；在此站无效"},
+    {"Strip Responses server-side state (item ids, encrypted reasoning, "
+     "previous_response_id) before forwarding",
+     "转发前剥离 Responses 的服务端状态（item id、加密思维链、previous_response_id）"},
     // ── Navigation & Shell ──────────────────────────────────────────────────
     {"Test", "测试"},
 

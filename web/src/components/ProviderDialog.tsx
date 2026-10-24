@@ -211,6 +211,10 @@ export function ProviderDialog({
                 <Field label={t('managementAwsSecret')} hint={t('hintAwsSecret')}><TextField type="password" value={provider.aws_secret_key} placeholder="${AWS_SECRET_ACCESS_KEY}" onChange={(aws_secret_key) => patch({ aws_secret_key })} /></Field>
                 <Field label={t('managementAwsSession')} hint={t('hintAwsSession')} wide><TextField type="password" value={provider.aws_session_token} onChange={(aws_session_token) => patch({ aws_session_token })} /></Field>
               </> : null}
+              {/* Shown only where it can do something: the state being stripped
+                  belongs to the Responses wire shape, and offering the switch on
+                  an OpenAI relay would suggest it changes that relay's traffic. */}
+              {provider.protocol === 'openai_responses' ? <Field label={t('managementStripResponsesState')} hint={t('managementStripResponsesStateHint')} wide><SwitchField checked={provider.strip_responses_state} onChange={(strip_responses_state) => patch({ strip_responses_state })} label={t('managementStripResponsesState')} /></Field> : null}
             </div>
           </div>
 

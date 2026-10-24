@@ -99,7 +99,9 @@
       },
       "chat_path": "/chat/completions",        // 自定义对话端点相对路径（留空则依据 protocol 自动推导）
       "embeddings_path": "/embeddings",        // 自定义向量嵌入端点相对路径
-      "note": "主要高优先级出口"
+      "note": "主要高优先级出口",
+      // 仅 protocol: openai_responses 生效；多资源 Azure 中转站开启后转发无状态请求
+      "strip_responses_state": false
     },
     {
       "id": "anthropic-direct",
@@ -269,6 +271,7 @@ literouter 支持为每个中转站设置全局默认单价，同时也支持**�
 | `aws_access_key` | `string` | `""` | `bedrock`：SigV4 Access Key ID（**必填**），支持 `${VAR}` 引用，只在签名瞬间解析。 |
 | `aws_secret_key` | `string` | `""` | `bedrock`：SigV4 Secret Access Key（**必填**），同样支持 `${VAR}`。 |
 | `aws_session_token` | `string` | `""` | `bedrock`：临时凭据的 STS 会话令牌，会一并参与签名。 |
+| `strip_responses_state` | `bool` | `false` | 仅对 `protocol: openai_responses` 生效。转发前剥离 Responses 的服务端状态：`input` 中每个 item 的 `id`、item 上任何 `encrypted*` 字段（加密思维链），以及顶层 `previous_response_id`；消息正文、`call_id` 与工具参数原样透传。用于**在多个 Azure OpenAI 资源间轮转且无会话粘性**的中转站：Azure 按资源存储 item 并按资源加密思维链，会话落到另一个资源上会返回 400（`The requested item was created under a different Azure OpenAI resource`）。代价是模型不再跨轮接续隐藏思维链，每轮重新推理。生效时请求日志会记录剥离字段数。移植自 [codex-strip-proxy](https://github.com/AnnaofArendelle/codex-strip-proxy)（作者 AnnaofArendelle）。 |
 | `max_concurrent` | `int` | `0` | **中转站侧**在途请求上限，`0` 不限制。它约束的是 literouter 自己往这个站发多少，而不是调用方能问多少。达到上限的站会像熔断一样被跳过并尝试下一个候选（**不**计熔断失败），整条链都满时返回 `429` 并带 `Retry-After`。 |
 | `requests_per_minute` | `int` | `0` | **中转站侧**滚动 60 秒启动上限，`0` 不限制。每次启动都会计入窗口，即使当时未设限——否则操作者刚打开限制的那一分钟会白送。 |
 | `price_in_per_million` | `double` | `0` | 该中转站默认**输入** token 的单价（美元 / 百万 token）。`0` 表示未填写：未填写的中转站**不计入**花费估算，而不是按 0 元计。 |

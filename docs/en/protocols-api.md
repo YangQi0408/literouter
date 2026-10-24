@@ -162,6 +162,8 @@ Configure `providers[].protocol` to specify how to talk to each upstream service
 4. **`openai_responses`**:
    - For: Upstream endpoints implementing the OpenAI Responses protocol.
    - Default header: `Authorization: Bearer <api_key>`; path `/v1/responses`.
+   - This protocol is **stateful**: the items a response returns (`msg_…`, `rs_…`, tool calls) and the encrypted reasoning chain `encrypted_content` are stored and encrypted by the server that created them. When the upstream balances across several Azure OpenAI resources without session stickiness, the next turn of a conversation that lands on a different resource is refused with 400 (`The requested item was created under a different Azure OpenAI resource` / `The encrypted content for item rs_… could not be verified`).
+   - The remedy is `providers[].strip_responses_state: true`: before forwarding, it removes every input item's `id`, any `encrypted*` field on an item, and the top-level `previous_response_id`, so each request becomes a stateless shape any resource in the pool accepts. Message text, `call_id` and tool arguments pass through unchanged, and the rest of the same-protocol fast path still holds (a request that actually had fields removed is re-serialised once, and the request log records how many). The cost is that the model no longer continues a hidden reasoning chain across turns and reasons again each turn. The option is off by default, and a relay whose wire shape is not Responses gets a validation warning for it. Ported from [codex-strip-proxy](https://github.com/AnnaofArendelle/codex-strip-proxy) by AnnaofArendelle.
 5. **`azure`** (Azure OpenAI):
    - The body is **exactly OpenAI's**, so it takes the same-protocol fast path with zero parsing. Only the path and the credential differ: the model name is a **deployment** in the path, an `api-version` query is mandatory, and the key goes in an `api-key` header (Azure rejects a bearer).
    - Path: `/openai/deployments/{model}/chat/completions?api-version={api_version}`; an empty `api_version` uses `2024-10-21`.
@@ -207,6 +209,8 @@ When the **client request protocol** matches the **upstream provider protocol** 
 
 - **Zero JSON DOM Overhead**: The payload streams directly without constructing an internal JSON tree (unless model renaming is required);
 - **Zero Copy SSE Forwarding**: Upstream SSE data blocks are streamed directly into the client socket with zero intermediate allocation, reaching theoretical network limits.
+
+> The one exception is `strip_responses_state`: a relay that has it on needs the request body rewritten before forwarding (see `openai_responses` above), which costs one JSON parse and one serialisation for that request. With the option off — or with nothing to strip — the client's original bytes are what goes upstream.
 
 Requests forward end-to-end business headers by default, including `User-Agent`, `originator`, request/session identifiers, tracing headers, and unknown custom headers. No header registration or additional configuration is needed. Repeated incoming names use their first value, except `anthropic-beta` and `openai-beta`, whose list values are joined with commas. Explicit `providers[].headers` settings take precedence with case-insensitive replacement, including over merged beta lists. Buffered and streaming requests follow the same rules.
 
@@ -350,7 +354,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   "traffic_bucket_count": 24,
   "traffic_bucket_sec": 3600,
   "uptime_sec": 3600.5,
-  "version": "0.3.1"
+  "version": "0.4.0"
 }
 ```
 

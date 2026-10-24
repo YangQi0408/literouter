@@ -18,8 +18,8 @@ export namespace literouter {
 // Identity
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline constexpr std::string_view kVersion = "0.3.1";
-inline constexpr std::string_view kUserAgent = "literouter/0.3.1";
+inline constexpr std::string_view kVersion = "0.4.0";
+inline constexpr std::string_view kUserAgent = "literouter/0.4.0";
 
 // The config schema this build reads and writes. Bumping it is what gives a
 // breaking rename somewhere to live: `migrateConfigJson` walks an older document
@@ -106,6 +106,28 @@ struct ProviderConfig {
     std::string aws_secret_key;
     // Bedrock: an STS session token, when the credentials above are temporary.
     std::string aws_session_token;
+    // Strip the server-side state the Responses API carries, before the request
+    // leaves for this relay: every input item's `id`, any `encrypted*` field on
+    // an item (an encrypted reasoning chain), and the top-level
+    // `previous_response_id`. Everything else — message text, tool call ids and
+    // arguments — is forwarded untouched.
+    //
+    // This exists because Azure OpenAI stores items and encrypts reasoning
+    // content *per resource*, and a relay that load-balances across several
+    // Azure resources without session stickiness answers the next turn of a
+    // conversation with 400: "The requested item was created under a different
+    // Azure OpenAI resource" / "The encrypted content for item rs_… could not be
+    // verified". Stripping makes every request stateless, which any resource in
+    // the pool accepts. The price is that the model no longer continues a hidden
+    // reasoning chain across turns and reasons again from the visible
+    // conversation — the dialogue and the tool calls are unaffected.
+    //
+    // Off by default: against a single-resource endpoint (OpenAI itself, a
+    // gateway that does route consistently) the state is worth keeping. Only
+    // affects requests whose wire shape is Responses; see
+    // stripResponsesState(). Ported from codex-strip-proxy by AnnaofArendelle
+    // (https://github.com/AnnaofArendelle/codex-strip-proxy).
+    bool strip_responses_state = false;
     // Relay-side protection: this bounds what literouter itself sends to one
     // relay. 0 disables each. A relay at its limit is skipped like an open breaker and
     // the next candidate is tried, so a busy relay degrades to a slower answer
@@ -1020,6 +1042,19 @@ std::string adaptChatResponse(const ProviderConfig &provider,
 
 // Adapts an OpenAI Responses request (/v1/responses) to an OpenAI Chat Completion request (/v1/chat/completions).
 std::string adaptResponsesToChat(std::string_view responses_request_json);
+
+// Removes the server-side state a Responses request carries — every input
+// item's `id`, any `encrypted*` field on an item, and the top-level
+// `previous_response_id` — so the request can be served by any resource of a
+// multi-resource relay (see ProviderConfig::strip_responses_state). Returns the
+// rewritten body and, through `stripped`, how many fields were removed.
+//
+// A body that is not a JSON object, or an item that is not, is returned
+// unchanged rather than rejected: this is a workaround in front of a relay, not
+// a validator, and the relay's own answer says more about a malformed body than
+// a local refusal would. Ported from codex-strip-proxy by AnnaofArendelle.
+std::string stripResponsesState(std::string_view responses_request_json,
+                                int &stripped);
 
 // Adapts an OpenAI Chat Completion response to an OpenAI Responses response (/v1/responses).
 std::string adaptChatToResponses(std::string_view chat_completion_response_json,

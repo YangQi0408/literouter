@@ -48,6 +48,9 @@ struct AddOptions {
     std::string awsAccessKey;
     std::string awsSecretKey;
     std::string awsSessionToken;
+    // Responses-only: drop the server-side state the protocol carries, for a
+    // relay that load-balances across several Azure resources.
+    bool stripResponsesState = false;
     // Relay-side protection, distinct from the per-client limits.
     int maxConcurrent = 0;
     int rpm = 0;
@@ -81,6 +84,10 @@ json providerJson(const literouter::ProviderConfig &provider) {
     node["chat_path"] = provider.chat_path;
     node["embeddings_path"] = provider.embeddings_path;
     node["note"] = provider.note;
+    // Reported rather than omitted: `providers list --json` is how a script
+    // audits what a relay will actually do, and a workaround that changes the
+    // request body is exactly the kind of thing such an audit looks for.
+    node["strip_responses_state"] = provider.strip_responses_state;
     return node;
 }
 
@@ -218,6 +225,7 @@ void runAdd(Context &ctx, const AddOptions &opts) {
     provider.aws_access_key = opts.awsAccessKey;
     provider.aws_secret_key = opts.awsSecretKey;
     provider.aws_session_token = opts.awsSessionToken;
+    provider.strip_responses_state = opts.stripResponsesState;
     provider.max_concurrent = opts.maxConcurrent;
     provider.requests_per_minute = opts.rpm;
 
@@ -535,6 +543,9 @@ void registerAdd(CLI::App &parent, Context &ctx) {
                     lrcli::tr("Bedrock SigV4 secret access key"));
     sub->add_option("--aws-session-token", opts->awsSessionToken,
                     lrcli::tr("Bedrock STS session token, for temporary credentials"));
+    sub->add_flag("--strip-responses-state", opts->stripResponsesState,
+                  lrcli::tr("Strip Responses server-side state (item ids, encrypted reasoning, "
+                            "previous_response_id) before forwarding"));
     sub->add_option("--max-concurrent", opts->maxConcurrent,
                     lrcli::tr("Most requests literouter sends this relay at once; 0 is unlimited"))
         ->check(CLI::NonNegativeNumber);

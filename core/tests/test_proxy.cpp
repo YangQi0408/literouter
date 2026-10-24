@@ -3203,6 +3203,142 @@ void group38StreamingCapability(StubRelay &relay_a, StubRelay &relay_b) {
     relay_b.setMode(StubRelay::Mode::Normal);
 }
 
+// A relay that balances across several Azure OpenAI resources stores and
+// encrypts Responses state per resource, so replaying a conversation's item ids
+// and encrypted reasoning onto another resource is a 400. The strip option makes
+// the forwarded request stateless, and the log says it happened.
+void group41ResponsesStateStrip(StubRelay &relay_a) {
+    LR_GROUP("41. a relay can be sent stateless Responses requests, and the log says so");
+    literouter::AppConfig config;
+    config.server.host = "127.0.0.1";
+    config.server.port = 0;
+    config.server.persist_telemetry = false;
+    config.server.pass_through_unknown = false;
+
+    literouter::ProviderConfig relay;
+    relay.id = "azure-pool";
+    relay.base_url = relay_a.baseUrl();
+    relay.protocol = "openai_responses";
+    relay.timeout_sec = 10;
+    relay.connect_timeout_sec = 2;
+    config.providers = {relay};
+    literouter::RouteConfig route;
+    route.model = kRouteModel;
+    route.targets = {literouter::RouteTarget{.provider = relay.id, .model = {}}};
+    config.routes = {route};
+
+    // The shape a real Codex turn replays: item ids, an encrypted reasoning
+    // chain, and the id of the response the previous turn produced.
+    const json replay{{"model", kRouteModel},
+                      {"previous_response_id", "resp_previous"},
+                      {"input", json::array({json{{"type", "message"}, {"id", "msg_1"},
+                                                  {"role", "user"},
+                                                  {"content", json::array({json{{"type", "input_text"},
+                                                                                {"text", "hi"}}})}},
+                                             json{{"type", "reasoning"}, {"id", "rs_1"},
+                                                  {"encrypted_content", "gAAA"}}})}};
+
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(config);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) {
+        return;
+    }
+    relay_a.setMode(StubRelay::Mode::Normal);
+
+    // Off (the default): the client's bytes reach the relay untouched, which is
+    // what a single-resource endpoint wants and what it paid for before this
+    // option existed.
+    relay_a.resetCounters();
+    const Hit untouched = postJson(proxy.boundPort(), "/v1/responses", replay.dump());
+    LR_CHECK_EQ(untouched.status, 200);
+    const json forwarded_untouched = json::parse(relay_a.lastChatBody(), nullptr, false);
+    LR_CHECK_MSG(forwarded_untouched.is_object() &&
+                     forwarded_untouched.contains("previous_response_id") &&
+                     relay_a.lastChatBody() == replay.dump(),
+                 "a relay that did not ask for the strip lost the client's state: " +
+                     literouter::truncateUtf8(relay_a.lastChatBody(), 300));
+
+    literouter::AppConfig stripping = config;
+    stripping.providers[0].strip_responses_state = true;
+    proxy.updateConfig(stripping);
+    relay_a.resetCounters();
+    const Hit stateless = postJson(proxy.boundPort(), "/v1/responses", replay.dump());
+    LR_CHECK_EQ(stateless.status, 200);
+    const json forwarded = json::parse(relay_a.lastChatBody(), nullptr, false);
+    LR_CHECK_MSG(forwarded.is_object(), "the stripped request did not reach the relay: " +
+                                            literouter::truncateUtf8(relay_a.lastChatBody(), 300));
+    if (forwarded.is_object()) {
+        LR_CHECK_MSG(!forwarded.contains("previous_response_id"),
+                     "previous_response_id survived the strip: " + forwarded.dump());
+        LR_CHECK_MSG(!forwarded["input"][0].contains("id") && !forwarded["input"][1].contains("id"),
+                     "an item id survived the strip: " + forwarded.dump());
+        LR_CHECK_MSG(!forwarded["input"][1].contains("encrypted_content"),
+                     "the encrypted reasoning chain survived the strip: " + forwarded.dump());
+        // The conversation itself is not the state: it has to arrive intact or
+        // the relay would be answering a different question.
+        LR_CHECK_MSG(forwarded["input"][0]["content"][0]["text"] == "hi",
+                     "the strip damaged the message text: " + forwarded.dump());
+    }
+
+    // The operator has to be able to tell that it fired: a workaround nobody can
+    // see is one that is debugged by guessing.
+    const auto waitForLog = [&proxy](std::uint64_t expected) {
+        for (int attempt = 0; attempt < 200; ++attempt) {
+            if (proxy.snapshot().total_requests >= expected) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
+    };
+    LR_CHECK_MSG(waitForLog(2), "the two Responses requests were not both accounted for");
+    bool saw_strip_note = false;
+    bool saw_untouched_note = false;
+    for (const auto &entry : proxy.logsSince(0, 200)) {
+        if (entry.path != "/v1/responses") {
+            continue;
+        }
+        if (entry.message.find("stripped 4 Responses state fields") != std::string::npos) {
+            saw_strip_note = true;
+        }
+        if (entry.message.find("stripped") != std::string::npos &&
+            entry.message.find("stripped 0") != std::string::npos) {
+            saw_untouched_note = true;
+        }
+    }
+    LR_CHECK_MSG(saw_strip_note, "the log never said how much the strip removed");
+    LR_CHECK_MSG(!saw_untouched_note, "a request with nothing to strip still claimed a strip count");
+
+    // Streamed turns go through a different code path and must be stripped too.
+    relay_a.setMode(StubRelay::Mode::Stream);
+    relay_a.resetCounters();
+    json streaming = replay;
+    streaming["stream"] = true;
+    const Hit streamed = postJson(proxy.boundPort(), "/v1/responses", streaming.dump());
+    LR_CHECK_EQ(streamed.status, 200);
+    LR_CHECK_MSG(relay_a.lastChatBody().find("previous_response_id") == std::string::npos &&
+                     relay_a.lastChatBody().find("\"id\":\"rs_1\"") == std::string::npos,
+                 "a streamed Responses turn forwarded its state: " +
+                     literouter::truncateUtf8(relay_a.lastChatBody(), 300));
+    relay_a.setMode(StubRelay::Mode::Normal);
+
+    // A relay that does not speak Responses has nothing to strip, and saying so
+    // once is cheaper than an operator wondering why the switch does nothing.
+    literouter::AppConfig mismatched = stripping;
+    mismatched.providers[0].protocol = "openai";
+    const literouter::ValidationReport report = literouter::validate(mismatched);
+    bool warned = false;
+    for (const auto &issue : report.issues) {
+        if (issue.path == "providers[0].strip_responses_state") {
+            warned = true;
+        }
+    }
+    LR_CHECK_MSG(warned, "a strip option on a non-Responses relay was accepted in silence");
+
+    proxy.stop();
+}
+
 // A config file that changes under a running proxy, for operators who keep the
 // file open in an editor rather than using the console.
 void group27ConfigHotReload(StubRelay &relay_a) {
@@ -4926,6 +5062,7 @@ int main() {
         group36EmbeddingAlias(relay_a);
         group37LargeRequestWithoutExpect(relay_a);
         group38StreamingCapability(relay_a, relay_b);
+        group41ResponsesStateStrip(relay_a);
         // Before the shared fixture is stopped: this group starts its own
         // servers, but it reads relay_a's answer through a forward proxy.
         group40UpstreamProxy(relay_a);

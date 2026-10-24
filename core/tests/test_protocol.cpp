@@ -339,6 +339,69 @@ void testResponsesWireContract() {
     LR_CHECK_MSG(interleaved["messages"][0]["content"].size() == 2, interleaved.dump());
 }
 
+void testResponsesStateStrip() {
+    LR_GROUP("stripResponsesState removes the state an Azure resource binds to itself");
+    using literouter::stripResponsesState;
+
+    // The shape a real Codex turn sends: items carry server ids, the reasoning
+    // item carries the encrypted chain, and the request names the previous
+    // response. Only those go; the visible conversation, the tool call ids and
+    // the arguments stay exactly as the client wrote them.
+    const std::string replay = R"({
+        "model":"gpt-5-codex","previous_response_id":"resp_abc","store":false,
+        "input":[
+            {"type":"message","id":"msg_1","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"reasoning","id":"rs_1","encrypted_content":"gAAA","summary":[]},
+            {"type":"function_call","id":"fc_1","call_id":"call_1","name":"shell","arguments":"{\"cmd\":\"ls\"}"},
+            {"type":"function_call_output","call_id":"call_1","output":"a.txt"},
+            {"type":"reasoning","id":"rs_2","encrypted_content":"gBBB","encrypted_reasoning":"extra"}
+        ],
+        "tools":[{"type":"function","name":"shell","parameters":{"type":"object"}}]
+    })";
+    int stripped = 0;
+    const json out = json::parse(stripResponsesState(replay, stripped));
+    // Four item ids (msg_1, rs_1, fc_1, rs_2), three encrypted fields and the
+    // previous_response_id make eight.
+    LR_CHECK_MSG(stripped == 8, std::format("stripped {} fields, expected 8", stripped));
+    LR_CHECK_MSG(!out.contains("previous_response_id"), out.dump());
+    LR_CHECK_MSG(!out.contains("id") && out.contains("store"), out.dump());
+    for (const auto &item : out["input"]) {
+        LR_CHECK_MSG(!item.contains("id"), "an item kept its server id: " + out.dump());
+        for (auto field = item.begin(); field != item.end(); ++field) {
+            LR_CHECK_MSG(!field.key().starts_with("encrypted"),
+                         "an item kept an encrypted field: " + out.dump());
+        }
+    }
+    // Everything that is the client's own data survives, byte for byte in value.
+    LR_CHECK_MSG(out["input"][0]["content"][0]["text"] == "hi", out.dump());
+    LR_CHECK_MSG(out["input"][2]["call_id"] == "call_1" &&
+                     out["input"][2]["arguments"] == "{\"cmd\":\"ls\"}", out.dump());
+    LR_CHECK_MSG(out["input"][3]["output"] == "a.txt", out.dump());
+    LR_CHECK_MSG(out["input"][1]["summary"].is_array(), out.dump());
+    LR_CHECK_MSG(out["tools"][0]["name"] == "shell", out.dump());
+
+    // A request that carries nothing to strip is returned byte for byte, not
+    // re-serialised: the same-protocol fast path promises the client's own bytes.
+    const std::string clean = R"({"model":"m","input":[{"role":"user","content":"hi"}]})";
+    int untouched = -1;
+    LR_CHECK_MSG(stripResponsesState(clean, untouched) == clean,
+                 "a stateless request was rewritten");
+    LR_CHECK_EQ(untouched, 0);
+
+    // Malformed input is left alone rather than rejected: the relay's own answer
+    // about a broken body says more than a local refusal would.
+    const std::string broken = "{not json";
+    int broken_stripped = -1;
+    LR_CHECK_MSG(stripResponsesState(broken, broken_stripped) == broken,
+                 "a malformed body was rewritten");
+    LR_CHECK_EQ(broken_stripped, 0);
+    const std::string array_body = R"([{"id":"msg_1"}])";
+    int array_stripped = -1;
+    LR_CHECK_MSG(stripResponsesState(array_body, array_stripped) == array_body,
+                 "a non-object body was rewritten");
+    LR_CHECK_EQ(array_stripped, 0);
+}
+
 json protocolSseDocuments(const std::string &stream) {
     json events = json::array();
     std::istringstream input(stream);
@@ -1553,6 +1616,7 @@ int main() {
     testGeminiAdaptation();
     testOpenAiResponsesAdaptation();
     testResponsesWireContract();
+    testResponsesStateStrip();
     testResponsesStreamContract();
     testResponsesStreamTermination();
     testStreamProtocolAdapterAnthropic();

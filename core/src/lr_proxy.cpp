@@ -1422,6 +1422,19 @@ struct ProxyServer::Impl {
                             static_cast<std::size_t>(ctx.config.server.log_body_limit));
     }
 
+    // " · stripped 3 Responses state fields" when a relay's
+    // strip_responses_state removed something, and nothing at all when it did
+    // not — the log line for a stateless request should not carry a zero. The
+    // count is what turns "I enabled the workaround" into "it fired", which is
+    // the difference between reading the log and guessing at it.
+    static std::string strippedStateNote(int stripped) {
+        if (stripped <= 0) {
+            return {};
+        }
+        return std::format(" · stripped {} Responses state field{}", stripped,
+                           stripped == 1 ? "" : "s");
+    }
+
     struct AttemptFacts {
         std::string provider;
         // What the relay was actually asked for, which differs from what the
@@ -2801,6 +2814,10 @@ struct ProxyServer::Impl {
                       : (kind == "embeddings" ? provider->embeddings_path
                                               : resolveChatPath(*provider, upstream_model, effective_stream));
             std::string payload = req.body;
+            // How many Responses fields the relay below did not get to see, so
+            // the log line can say the workaround actually fired instead of
+            // leaving the operator to guess whether it did.
+            int stripped_state = 0;
             const std::string request_type = multipart ? multipart->contentType() : "application/json";
             if (multipart) {
                 payload = multipart->payload(upstream_model);
@@ -2828,13 +2845,22 @@ struct ProxyServer::Impl {
                     payload = adaptChatRequest(*provider, upstream_model, effective_req_body, effective_stream);
                 }
             }
+            // Only a relay that speaks the Responses wire shape can be holding
+            // the state, and only when it asked for this: the flag is a
+            // workaround for one deployment, not a global opinion about
+            // statelessness. A converted body (chat) has no such state left, so
+            // this runs after the branch above and only touches a passthrough.
+            if (provider->strip_responses_state && !media && kind != "embeddings" &&
+                wireShapeOf(egress_protocol) == WireShape::Responses) {
+                payload = stripResponsesState(payload, stripped_state);
+            }
 
             ctx.attempted_upstream = true;
             const ProviderConfig forwarded_provider = providerForRequest(*provider, req);
             if (ctx.stream) {
                 last_status = relayStream(ctx, res, forwarded_provider, candidate, path, payload, attempt,
                                           budget, last_error, ingress_protocol, request_type, media,
-                                          slot);
+                                          slot, stripped_state);
                 if (last_status == 0) {
                     return; // committed: the response is the client's now
                 }
@@ -2972,7 +2998,8 @@ struct ProxyServer::Impl {
                          .usage_reported = tokenUsageReported(result.body),
                          .request_bytes = payload.size(),
                          .cache_status = cacheable && good && response_cache.enabled() ? "miss" : std::string{},
-                         .message = std::format("{} → {}", ctx.model, upstream_model),
+                         .message = std::format("{} → {}{}", ctx.model, upstream_model,
+                                                strippedStateNote(stripped_state)),
                          // A buffered answer arrives in one piece: httplib reports one
                          // number for connect-plus-answer, so that number is the relay's
                          // time to first byte and there is no streaming phase to report.
@@ -3024,7 +3051,8 @@ struct ProxyServer::Impl {
                     std::string &last_error, const std::string &ingress_protocol,
                     const std::string &request_type = "application/json",
                     bool opaque_response = false,
-                    std::shared_ptr<UpstreamSlot> slot = nullptr) {
+                    std::shared_ptr<UpstreamSlot> slot = nullptr,
+                    int stripped_state = 0) {
         std::string root;
         std::string prefix;
         std::string scheme;
@@ -3481,7 +3509,7 @@ struct ProxyServer::Impl {
             [this, bridge, client, provider_id, upstream_model, request_ctx, failover, absorbed,
              stream_ok, attempt_number, total_attempts, attempt_started,
              adapter, usage_observer, provider_root = root, provider, log_body, log_body_limit,
-             streamed_body, payload_size, observe_sse, media_usage_filter,
+             streamed_body, payload_size, observe_sse, media_usage_filter, stripped_state,
              slot = std::move(slot)](std::size_t, h::DataSink &sink) -> bool {
                 // Where this attempt's time went. `headers_unix` is the first
                 // response byte, which is the boundary between the relay thinking
@@ -3622,9 +3650,10 @@ struct ProxyServer::Impl {
                                              .cost_usd = attempt_cost,
                                              .usage_reported = tokens.reported,
                                              .request_bytes = payload_size,
-                                             .message = std::format("stream complete · {} · {}",
+                                             .message = std::format("stream complete · {} · {}{}",
                                                                     humanBytes(bytes),
-                                                                    humanMillis(latency)),
+                                                                    humanMillis(latency),
+                                                                    strippedStateNote(stripped_state)),
                                              .wait_ms = (attempt_started - request_ctx.started) * 1000.0,
                                              .ttfb_ms = ttfb,
                                              .stream_ms = streamed_for,

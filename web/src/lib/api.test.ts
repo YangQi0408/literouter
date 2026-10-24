@@ -59,6 +59,9 @@ describe('normalizeConfig', () => {
     expect(provider.aws_session_token).toBe('')
     expect(provider.max_concurrent).toBe(0)
     expect(provider.requests_per_minute).toBe(0)
+    // A workaround the writer omits while it is off; the form has to render a
+    // real `false` rather than `undefined`.
+    expect(provider.strip_responses_state).toBe(false)
 
     // The server's five new fields are written unconditionally, so they arrive —
     // but a payload from an older build would not carry them.

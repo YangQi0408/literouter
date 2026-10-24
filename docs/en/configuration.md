@@ -99,7 +99,9 @@ You can override the default configuration path at any time via:
       },
       "chat_path": "/chat/completions",        // Custom chat endpoint path (inferred from protocol if omitted)
       "embeddings_path": "/embeddings",        // Custom embeddings endpoint path
-      "note": "Primary upstream provider"
+      "note": "Primary upstream provider",
+      // Only on protocol: openai_responses; makes forwarded requests stateless
+      "strip_responses_state": false
     },
     {
       "id": "anthropic-direct",
@@ -269,6 +271,7 @@ Writes match the config file: a temp file in the same directory followed by an a
 | `aws_access_key` | `string` | `""` | `bedrock`: SigV4 access key id (**required**). `${VAR}` references work and are resolved only at signing time. |
 | `aws_secret_key` | `string` | `""` | `bedrock`: SigV4 secret access key (**required**), `${VAR}` supported the same way. |
 | `aws_session_token` | `string` | `""` | `bedrock`: STS session token for temporary credentials; it is signed along with the rest. |
+| `strip_responses_state` | `bool` | `false` | Only meaningful on a relay whose `protocol` is `openai_responses`. Removes the Responses API's server-side state before forwarding: every input item's `id`, any `encrypted*` field on an item (the encrypted reasoning chain), and the top-level `previous_response_id`. Message text, `call_id` and tool arguments are forwarded untouched. Enable it for a relay that **balances across several Azure OpenAI resources without session stickiness**: Azure stores items and encrypts reasoning content per resource, so a conversation that lands on a different one is answered with HTTP 400 (`The requested item was created under a different Azure OpenAI resource`). The cost is that the model no longer continues a hidden reasoning chain across turns and reasons again each turn. When it fires, the request log records how many fields were stripped. Ported from [codex-strip-proxy](https://github.com/AnnaofArendelle/codex-strip-proxy) by AnnaofArendelle. |
 | `max_concurrent` | `int` | `0` | **Relay-side** in-flight limit; `0` is unlimited. It bounds what literouter itself sends to this relay, not what any caller may ask for. A relay at its limit is skipped like an open breaker and the next candidate is tried (**without** counting a breaker failure); when the whole chain is full the client gets `429` with a `Retry-After`. |
 | `requests_per_minute` | `int` | `0` | **Relay-side** rolling 60-second start limit; `0` is unlimited. Every start is recorded even when no limit is set — otherwise the first minute after an operator turns a limit on would be free, which is exactly when it was wanted. |
 | `price_in_per_million` | `double` | `0` | What this relay charges by default for **input** tokens, in USD per million. `0` means not written down, and an unpriced relay contributes **nothing** to the cost estimate rather than being counted at zero. |

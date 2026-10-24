@@ -163,6 +163,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
 4. **`openai_responses`**：
    - 适用于支持 OpenAI 新一代 Responses 协议的上游端点。
    - 默认鉴权：`Authorization: Bearer <api_key>`；路径 `/v1/responses`。
+   - 该协议是**有状态**的：应答里的 item（`msg_…` / `rs_…` / 工具调用）与加密思维链 `encrypted_content` 由创建它的服务端存储与加密。若上游是在多个 Azure OpenAI 资源间轮转、且不做会话粘性的中转站，会话的下一轮落到别的资源上会被拒为 400（`The requested item was created under a different Azure OpenAI resource` / `The encrypted content for item rs_… could not be verified`）。
+   - 对策是 `providers[].strip_responses_state: true`：转发前剥离 `input` 中每个 item 的 `id`、item 上任何 `encrypted*` 字段以及顶层 `previous_response_id`，让每个请求都变成任何资源都能接受的无状态形态。消息正文、`call_id` 与工具参数照常透传，同协议直通的其他零拷贝性质不变（有字段被剥离时该次请求会重新序列化一次，请求日志记录剥离数量）。代价是模型不再跨轮接续隐藏思维链，每轮重新推理。该选项默认关闭，且在非 Responses 报文形态的中转站上会得到一条校验告警。实现移植自 [codex-strip-proxy](https://github.com/AnnaofArendelle/codex-strip-proxy)（作者 AnnaofArendelle）。
 5. **`azure`**（Azure OpenAI）：
    - 报文与 `openai` **完全同形**，因此同协议直通、零解析；差别只在路径与鉴权：模型名是路径里的 **deployment**，必须带 `api-version` 查询参数，密钥走 `api-key` 请求头（Azure 拒绝 bearer）。
    - 路径：`/openai/deployments/{model}/chat/completions?api-version={api_version}`，`api_version` 留空时用 `2024-10-21`。
@@ -208,6 +210,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
 
 - **零解析开销**：入站请求体无需经过完整的 JSON DOM 树构建，直接流向目标上游套接字（仅在需要重命名模型时做轻量替换）；
 - **零缓冲透传**：SSE 数据块到达后即刻推入客户端套接字，内存无额外拼装拷贝，延迟达到硬件和网络极限。
+
+> 唯一的例外是 `strip_responses_state`：开启它的中转站在转发前需要改写请求体（见上文 `openai_responses`），因此该次请求会多一次 JSON 解析与序列化；未开启或没有可剥离字段时，请求体仍按客户端原始字节发出。
 
 请求默认透传端到端业务头，包括 `User-Agent`、`originator`、请求/会话标识、追踪头及未知自定义头，无需登记请求头或增加配置。入站同名头重复时采用第一个值，但 `anthropic-beta` 和 `openai-beta` 的列表值会以逗号合并。`providers[].headers` 中的显式配置优先，覆盖时不区分大小写，也会覆盖已合并的 beta 列表。缓冲和流式请求遵循同一规则。
 
@@ -351,7 +355,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
   "traffic_bucket_count": 24,
   "traffic_bucket_sec": 3600,
   "uptime_sec": 3600.5,
-  "version": "0.3.1"
+  "version": "0.4.0"
 }
 ```
 

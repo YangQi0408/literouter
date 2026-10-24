@@ -61,6 +61,7 @@ export function makeProvider(overrides: Partial<ProviderConfig> = {}): ProviderC
     aws_access_key: '',
     aws_secret_key: '',
     aws_session_token: '',
+    strip_responses_state: false,
     max_concurrent: 0,
     requests_per_minute: 0,
     price_in_per_million: 0,

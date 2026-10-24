@@ -66,6 +66,9 @@ export const PROVIDER_DEFAULTS: ProviderConfig = {
   aws_access_key: '',
   aws_secret_key: '',
   aws_session_token: '',
+  // Omitted by the writer when off, so it has to be restored here or the
+  // provider form renders `undefined` into a switch.
+  strip_responses_state: false,
   max_concurrent: 0,
   requests_per_minute: 0,
   price_in_per_million: 0,
