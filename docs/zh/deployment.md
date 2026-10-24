@@ -348,6 +348,21 @@ docker compose up -d
 docker compose logs -f
 ```
 
+**首次启动的初始化**：
+
+容器不会替你创建 `config.json`。第一次启动时配置卷是空的，`literouter serve` 会用内置的 seed 配置跑起来（监听 `0.0.0.0:8787`、只带一个指向 `api.openai.com` 的示例中转站），并打印一条 `config … does not exist; running with the built-in seed` 提示。接着任选一种方式把它写成真正的配置：
+
+```bash
+# 方式一：在浏览器里打开 http://127.0.0.1:8787/ui 添加中转站与路由。
+# 控制台保存时会自动把配置写入卷，不需要任何命令行操作。
+
+# 方式二：用命令行写入 seed 配置，再用 providers/routes 子命令补齐
+docker compose exec literouter literouter config init
+docker compose exec literouter literouter providers add --help
+```
+
+> `config init` 在 `config.json` 已存在时会拒绝覆盖（提示加 `--force`），所以重复执行不会冲掉已经编辑好的配置。
+
 ---
 
 ### 容器运维核心注意事项

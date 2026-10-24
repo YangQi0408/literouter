@@ -329,6 +329,21 @@ docker compose up -d
 docker compose logs -f
 ```
 
+**First-run initialisation**:
+
+The container does not create `config.json` for you. On the first start the config volume is empty, so `literouter serve` comes up on the built-in seed config (listening on `0.0.0.0:8787`, with a single example relay pointing at `api.openai.com`) and prints `config … does not exist; running with the built-in seed`. Turn that into a real config with either of these:
+
+```bash
+# Option 1: open http://127.0.0.1:8787/ui and add relays and routes there.
+# Saving from the console writes the config into the volume, no CLI needed.
+
+# Option 2: write the seed config from the CLI, then fill it in
+docker compose exec literouter literouter config init
+docker compose exec literouter literouter providers add --help
+```
+
+> `config init` refuses to overwrite an existing `config.json` (it asks for `--force`), so re-running it never clobbers a config you have already edited.
+
 ---
 
 ### Container Operational Notes
