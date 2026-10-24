@@ -1,0 +1,36 @@
+# literouter-tray — a tray-only companion to `literouter serve`.
+#
+# Deliberately NOT a member of the root virtual workspace. It is the only thing
+# in this repository that pulls eui-neo, and eui-neo brings GLFW, OpenGL, freetype,
+# libpng and glib/gio behind it. A workspace member would put that whole closure
+# on every `mcpp build --workspace`, which is a large tax on a project whose own
+# product is a single dependency-light binary. Build it on demand:
+#
+#     mcpp build -p .   (from this directory)
+#
+# CI and release both build `-p core` / `-p cli` only, so nothing here can break
+# a release.
+[package]
+namespace   = "literouter"
+name        = "tray"
+version     = "0.4.0"
+description = "literouter — tray icon that starts and stops the local gateway"
+license     = "Apache-2.0"
+
+[toolchain]
+default = "llvm@22.1.8"
+
+[dependencies.compat]
+# Pinned exactly, like every other third-party pin in this repository. The tray
+# API this program drives (initializeTray / pollTray / consumeTrayShowRequested /
+# consumeTrayExitRequested) is stable across 0.5.x and 0.6.x, but the menu it
+# presents is hard-coded inside the library — see the note in src/main.cpp.
+eui-neo = "0.6.0"
+
+[targets.literouter-tray]
+kind = "bin"
+main = "src/main.cpp"
+
+[build]
+bmi_schedule = "on"
+jobs = "auto"

@@ -194,6 +194,19 @@ literouter bench --model gpt-4o  # 对比各中转站在同一模型上的真实
 literouter config validate       # 深度校验配置文件的正确性与安全性
 ```
 
+### 系统托盘（可选）
+
+`tray/` 下有一个独立的托盘小程序，用图标代替终端窗口来管理网关：启动时拉起
+`literouter serve`，退出时干净地停掉它，点 **Show** 用浏览器打开内置 Web 控制台。
+它不随主工作区构建（会引入 GLFW / OpenGL / glib 一整套图形依赖），需要时单独编译：
+
+```bash
+cd tray && mcpp build && ./target/*/*/bin/*/literouter-tray
+```
+
+⚠️ 受 EUI-NEO 的托盘 API 限制，菜单只有 **Show** / **Exit** 两项——启停网关跟随
+托盘进程的生命周期，而不是独立的菜单项。细节与限制见 [`tray/README.md`](tray/README.md)。
+
 ---
 
 ## 📚 详细专题文档导航
@@ -220,6 +233,12 @@ mcpp build --workspace
 # 运行全套核心单元测试（13 个套件全部通过）
 mcpp test -p core
 mcpp test -p cli
+```
+
+`tray/` 是独立工程，不属于上面的虚拟工作区，因此 `--workspace` 不会构建它：
+
+```bash
+cd tray && mcpp build
 ```
 
 ## 开源许可
