@@ -136,9 +136,29 @@
 | **HTTP 429** | Rate Limited (触发限流) | ✅ **是** | 当前站点额度耗尽或频控，自动降级至备用站 |
 | **HTTP 500 ~ 599** | Internal Server Error / Bad Gateway / Unavailable | ✅ **是** | 上游崩溃或网关超时，立即无损故障转移 |
 | **HTTP 400** | Bad Request (提示词语法错误/传参非法) | ❌ **否** | 属于客户端业务问题，直接透传返回给客户端 |
+| **HTTP 400 / 403，但报文体自述容量问题** | 账号池冷却、额度耗尽、`model_blocked`、`overloaded` 等 | ✅ **是** | 状态码说的是“你请求错了”，报文体说的是“我这边没容量”，以后者为准；见下方“状态码之外的第二判据” |
 | **HTTP 401 / 403** | Unauthorized / Forbidden (Key 失效或 WAF 拦截) | ❌ **否** | 鉴权失败，直接返回，提示用户检查密钥 |
 | **HTTP 404** | Not Found (上游无此端点或模型) | ❌ **否** | 直接返回给客户端 |
+| **HTTP 4xx，但响应是 HTML 页面** | 门户页 / 反向代理错误页 / WAF 拦截页 | ✅ **是** | 那不是 API 对本次请求的意见；401 与 404 除外 |
 | **流式首包之后** | 响应头已写入客户端套接字后发生的任何异常 | ❌ **否** | **闸门关闭**，立即终止，杜绝双重回答拼接 |
+
+### 状态码之外的第二判据
+
+上表里 `400` 同时出现在“是”与“否”两行，因为**状态码只回答了一半**。真实案例：本地账号池网关在「该模型的所有账号都在冷却中」时返回的是
+
+```json
+{"error":{"code":"model_unavailable",
+          "gateway_hint":"model_blocked: 1 account(s) cooling down this model; upstream: 6004 model rate limit"}}
+```
+
+HTTP 状态 400。只信状态码的话，这条链上明明还有健康备站，客户端却连着收到四次 400：既不会故障转移，也不会进入熔断（`relay_behaved` 把它记成了一次“中转站行为正常”），备用站一次都没被碰过。
+
+因此 `Router::isCapacityErrorBody()` 会在 `400` / `403` 上读报文体：
+
+- **算容量问题**（可重试，且计入熔断失败）：`rate limit`、`ratelimit`、`too many requests`、`quota`、`insufficient_quota`、`capacity`、`overloaded`、`model_unavailable`、`model_blocked`、`cooling down`、`no available`、`try again later`、`temporarily unavailable`；
+- **仍然算客户端错误**（不重试）：`context_length_exceeded`、`context length exceeded`、`maximum context length`、`invalid_request_error`、`invalid_parameter`、`unsupported_parameter`、`missing required`、`malformed`。**这些标记优先判定**——一个既超上下文长度又提到 rate limit 的报文体仍然归客户端，因为把一次上下文溢出在所有中转站上重试一遍，只是花掉全部站点去收集同一个抱怨。
+
+判定只对 `400` 与 `403` 生效。`404`、`422` 之类即便报文体里出现容量词汇，仍然是该站对“这个模型 / 这条路径”的答复。
 
 ---
 
@@ -181,6 +201,7 @@
 
 - **客户端主动取消 (Client Abort)**：客户端在生成过程中关闭了网页或按下了停止按钮，HTTP 传输被客户端主动掐断，**绝不计入熔断失败**。
 - **客户端业务错误 (HTTP 400)**：客户端发送了非法 JSON、不支持的参数或超出上下文长度的提示词，**绝不计入熔断失败**。
+  - 例外是上面说的“状态码之外的第二判据”：`400` / `403` 的报文体若自述账号池冷却、额度耗尽等容量问题，那是中转站自己的问题，**要计入熔断失败**，否则一个持续限流的站会一直看起来健康。
 
 ### 多节点全熔断兜底
 

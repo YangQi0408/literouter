@@ -875,6 +875,23 @@ public:
 
     // Reasons a request was moved to the next candidate, in order.
     static bool retryableStatus(int status);
+    // Whether an error body that arrived under a non-retryable status actually
+    // describes the relay's own capacity problem, not the caller's mistake.
+    //
+    // The status code is normally the whole answer: a 400 means the request was
+    // wrong, and asking the next relay would get the same complaint. Some relays
+    // break that contract and report a spent quota or a cooling-down account
+    // pool as `400 model_unavailable` (a real case: a local account-pool gateway
+    // answering `{"error":{"code":"model_unavailable","gateway_hint":"model_blocked:
+    // 1 account(s) cooling down this model"}}` with HTTP 400). Taken at face
+    // value that turns a relay-side limit into a client-side error that never
+    // fails over and never reaches the breaker, which is the one thing the
+    // failover chain exists to prevent. So a 400/403 body is read for capacity
+    // vocabulary, and only then is the hop retried.
+    //
+    // Deliberately narrow: `invalid_request_error`, `context_length_exceeded` and
+    // friends stay non-retryable, because those really are the caller's fault.
+    static bool isCapacityErrorBody(int status, std::string_view body);
 
 private:
     const ProviderConfig *find(std::string_view id) const;
@@ -963,6 +980,28 @@ struct ProviderProbe {
 // GET {base_url}/models. This is the "Test" action and also the way the
 // console discovers what a relay actually serves.
 ProviderProbe probeProvider(const ProviderConfig &provider, int timeout_sec = 15);
+
+// What a failed upstream answer actually was, as opposed to what its status
+// code claims. One verdict feeds both decisions that used to be made in two
+// places and could disagree: whether the hop may be retried (the failover gate)
+// and whether the client gets the relay's own text or a wrapped HTML/WAF error.
+struct UpstreamFailure {
+    // The next candidate may well answer differently: a retryable status, a
+    // Cloudflare WAF block, or a body that names a capacity limit under a
+    // status that would otherwise look like the caller's mistake.
+    bool worth_retrying = false;
+    // A WAF interstitial rather than the API's own error.
+    bool cloudflare_blocked = false;
+    // An HTML page where a JSON error belongs — a portal, a proxy, a 502 page.
+    bool html_page = false;
+};
+
+// Classifies one failed answer. `headers` supplies the Cloudflare signals
+// (`cf-ray`, `server`) and the content type, matched case-insensitively; an
+// empty list simply means none of them were present.
+UpstreamFailure classifyUpstreamFailure(
+    int status, std::string_view body,
+    const std::vector<std::pair<std::string, std::string>> &headers);
 
 // Which CA bundle this process will verify upstream certificates against, as a
 // human string. Empty means "the TLS library's own defaults". `doctor` prints

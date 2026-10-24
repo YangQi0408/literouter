@@ -97,7 +97,20 @@ bool writeVertexCredentials(const std::filesystem::path &path, const std::string
 // Behaves like an OpenAI-compatible relay whose mood is set per assertion group.
 class StubRelay {
 public:
-    enum class Mode { Normal, RateLimit, ServerError, BadRequest, EmptyError, Stream, HeaderEcho, RequestEcho };
+    enum class Mode {
+        Normal,
+        RateLimit,
+        ServerError,
+        BadRequest,
+        // A relay that reports its own capacity problem as HTTP 400. Seen in
+        // the wild on account-pool gateways: the status says "your request is
+        // wrong", the body says "my accounts for this model are cooling down".
+        CapacityBadRequest,
+        EmptyError,
+        Stream,
+        HeaderEcho,
+        RequestEcho
+    };
 
     StubRelay(std::string path_prefix, std::string normal_body)
         : path_prefix_(std::move(path_prefix)), normal_body_(std::move(normal_body)) {}
@@ -183,6 +196,7 @@ public:
     const std::string &normalBody() const { return normal_body_; }
     const std::string &errorBody() const { return error_body_; }
     const std::string &badRequestBody() const { return bad_request_body_; }
+    const std::string &capacityBadRequestBody() const { return capacity_bad_request_body_; }
     const std::string &serverErrorBody() const { return server_error_body_; }
 
     // The SSE transcript this relay streams, chunk by chunk.
@@ -250,6 +264,10 @@ private:
             res.status = 400;
             res.set_content(bad_request_body_, "application/json");
             return;
+        case Mode::CapacityBadRequest:
+            res.status = 400;
+            res.set_content(capacity_bad_request_body_, "application/json");
+            return;
         case Mode::Stream:
             serveStream(res);
             return;
@@ -305,6 +323,11 @@ private:
         R"({"error":{"message":"rate limit reached for gpt-4o","type":"rate_limit_error","code":"rate_limit_exceeded"}})";
     const std::string bad_request_body_ =
         R"({"error":{"message":"context length exceeded: 200000 > 128000","type":"invalid_request_error","code":"context_length_exceeded"}})";
+    // Verbatim shape of what a local account-pool gateway answers when every
+    // account holding the model is in cooldown. Nothing about it is the
+    // caller's fault, which is why the status code is the wrong half of it.
+    const std::string capacity_bad_request_body_ =
+        R"({"error":{"code":"model_unavailable","gateway_hint":"model_blocked: 1 account(s) cooling down this model; earliest unblock at 2026-10-24T20:20:35+08:00; upstream: 6004 model rate limit","message":"model is unavailable on every account (per-model cooldown), try another model","type":"api_error"}})";
     const std::string server_error_body_ =
         R"({"error":{"message":"upstream exploded","type":"server_error","code":"internal_error"}})";
     httplib::Server server_;
@@ -1053,6 +1076,77 @@ void group3BadRequest(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyS
     // The caller's request still counts as a failure at the top level.
     LR_CHECK_EQ(snapshot.total_failure, static_cast<std::uint64_t>(1));
     LR_CHECK_EQ(snapshot.total_success, static_cast<std::uint64_t>(0));
+}
+
+// A 400 whose body is really a capacity report. The status code says the caller
+// got the request wrong; the body says the relay cannot serve this model right
+// now. Believing the status is what made a chain of two candidates answer 400
+// four times in a row while the second relay was healthy the whole time, so
+// this group pins the body-based verdict on both transports.
+void group3bCapacityBadRequest(StubRelay &relay_a, StubRelay &relay_b,
+                               literouter::ProxyServer &proxy) {
+    LR_GROUP("3b. a 400 whose body names a capacity limit fails over instead of being believed");
+    const int port = proxy.boundPort();
+    proxy.resetStats();
+    relay_a.setMode(StubRelay::Mode::CapacityBadRequest);
+    relay_b.setMode(StubRelay::Mode::Normal);
+    relay_a.resetCounters();
+    relay_b.resetCounters();
+
+    const Hit hit = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
+    LR_CHECK_MSG(hit.status == 200,
+                 std::format("a capacity 400 must fail over, got HTTP {}", hit.status));
+    LR_CHECK_MSG(hit.body == relay_b.normalBody(),
+                 "the answer must come from the second relay");
+    // Two hops on alpha, exactly as in group 2: the route target's own model,
+    // then the model alpha advertises. Both hit the capacity 400, and only then
+    // does the chain reach beta.
+    LR_CHECK_EQ(relay_a.chatRequests(), 2);
+    LR_CHECK_MSG(relay_b.chatRequests() == 1, "the second relay was never tried");
+
+    const literouter::Snapshot snapshot = proxy.snapshot();
+    // The relay did fail: a capacity limit is the relay's problem, so unlike a
+    // genuine 400 this one reaches the breaker and the failure counter.
+    const auto *alpha = statOf(snapshot, "alpha");
+    LR_CHECK(alpha != nullptr);
+    if (alpha != nullptr) {
+        LR_CHECK_EQ(alpha->requests, static_cast<std::uint64_t>(2));
+        LR_CHECK_EQ(alpha->failures, static_cast<std::uint64_t>(2));
+        LR_CHECK_EQ(alpha->successes, static_cast<std::uint64_t>(0));
+    }
+    const auto *alphaHealth = healthOf(snapshot, "alpha");
+    LR_CHECK_MSG(alphaHealth != nullptr &&
+                     alphaHealth->state == literouter::ProviderHealth::State::Degraded,
+                 "a capacity 400 must count against the relay's breaker");
+    const auto *beta = statOf(snapshot, "beta");
+    LR_CHECK(beta != nullptr && beta->retries_in == 1);
+
+    // The request log has to say why a 400 moved on; the status alone would
+    // read like the proxy ignoring its own non-retryable rule.
+    bool explained = false;
+    for (const auto &entry : proxy.logsSince(0, 200)) {
+        if (entry.status == 400 && entry.failover &&
+            entry.message.find("capacity limit in the body") != std::string::npos) {
+            explained = true;
+        }
+    }
+    LR_CHECK_MSG(explained, "no log entry explained the 400 failover");
+
+    LR_GROUP("3c. the same capacity 400 fails over on the streaming path");
+    proxy.resetStats();
+    relay_a.setMode(StubRelay::Mode::CapacityBadRequest);
+    relay_b.setMode(StubRelay::Mode::Stream);
+    relay_a.resetCounters();
+    relay_b.resetCounters();
+
+    const Hit streamed = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true));
+    LR_CHECK_MSG(streamed.status == 200,
+                 std::format("a capacity 400 on a stream must fail over, got HTTP {}",
+                             streamed.status));
+    LR_CHECK_MSG(streamed.body == join(relay_b.sseChunks()),
+                 "the stream must come from the second relay");
+    LR_CHECK_EQ(relay_a.chatRequests(), 2);
+    LR_CHECK_EQ(relay_b.chatRequests(), 1);
 }
 
 void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServer &proxy) {
@@ -5041,6 +5135,7 @@ int main() {
         group1PlainRequest(relay_a, relay_b, proxy.boundPort());
         group2RateLimited(relay_a, relay_b, proxy);
         group3BadRequest(relay_a, relay_b, proxy);
+        group3bCapacityBadRequest(relay_a, relay_b, proxy);
         group4Streaming(relay_a, relay_b, proxy);
         group5ModelList(relay_a, proxy);
         group6UnknownModel(relay_a, proxy, config);

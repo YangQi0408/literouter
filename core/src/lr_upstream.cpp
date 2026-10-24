@@ -462,6 +462,84 @@ void retireUpstreamConnection(std::string_view root, const ProviderConfig &provi
     evictClient(poolKey(root, provider));
 }
 
+// ── failure classification ──────────────────────────────────────────────────
+//
+// Two of the three reasons a failed hop is still worth retrying are properties
+// of the answer itself rather than of its status code, so they live next to the
+// call that produces the answer instead of in the proxy.
+
+bool isHtmlResponseBody(std::string_view contentType, std::string_view body) {
+    const std::string ct = toLower(contentType);
+    if (ct.find("text/html") != std::string::npos ||
+        ct.find("application/xhtml+xml") != std::string::npos) {
+        return true;
+    }
+    const std::string trimmed = trim(body);
+    if (trimmed.size() >= 5) {
+        const std::string prefix =
+            toLower(trimmed.substr(0, std::min<std::size_t>(trimmed.size(), 64)));
+        if (prefix.starts_with("<!doctype html") || prefix.starts_with("<html")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isCloudflareBlockedBody(int status, std::string_view server,
+                             std::string_view cfRay, std::string_view body) {
+    const bool cf_server =
+        toLower(server).find("cloudflare") != std::string::npos || !cfRay.empty();
+    if (status == 403 || status == 503 || status == 429) {
+        if (cf_server) {
+            return true;
+        }
+        const std::string lower = toLower(body);
+        if (lower.find("cloudflare") != std::string::npos &&
+            (lower.find("attention required") != std::string::npos ||
+             lower.find("sorry, you have been blocked") != std::string::npos ||
+             lower.find("just a moment...") != std::string::npos ||
+             lower.find("turnstile") != std::string::npos ||
+             lower.find("cf-wrapper") != std::string::npos)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+UpstreamFailure classifyUpstreamFailure(
+    int status, std::string_view body,
+    const std::vector<std::pair<std::string, std::string>> &headers) {
+    // Read only the three headers the verdict needs rather than copying the
+    // map: this runs on every failed hop.
+    std::string server;
+    std::string cf_ray;
+    std::string content_type;
+    for (const auto &[name, value] : headers) {
+        if (ciEqual(name, "server")) {
+            server = value;
+        } else if (ciEqual(name, "cf-ray")) {
+            cf_ray = value;
+        } else if (ciEqual(name, "content-type")) {
+            content_type = value;
+        }
+    }
+
+    UpstreamFailure failure;
+    if (status < 400) {
+        return failure;
+    }
+    failure.cloudflare_blocked = isCloudflareBlockedBody(status, server, cf_ray, body);
+    failure.html_page = isHtmlResponseBody(content_type, body);
+    failure.worth_retrying =
+        Router::retryableStatus(status) || failure.cloudflare_blocked ||
+        // An HTML error page is a portal or a WAF, not the API's own opinion
+        // about the request, so the next relay may well answer normally. A 401
+        // or a 404 is still the relay's own answer about this key or this path.
+        (failure.html_page && status != 401 && status != 404) ||
+        Router::isCapacityErrorBody(status, body);
+    return failure;
+}
+
 ProviderProbe probeProvider(const ProviderConfig &provider, int timeout_sec) {
     ProviderProbe probe;
     const double started = nowUnix();

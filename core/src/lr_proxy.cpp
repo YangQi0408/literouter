@@ -530,44 +530,20 @@ std::string headerValue(const std::map<std::string, std::string> &headers,
     return {};
 }
 
+// Both of these classify an answer, and the same classification also decides
+// whether the hop may be retried — so the rules live in lr_upstream.cpp, next to
+// classifyUpstreamFailure(), and these are only the header-container adapters.
+// One copy of the rules is what stops "the proxy said WAF, the retry gate said
+// not worth retrying" from becoming possible.
 template <typename HeadersT>
 bool isHtmlResponse(const HeadersT &headers, std::string_view body) {
-    const std::string ct = toLower(headerValue(headers, "content-type"));
-    if (ct.find("text/html") != std::string::npos ||
-        ct.find("application/xhtml+xml") != std::string::npos) {
-        return true;
-    }
-    const std::string trimmed = trim(body);
-    if (trimmed.size() >= 5) {
-        const std::string prefix = toLower(std::string{trimmed.substr(0, std::min<std::size_t>(trimmed.size(), 64))});
-        if (prefix.starts_with("<!doctype html") || prefix.starts_with("<html")) {
-            return true;
-        }
-    }
-    return false;
+    return isHtmlResponseBody(headerValue(headers, "content-type"), body);
 }
 
 template <typename HeadersT>
 bool isCloudflareBlocked(int status, const HeadersT &headers, std::string_view body) {
-    const std::string cf_ray = headerValue(headers, "cf-ray");
-    const std::string server = toLower(headerValue(headers, "server"));
-    const bool cf_server = server.find("cloudflare") != std::string::npos || !cf_ray.empty();
-
-    if (status == 403 || status == 503 || status == 429) {
-        if (cf_server) {
-            return true;
-        }
-        const std::string lower = toLower(body);
-        if (lower.find("cloudflare") != std::string::npos &&
-            (lower.find("attention required") != std::string::npos ||
-             lower.find("sorry, you have been blocked") != std::string::npos ||
-             lower.find("just a moment...") != std::string::npos ||
-             lower.find("turnstile") != std::string::npos ||
-             lower.find("cf-wrapper") != std::string::npos)) {
-            return true;
-        }
-    }
-    return false;
+    return isCloudflareBlockedBody(status, headerValue(headers, "server"),
+                                   headerValue(headers, "cf-ray"), body);
 }
 
 std::string stripTags(std::string_view html) {
@@ -2883,15 +2859,27 @@ struct ProxyServer::Impl {
                 continue;
             }
 
-            const bool is_cf_block = isCloudflareBlocked(result.status, result.headers, result.body);
-            const bool is_html_err = result.status >= 400 && isHtmlResponse(result.headers, result.body);
-            const bool retryable = Router::retryableStatus(result.status) || is_cf_block || (result.status == 403 && is_html_err);
+            // Classified through the same gate the streaming path uses, so a
+            // relay that reports its own capacity problem under a 400 fails
+            // over on both transports instead of only on one of them.
+            const std::vector<std::pair<std::string, std::string>> upstream_headers(
+                result.headers.begin(), result.headers.end());
+            const UpstreamFailure verdict =
+                classifyUpstreamFailure(result.status, result.body, upstream_headers);
+            const bool is_cf_block = verdict.cloudflare_blocked;
+            const bool is_html_err = verdict.html_page;
+            const bool retryable = verdict.worth_retrying;
             const bool more = attempt + 1 < budget;
 
             if (retryable && more) {
                 last_error = is_cf_block
                                  ? std::format("{}: Cloudflare WAF blocked (HTTP {})", provider->id, result.status)
                                  : std::format("{}: HTTP {}", provider->id, result.status);
+                if (!Router::retryableStatus(result.status) && !is_cf_block) {
+                    // Name the reason the status code does not: an operator
+                    // reading the log needs to know why a 400 moved on.
+                    last_error += ", capacity limit in the body";
+                }
                 last_status = result.status;
                 router.recordFailure(provider->id, upstream_model, last_error, nowUnix(),
                                      retryAfterSeconds(result.headers));
@@ -3268,22 +3256,27 @@ struct ProxyServer::Impl {
         }
 
 
-        if (Router::retryableStatus(status) && attempt + 1 < budget) {
-            // Drain the error body first: it is the diagnostic the log keeps,
-            // and on the last candidate it is what the client would have seen.
-            std::string detail;
-            std::vector<std::pair<std::string, std::string>> retry_headers;
+        // The status alone does not decide this any more: a relay that reports
+        // its own capacity problem under a 400 still has to be covered for by
+        // the next candidate. The body is drained either way, because a
+        // retryable failure needs the reason for the log and a terminal one
+        // needs the body to answer the client with — so drain first, decide
+        // after, and let the gate below act on the verdict.
+        std::string error_detail;
+        std::vector<std::pair<std::string, std::string>> error_headers;
+        UpstreamFailure verdict;
+        if (status >= 400) {
             {
                 std::unique_lock lock{bridge->mutex};
                 bridge->cv.wait_for(lock, std::chrono::seconds(10),
                                     [&] { return bridge->finished; });
                 for (const auto &chunk : bridge->queue) {
-                    detail.append(chunk);
-                    if (detail.size() > 2048) {
+                    error_detail.append(chunk);
+                    if (error_detail.size() > kMaxErrorBody) {
                         break;
                     }
                 }
-                retry_headers = bridge->headers;
+                error_headers = bridge->headers;
                 bridge->aborted = true;
                 bridge->cv.notify_all();
             }
@@ -3291,20 +3284,28 @@ struct ProxyServer::Impl {
             if (reader.joinable()) {
                 reader.join();
             }
+            verdict = classifyUpstreamFailure(status, error_detail, error_headers);
+        }
 
-            last_error =
-                std::format("{}: HTTP {} {}", provider.id, status, truncateUtf8(trim(detail), 160));
+        if (verdict.worth_retrying && attempt + 1 < budget) {
+            last_error = std::format("{}: HTTP {} {}", provider.id, status,
+                                     truncateUtf8(trim(error_detail), 160));
             // The transfer was cut short, so its socket is not one to hand back.
             retireUpstreamConnection(root, provider);
             // A streamed 429 has the same thing to say about when it will be
-            // ready as a buffered one does.
+            // ready as a buffered one does. A 400 that was really a capacity
+            // limit says nothing about when, so it contributes no window.
             router.recordFailure(provider.id, upstream_model, std::format("HTTP {}", status), nowUnix(),
-                                 retryAfterSeconds(retry_headers));
+                                 retryAfterSeconds(error_headers));
             recordAttempt(provider.id, ctx.model, AttemptOutcome::Failure,
                           (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
             logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
                         (nowUnix() - attempt_started) * 1000.0, waited_ms(), status,
-                        std::format("HTTP {} — failing over", status), static_cast<int>(budget));
+                        std::format("HTTP {} — failing over{}", status,
+                                    Router::retryableStatus(status)
+                                        ? std::string{}
+                                        : std::string{", capacity limit in the body"}),
+                        static_cast<int>(budget));
             return status;
         }
 
@@ -3318,54 +3319,20 @@ struct ProxyServer::Impl {
         // process. Drain it and hand it back exactly like the non-streaming
         // path does: same status, same body, same headers.
         if (status >= 400) {
-            std::string body;
-            {
-                std::unique_lock lock{bridge->mutex};
-                bridge->cv.wait_for(lock, std::chrono::seconds(10),
-                                    [&] { return bridge->finished; });
-                for (const auto &chunk : bridge->queue) {
-                    body.append(chunk);
-                    if (body.size() >= kMaxErrorBody) {
-                        break;
-                    }
-                }
-                bridge->aborted = true;
-                bridge->cv.notify_all();
-            }
-            client->stop();
-            if (reader.joinable()) {
-                reader.join();
-            }
+            // Already drained above, where the retry verdict was formed, and the
+            // "retry or not" decision was made there too — reaching this point
+            // means either the body was not retryable or there is no next
+            // candidate left to retry on.
+            const std::string &body = error_detail;
 
-            std::vector<std::pair<std::string, std::string>> error_headers;
-            {
-                std::scoped_lock lock{bridge->mutex};
-                error_headers = bridge->headers;
-            }
-
-            const bool is_cf_block = isCloudflareBlocked(status, error_headers, body);
-            const bool is_html_err = isHtmlResponse(error_headers, body);
+            const bool is_cf_block = verdict.cloudflare_blocked;
+            const bool is_html_err = verdict.html_page;
             // Drained and stopped above: this socket is finished, not reusable.
             retireUpstreamConnection(root, provider);
-            const bool retryable = Router::retryableStatus(status) || is_cf_block || (status == 403 && is_html_err);
-
-            if (retryable && attempt + 1 < budget) {
-                last_error = is_cf_block
-                                 ? std::format("{}: Cloudflare WAF blocked (HTTP {})", provider.id, status)
-                                 : std::format("{}: HTTP {}", provider.id, status);
-                router.recordFailure(provider.id, upstream_model, last_error, nowUnix(),
-                                     retryAfterSeconds(error_headers));
-                recordAttempt(provider.id, ctx.model, AttemptOutcome::Failure,
-                              (nowUnix() - attempt_started) * 1000.0, 0, 0, 0, payload.size());
-                logFailover(ctx, provider.id, static_cast<int>(attempt), upstream_model,
-                            (nowUnix() - attempt_started) * 1000.0, waited_ms(), status,
-                            std::format("{} — failing over", last_error),
-                            static_cast<int>(budget));
-                return status;
-            }
 
             const bool ok_status = status >= 200 && status < 300;
-            const bool relay_behaved = ok_status || (!retryable && !is_html_err && status != 403);
+            const bool relay_behaved =
+                ok_status || (!verdict.worth_retrying && !is_html_err && status != 403);
             if (relay_behaved) {
                 router.recordSuccess(provider.id, upstream_model, 0.0, nowUnix());
             } else {

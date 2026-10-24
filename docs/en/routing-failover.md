@@ -136,9 +136,29 @@ Client initiates SSE streaming request
 | **HTTP 429** | Rate Limited / Quota Exceeded | ✅ **YES** | Fail over to backup provider |
 | **HTTP 500 ~ 599** | Server Error / Bad Gateway / Unavailable | ✅ **YES** | Upstream crashed or overloaded; fail over immediately |
 | **HTTP 400** | Bad Request (malformed prompt / parameters) | ❌ **NO** | Client-side error; forward response directly to client |
+| **HTTP 400 / 403 whose body names a capacity limit** | Account pool cooling down, quota spent, `model_blocked`, `overloaded` | ✅ **YES** | The status says "your request is wrong", the body says "I have no capacity" — the body wins; see "The second signal" below |
 | **HTTP 401 / 403** | Unauthorized / Forbidden (Invalid key or WAF block) | ❌ **NO** | Auth failure; forward to client to prompt key check |
 | **HTTP 404** | Not Found (model or endpoint absent) | ❌ **NO** | Forward to client |
+| **HTTP 4xx answered with an HTML page** | Portal page / reverse-proxy error page / WAF interstitial | ✅ **YES** | That is not the API's opinion about this request; 401 and 404 excepted |
 | **After First Byte** | Any exception after headers were sent to client | ❌ **NO** | **Gate is closed**; terminate stream to avoid cross-stream stitching |
+
+### The second signal
+
+`400` appears on both sides of the table above because **the status code only answers half the question**. A real case: a local account-pool gateway answers "every account holding this model is cooling down" with
+
+```json
+{"error":{"code":"model_unavailable",
+          "gateway_hint":"model_blocked: 1 account(s) cooling down this model; upstream: 6004 model rate limit"}}
+```
+
+and HTTP status 400. Believing the status meant that with a healthy backup still in the chain, the client received four 400s in a row: no failover, no breaker strike (`relay_behaved` recorded it as a relay that behaved), and the backup was never contacted.
+
+So `Router::isCapacityErrorBody()` reads the body of a `400` / `403`:
+
+- **Counts as capacity** (retryable, and a breaker strike): `rate limit`, `ratelimit`, `too many requests`, `quota`, `insufficient_quota`, `capacity`, `overloaded`, `model_unavailable`, `model_blocked`, `cooling down`, `no available`, `try again later`, `temporarily unavailable`;
+- **Stays a client error** (no retry): `context_length_exceeded`, `context length exceeded`, `maximum context length`, `invalid_request_error`, `invalid_parameter`, `unsupported_parameter`, `missing required`, `malformed`. **These win the tie** — a body that overflows the context window *and* mentions a rate limit is still the caller's, because retrying an oversized prompt on every relay in the chain only spends them all to collect the same complaint.
+
+The body-based path applies to `400` and `403` only. A `404` or a `422` that happens to contain capacity words is still that relay's own answer about this model or this path.
 
 ---
 
@@ -181,6 +201,7 @@ Client actions should never trip an upstream's health status:
 
 - **Client Aborted Requests**: If the user cancels generation or closes the browser tab, the socket disconnection is **never counted as a circuit failure**.
 - **Client Syntax Errors (HTTP 400)**: Invalid parameters or context window overruns are **never counted as a circuit failure**.
+  - The exception is the body-based signal described above: a `400` / `403` whose body reports a cooling-down account pool or a spent quota is the relay's own problem and **does** count as a breaker failure — otherwise a relay that keeps rate limiting would go on looking healthy.
 
 ### All-Tripped Graceful Degrade
 

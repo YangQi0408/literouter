@@ -369,6 +369,76 @@ void testRetryableStatus() {
     }
 }
 
+// The status code is the first half of the answer and the body is the second.
+// A relay that reports a spent quota or a cooling-down account pool under a 400
+// has to fail over, and one that reports a genuinely malformed request has to
+// not — both cases are pinned here, because the difference is invisible in the
+// status code.
+void testCapacityErrorBody() {
+    LR_GROUP("isCapacityErrorBody");
+    using literouter::Router;
+
+    // The real shape: a local account-pool gateway, HTTP 400, nothing about the
+    // caller's request at fault.
+    const std::string pool_blocked =
+        R"({"error":{"code":"model_unavailable","gateway_hint":"model_blocked: 1 account(s) )"
+        R"(cooling down this model; earliest unblock at 2026-10-24T20:20:35+08:00; )"
+        R"(upstream: 6004 model rate limit","message":"model is unavailable on every )"
+        R"(account (per-model cooldown), try another model","type":"api_error"}})";
+    LR_CHECK_MSG(Router::isCapacityErrorBody(400, pool_blocked),
+                 "a model_blocked pool must be treated as capacity, not as the caller's fault");
+
+    for (const std::string_view body : {
+             R"({"error":{"message":"Rate limit reached for gpt-4o","type":"rate_limit_error"}})",
+             R"({"error":{"code":"insufficient_quota","message":"You exceeded your quota"}})",
+             R"({"error":{"code":"overloaded_error","message":"Overloaded"}})",
+             R"({"error":{"message":"The server is temporarily unavailable, try again later"}})",
+             R"({"error":{"message":"no available channel for model gpt-4o"}})",
+             R"({"error":{"message":"ALL ACCOUNTS COOLING DOWN"}})",
+         }) {
+        LR_CHECK_MSG(Router::isCapacityErrorBody(400, body),
+                     std::format("should read as capacity: {}", body));
+    }
+
+    // Case-insensitivity: relays do not agree on capitalisation.
+    LR_CHECK(Router::isCapacityErrorBody(400, R"({"message":"QUOTA EXCEEDED"})"));
+
+    // 403 as well: some relays use it for a spent key balance rather than a
+    // bad key, and the body is what tells the two apart.
+    LR_CHECK(Router::isCapacityErrorBody(403, R"({"error":{"code":"quota_exceeded"}})"));
+
+    // The caller's own mistakes stay the caller's: these must reach the user
+    // unedited instead of being retried against every relay in the chain.
+    for (const std::string_view body : {
+             R"({"error":{"message":"context length exceeded: 200000 > 128000","code":"context_length_exceeded"}})",
+             R"({"error":{"message":"maximum context length is 128000 tokens","type":"invalid_request_error"}})",
+             R"({"error":{"message":"Invalid parameter: temperature must be <= 2","code":"invalid_parameter"}})",
+             R"({"error":{"message":"unsupported_parameter: logprobs","type":"invalid_request_error"}})",
+             R"({"error":{"message":"Missing required parameter: messages"}})",
+             R"({"error":{"message":"malformed JSON in request body"}})",
+         }) {
+        LR_CHECK_MSG(!Router::isCapacityErrorBody(400, body),
+                     std::format("must not read as capacity: {}", body));
+    }
+
+    // A body that says both. The caller's marker wins, because retrying an
+    // exhausted context window on every relay in the chain just spends them all
+    // to collect the same complaint.
+    LR_CHECK_MSG(!Router::isCapacityErrorBody(
+                     400, R"({"error":{"message":"rate limit reached for a request of 200000 )"
+                          R"(tokens, context length exceeded","code":"context_length_exceeded"}})"),
+                 "a context overflow that mentions a rate limit is still the caller's");
+
+    // Only the two statuses a relay actually abuses this way. A 404 or a 422
+    // with capacity words in it is still the relay's own answer about this
+    // model or this path.
+    for (const int status : {200, 401, 404, 422, 429, 500}) {
+        LR_CHECK_MSG(!Router::isCapacityErrorBody(status, R"({"message":"quota exceeded"})"),
+                     std::format("HTTP {} must not take the body-based path", status));
+    }
+    LR_CHECK(!Router::isCapacityErrorBody(400, ""));
+}
+
 void testSetConfigReplacesModel() {
     LR_GROUP("setConfig / config()");
     Router router;
@@ -469,6 +539,7 @@ int main() {
     testCircuitBreaker();
     testHealthStates();
     testRetryableStatus();
+    testCapacityErrorBody();
     testRetryAfterWindow();
     testSetConfigReplacesModel();
     return LR_SUMMARY("test_router");

@@ -377,4 +377,68 @@ bool Router::retryableStatus(int status) {
     return false;
 }
 
+bool Router::isCapacityErrorBody(int status, std::string_view body) {
+    // Only the two statuses a relay actually abuses for this. A 404 or a 422
+    // with capacity words in it is still the caller's problem, and treating it
+    // as retryable would hide a genuinely wrong model id.
+    if (status != 400 && status != 403) {
+        return false;
+    }
+    if (body.empty()) {
+        return false;
+    }
+    const std::string lower = toLower(body);
+
+    // The caller's own mistakes win: an exhausted context window or a malformed
+    // parameter must reach the user unedited even if the relay decorated it with
+    // the word "limit". These markers are checked first because a body can say
+    // both ("rate limit reached for a request of 200000 tokens").
+    for (const std::string_view marker : {
+             "context_length_exceeded",
+             "context length exceeded",
+             "maximum context length",
+             "string_above_max_length",
+             "invalid_request_error",
+             "invalid request",
+             "invalid_parameter",
+             "invalid parameter",
+             "missing required",
+             "unsupported_parameter",
+             "unsupported parameter",
+             "unsupported_value",
+             "unsupported value",
+             "malformed",
+         }) {
+        if (lower.find(marker) != std::string::npos) {
+            return false;
+        }
+    }
+
+    // Capacity vocabulary. `rate limit` without the qualifiers above is the
+    // relay's own throttle; `cooling down` / `model_blocked` are the account-pool
+    // gateways' way of saying the same thing.
+    for (const std::string_view marker : {
+             "rate limit",
+             "ratelimit",
+             "rate_limit",
+             "too many requests",
+             "quota",
+             "insufficient_quota",
+             "capacity",
+             "overloaded",
+             "model_unavailable",
+             "model_blocked",
+             "cooling down",
+             "cooldown",
+             "no available",
+             "try again later",
+             "temporarily unavailable",
+         }) {
+        if (lower.find(marker) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace literouter
