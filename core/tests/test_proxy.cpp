@@ -5064,6 +5064,122 @@ void group40UpstreamProxy(StubRelay &relay_a) {
 #endif
 }
 
+void group42SecurityRegressions(StubRelay &relay) {
+    LR_GROUP("42. unresolved administrator keys fail closed and credentials round-trip redacted");
+    const lr_test::EnvGuard secret{"LR_SECURITY_ADMIN_KEY"};
+    const lr_test::EnvGuard header_secret{"LR_SECURITY_HEADER_KEY"};
+    header_secret.assign("header-resolved-on-wire");
+    secret.clear();
+    literouter::AppConfig cfg;
+    cfg.server.port = 0;
+    cfg.server.persist_telemetry = false;
+    cfg.server.api_key = "${LR_SECURITY_ADMIN_KEY}";
+    literouter::ProviderConfig provider;
+    provider.id = "secure";
+    provider.base_url = relay.baseUrl();
+    provider.api_key = "api-secret-hidden";
+    provider.aws_access_key = "aws-access-hidden";
+    provider.aws_secret_key = "${LR_SECURITY_AWS_SECRET:-aws-fallback-hidden}";
+    provider.aws_session_token = "aws-session-hidden";
+    provider.headers = {{"Authorization", "Bearer header-secret-hidden"},
+                        {"X-Auth-Token", "header-token-hidden"}, {"X-Custom-Key", "${LR_SECURITY_HEADER_KEY}"},
+                        {"X-Title", "public-title"}};
+    cfg.providers = {provider};
+    cfg.routes = {literouter::RouteConfig{.model = "security-model", .targets = {{.provider = "secure"}}}};
+    TempDir directory;
+    const auto path = directory.path() / "security.json";
+    literouter::ProxyServer proxy;
+    proxy.setConfigPath(path.string());
+    const auto started = proxy.start(cfg);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) return;
+    const int port = proxy.boundPort();
+    for (const auto *endpoint : {"/__literouter/status", "/__literouter/config", "/v1/models"}) {
+        const auto hit = getPath(port, endpoint);
+        LR_CHECK_MSG(hit.status == 401, std::format("{} returned {} without a resolved key", endpoint, hit.status));
+    }
+    LR_CHECK_MSG(postJson(port, "/v1/chat/completions", chatRequest("security-model")).status == 401,
+                 "an unresolved key admitted a model request");
+    secret.assign("admin-resolved");
+    const Hit config = getPath(port, "/__literouter/config", "admin-resolved");
+    LR_CHECK_MSG(config.status == 200, config.body);
+    if (config.status != 200) return;
+    for (const auto *value : {"api-secret-hidden", "aws-access-hidden", "aws-fallback-hidden",
+                              "aws-session-hidden", "header-secret-hidden", "header-token-hidden"}) {
+        LR_CHECK_MSG(config.body.find(value) == std::string::npos, std::string{"leaked "} + value);
+    }
+    json doc = json::parse(config.body).at("config");
+    auto &entry = doc["providers"][0];
+    LR_CHECK_MSG(entry["aws_secret_key"].get<std::string>().empty() &&
+                     entry["aws_secret_key_source"] == "literal", entry.dump());
+    LR_CHECK_MSG(entry["headers"]["X-Title"] == "public-title", entry.dump());
+    LR_CHECK_MSG(entry["headers"]["X-Custom-Key"] == "${LR_SECURITY_HEADER_KEY}" &&
+                     entry["headers_source"]["X-Custom-Key"] == "env", entry.dump());
+    for (const bool streaming : {false, true}) {
+        relay.setMode(streaming ? StubRelay::Mode::Stream : StubRelay::Mode::Normal);
+        const auto forwarded = postJson(port, "/v1/chat/completions", chatRequest("security-model", streaming), "admin-resolved");
+        LR_CHECK_MSG(forwarded.status == 200, forwarded.body);
+        const auto headers = relay.lastChatHeaders();
+        const auto value = headers.find("X-Custom-Key");
+        LR_CHECK_MSG(value != headers.end() && value->second == "header-resolved-on-wire", "header reference was not resolved at the network boundary");
+    }
+    LR_CHECK_MSG(putJson(port, "/__literouter/config", doc.dump(), "admin-resolved").status == 200,
+                 "redacted credentials did not save");
+    const auto saved = literouter::ConfigStore::load(path);
+    LR_CHECK_MSG(saved.has_value(), saved ? "" : saved.error());
+    if (saved) {
+        const auto &actual = saved->config().providers[0];
+        LR_CHECK_MSG(actual.aws_secret_key == provider.aws_secret_key && actual.api_key == provider.api_key &&
+                         actual.aws_access_key == provider.aws_access_key && actual.aws_session_token == provider.aws_session_token,
+                     "a redacted save lost or expanded stored credentials");
+        LR_CHECK_MSG(actual.headers == provider.headers, "redacted headers changed on disk");
+        LR_CHECK_MSG(saved->toJson().find("_source") == std::string::npos, "API metadata was persisted");
+    }
+    entry["aws_session_token_clear"] = true;
+    entry["headers_clear"] = json::array({"authorization"});
+    entry["headers"]["X-Auth-Token"] = "replacement-token";
+    LR_CHECK_MSG(putJson(port, "/__literouter/config", doc.dump(), "admin-resolved").status == 200,
+                 "explicit credential edits were refused");
+    const auto edited = proxy.config().providers[0];
+    LR_CHECK_MSG(edited.aws_session_token.empty() && edited.headers.at("Authorization").empty() &&
+                     edited.headers.at("X-Auth-Token") == "replacement-token", "clear/update semantics failed");
+    secret.assign("");
+    LR_CHECK_MSG(getPath(port, "/__literouter/status").status == 401, "a set-but-empty administrator key admitted access");
+    proxy.stop();
+    relay.setMode(StubRelay::Mode::Normal);
+}
+
+void group43AdminAndCompletions(StubRelay &relay) {
+    LR_GROUP("43. management writes reject foreign origins");
+    literouter::AppConfig cfg;
+    cfg.server.port = 0;
+    cfg.server.persist_telemetry = false;
+    cfg.providers = {literouter::ProviderConfig{.id = "legacy", .base_url = relay.baseUrl()}};
+    cfg.routes = {literouter::RouteConfig{.model = "legacy-model", .targets = {{.provider = "legacy", .model = "renamed"}}}};
+    literouter::ProxyServer proxy;
+    const auto started = proxy.start(cfg);
+    LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+    if (!started) return;
+    const int port = proxy.boundPort();
+    httplib::Client client{"127.0.0.1", port};
+    for (const auto *origin : {"https://evil.example", "null", "http://user@127.0.0.1", ""}) {
+        const auto hit = client.Post("/__literouter/shutdown", {{"Origin", origin}}, "", "text/plain");
+        LR_CHECK_MSG(hit && hit->status == 403 && !hit->has_header("Access-Control-Allow-Origin"),
+                     hit ? hit->body : "cross-origin request failed to connect");
+        LR_CHECK_MSG(proxy.running(), "a rejected write stopped the listener");
+    }
+    const auto foreign = client.Post("/__literouter/reset-stats", {{"Sec-Fetch-Site", "cross-site"}}, "", "text/plain");
+    LR_CHECK_MSG(foreign && foreign->status == 403, "fetch metadata did not reject a cross-site write");
+    const auto local = client.Post("/__literouter/reset-stats", {{"Origin", std::format("http://127.0.0.1:{}", port)}}, "", "text/plain");
+    LR_CHECK_MSG(local && local->status == 200, "same-origin console write was refused");
+    const auto wrong_scheme = client.Post("/__literouter/reset-stats", {{"Origin", std::format("https://127.0.0.1:{}", port)}}, "", "text/plain");
+    LR_CHECK_MSG(wrong_scheme && wrong_scheme->status == 403, "a different origin scheme was accepted");
+    const auto forwarded = client.Post("/__literouter/reset-stats", {{"Origin", "https://gateway.example"}, {"Host", "gateway.example"}, {"X-Forwarded-Proto", "https"}}, "", "text/plain");
+    LR_CHECK_MSG(forwarded && forwarded->status == 200, "same-origin TLS reverse proxy was refused");
+    LR_CHECK_MSG(postJson(port, "/__literouter/reset-stats", "{}").status == 200, "CLI write without Origin was refused");
+    proxy.stop();
+}
+
 int main() {
     // A real server writes its telemetry where LITEROUTER_STATE_DIR points; the
     // guard is what keeps a test run out of the developer's own state dir.
@@ -5171,6 +5287,8 @@ int main() {
         group37LargeRequestWithoutExpect(relay_a);
         group38StreamingCapability(relay_a, relay_b);
         group41ResponsesStateStrip(relay_a);
+        group42SecurityRegressions(relay_a);
+        group43AdminAndCompletions(relay_a);
         // Before the shared fixture is stopped: this group starts its own
         // servers, but it reads relay_a's answer through a forward proxy.
         group40UpstreamProxy(relay_a);

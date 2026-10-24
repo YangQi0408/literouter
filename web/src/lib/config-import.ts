@@ -21,7 +21,7 @@ function checkObject(value: unknown, defaults: object, path: string) {
       : typeof candidate === typeof sample && (typeof candidate !== 'number' || Number.isFinite(candidate))
     if (!valid) throw new ConfigImportError(`${path}.${key}`)
   }
-  for (const key of ['api_key_clear']) {
+  for (const key of ['api_key_clear', 'aws_access_key_clear', 'aws_secret_key_clear', 'aws_session_token_clear']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new ConfigImportError(`${path}.${key}`)
   }
 }
@@ -44,6 +44,9 @@ export function readConfigImport(raw: unknown): AppConfig {
       const path = `${key}[${index}]`
       checkObject(item, defaults, path)
       if (key === 'providers') {
+        if (Array.isArray(item.headers_clear) && item.headers_clear.some((name: unknown) => typeof name !== 'string')) {
+          throw new ConfigImportError(`${path}.headers_clear`)
+        }
         if (Array.isArray(item.models) && item.models.some((model: unknown) => typeof model !== 'string')) {
           throw new ConfigImportError(`${path}.models`)
         }

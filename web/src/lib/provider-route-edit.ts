@@ -49,6 +49,9 @@ export function providerConnectionKey(provider: ProviderConfig): string {
     provider.id, provider.base_url, provider.api_key, provider.api_key_source, !!provider.api_key_clear,
     provider.protocol, provider.api_version, provider.region, provider.project, provider.credentials_file,
     provider.aws_access_key, provider.aws_secret_key, provider.aws_session_token,
+    provider.aws_access_key_source, provider.aws_secret_key_source, provider.aws_session_token_source,
+    !!provider.aws_access_key_clear, !!provider.aws_secret_key_clear, !!provider.aws_session_token_clear,
+    [...(provider.headers_clear ?? [])].sort(),
     provider.timeout_sec, provider.connect_timeout_sec,
     Object.entries(provider.headers ?? {}).sort(([a], [b]) => a.localeCompare(b)),
   ])

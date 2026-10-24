@@ -1,4 +1,15 @@
-import type { SecretConfig } from '@/lib/api'
+import type { ProviderConfig, SecretConfig } from '@/lib/api'
+
+export type ProviderSecretField = 'aws_access_key' | 'aws_secret_key' | 'aws_session_token'
+
+/** Reuse the API-key editor without ever copying a redacted secret into it. */
+export function providerSecret(provider: ProviderConfig, field: ProviderSecretField): SecretConfig {
+  return { api_key: provider[field], api_key_source: provider[`${field}_source`], api_key_clear: provider[`${field}_clear`] }
+}
+
+export function providerSecretChanges(field: ProviderSecretField, changes: Partial<SecretConfig>): Partial<ProviderConfig> {
+  return Object.fromEntries(Object.entries(changes).map(([key, value]) => [key.replace('api_key', field), value]))
+}
 
 /** A fresh 256-bit key from the platform's cryptographic source. Used by the
  *  "generate" button, so an operator never invents a weak access key. */

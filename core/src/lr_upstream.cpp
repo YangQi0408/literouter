@@ -99,7 +99,7 @@ std::expected<HeaderSet, std::string> buildHeaders(const ProviderConfig &provide
     // Authorization replaces the default rather than joining it.
     for (const auto &[name, value] : provider.headers) {
         if (!name.empty()) {
-            headers.put(name, value);
+            headers.put(name, isSecretReference(value) ? resolveSecret(value) : value);
         }
     }
     return headers;

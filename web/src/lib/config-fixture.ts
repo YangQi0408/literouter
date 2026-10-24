@@ -51,6 +51,8 @@ export function makeProvider(overrides: Partial<ProviderConfig> = {}): ProviderC
     supports_stream: true,
     models: ['gpt-4o'],
     headers: {},
+    headers_source: {},
+    headers_clear: [],
     chat_path: '/chat/completions',
     embeddings_path: '/embeddings',
     protocol: 'openai',

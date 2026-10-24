@@ -270,6 +270,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
 
 管理接口与 Web 控制台**不会发送 CORS 头**，只有面向客户端的端点保留 `Access-Control-Allow-Origin: *`——请求日志可能包含用户的提示词，允许任意网页跨域读取等于把它们交出去。所有管理响应一律带 `Cache-Control: no-store`。
 
+管理写请求即使未配置 API key 也会拒绝异源/null Origin 或 `Sec-Fetch-Site: cross-site`，返回 403；同源控制台和不携带 Origin 的 CLI 客户端仍可用。配置的管理员密钥解析为空时校验失败，即使使用 `serve --force` 也不会放行无凭据请求。
+
 ### 1. 获取系统状态快照
 
 - **请求**：`GET /__literouter/status`
@@ -453,7 +455,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
     "validation": { "ok": false, "summary": "0 errors, 1 warning", "issues": [ "..." ] }
   }
   ```
-- **脱敏规则**：`api_key` 是 `${VAR}` 引用时原样返回（它只是变量名，不是密钥）；带默认凭据的 `${VAR:-fallback}` 和字面量密钥均隐藏。字面量密钥替换为空字符串，并以 `"api_key_source": "literal"` 标记。配置 GET 不返回已保存的明文密钥。
+- **脱敏规则**：服务器/中转站 `api_key` 和中转站 `aws_access_key`、`aws_secret_key`、`aws_session_token` 的字面量及带默认凭据的引用均替换为空字符串，以 `<字段>_source: "literal"` 标记；纯 `$VAR` / `${VAR}` 引用可见，并标记为 `"env"`。鉴权请求头（Authorization、API-key、名称含 auth/token/secret/password、Basic/Bearer 值）同样脱敏，标记放在 `headers_source`。普通业务请求头及 `credentials_file` 文件路径仍可编辑。未知自定义请求头无法可靠识别为凭据，建议密钥使用专用字段。接口标记不写入配置文件。
 
 ### 10. 更新运行配置与持久化
 
@@ -464,6 +466,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
   - 服务器或中转站的 `api_key` 为空字符串：自动保留已保存的密钥（支持将脱敏 GET 的结果安全原样回传）。中转站按 ID 匹配；
   - `api_key_clear: true`：显式清空该密钥，仍需通过配置校验；
   - 非空字符串：更新为新值（支持环境变量占位符 `${VAR}`）。
+  - AWS 字段同样遵循空值保留规则，以 `<字段>_clear: true` 显式清空。鉴权请求头的空值按名称忽略大小写保留原值，`headers_clear: ["Authorization"]` 显式清空其值，删除请求头条目则移除该请求头。保留凭据仍以中转站 ID 为身份依据。
+  - 中转站请求头值中的环境变量引用仅在缓冲、流式及探测路径向上游发包时解析；保存始终保留原始引用文本。
 - **持久化**：有配置文件路径时使用临时文件重命名原子落盘，并调用 `updateConfig()`；无路径时仅更新内存并返回 `"saved": false`。
 - **响应**：`{"ok": true, "saved": true, "path": "...", "summary": "...", "issues": [...]}`
 

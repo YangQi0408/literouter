@@ -54,6 +54,8 @@ export const PROVIDER_DEFAULTS: ProviderConfig = {
   supports_stream: true,
   models: [],
   headers: {},
+  headers_source: {},
+  headers_clear: [],
   chat_path: '/chat/completions',
   embeddings_path: '/embeddings',
   protocol: 'openai',
@@ -98,6 +100,9 @@ export const normalizeProvider = (raw: Partial<ProviderConfig> | null | undefine
       merged.headers && typeof merged.headers === 'object' && !Array.isArray(merged.headers)
         ? { ...merged.headers }
         : {},
+    headers_source: merged.headers_source && typeof merged.headers_source === 'object' && !Array.isArray(merged.headers_source)
+      ? { ...merged.headers_source } : {},
+    headers_clear: Array.isArray(merged.headers_clear) ? merged.headers_clear.filter((value) => typeof value === 'string') : [],
     model_prices:
       merged.model_prices && typeof merged.model_prices === 'object' && !Array.isArray(merged.model_prices)
         ? Object.fromEntries(

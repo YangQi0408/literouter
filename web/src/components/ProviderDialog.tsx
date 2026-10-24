@@ -26,6 +26,7 @@ import { useI18n } from '@/lib/i18n'
 import { probeSucceeded } from '@/lib/live-state'
 import { canProbeProvider, mergeModels, priceRowsOf, pricesOfRows, providerConnectionKey, providerIssue, type PriceRow } from '@/lib/provider-route-edit'
 import { cn } from '@/lib/utils'
+import { providerSecret, providerSecretChanges } from '@/lib/secrets'
 import { useStore } from '@/store'
 
 const PROTOCOLS: Protocol[] = [
@@ -207,9 +208,9 @@ export function ProviderDialog({
                 <Field label={t('managementCredentialsFile')} hint={t('hintCredentialsFile')} wide><TextField value={provider.credentials_file} placeholder="/etc/literouter/service-account.json" onChange={(credentials_file) => patch({ credentials_file })} /></Field>
               </> : null}
               {needsAws(provider.protocol) ? <>
-                <Field label={t('managementAwsAccessKey')} hint={t('hintAwsKey')}><TextField value={provider.aws_access_key} placeholder="${AWS_ACCESS_KEY_ID}" onChange={(aws_access_key) => patch({ aws_access_key })} /></Field>
-                <Field label={t('managementAwsSecret')} hint={t('hintAwsSecret')}><TextField type="password" value={provider.aws_secret_key} placeholder="${AWS_SECRET_ACCESS_KEY}" onChange={(aws_secret_key) => patch({ aws_secret_key })} /></Field>
-                <Field label={t('managementAwsSession')} hint={t('hintAwsSession')} wide><TextField type="password" value={provider.aws_session_token} onChange={(aws_session_token) => patch({ aws_session_token })} /></Field>
+                <Field label={t('managementAwsAccessKey')} hint={t('hintAwsKey')}><SecretInput value={providerSecret(provider, 'aws_access_key')} onChange={(changes) => patch(providerSecretChanges('aws_access_key', changes))} label={t('managementAwsAccessKey')} clear /></Field>
+                <Field label={t('managementAwsSecret')} hint={t('hintAwsSecret')}><SecretInput value={providerSecret(provider, 'aws_secret_key')} onChange={(changes) => patch(providerSecretChanges('aws_secret_key', changes))} label={t('managementAwsSecret')} clear /></Field>
+                <Field label={t('managementAwsSession')} hint={t('hintAwsSession')} wide><SecretInput value={providerSecret(provider, 'aws_session_token')} onChange={(changes) => patch(providerSecretChanges('aws_session_token', changes))} label={t('managementAwsSession')} clear /></Field>
               </> : null}
               {/* Shown only where it can do something: the state being stripped
                   belongs to the Responses wire shape, and offering the switch on
@@ -352,7 +353,14 @@ export function ProviderDialog({
 
           <div {...panelProps('advanced')}>
             <div className="grid gap-5 sm:grid-cols-2">
-              <Field label={t('managementHeaders')} hint={t('hintHeaders')} wide><HeadersField value={provider.headers ?? {}} onChange={(headers) => patch({ headers })} /></Field>
+              <Field label={t('managementHeaders')} hint={t('hintHeaders')} wide>
+                <HeadersField value={provider.headers ?? {}} onChange={(headers) => patch({ headers, headers_clear: (provider.headers_clear ?? []).filter((name) => !headers[name]) })} />
+                {Object.entries(provider.headers_source ?? {}).filter(([name]) => name in (provider.headers ?? {})).map(([name]) => <div key={name} className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-mono">{name}</span>
+                  <span>{(provider.headers_clear ?? []).includes(name) ? t('keyWillClear') : t('keyStored')}</span>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => patch({ headers: { ...provider.headers, [name]: '' }, headers_clear: [...new Set([...(provider.headers_clear ?? []), name])] })}>{t('keyClearAction')}</Button>
+                </div>)}
+              </Field>
               <Field label={t('managementChatPath')} hint={t('managementChatPathHint')}><TextField value={provider.chat_path} onChange={(chat_path) => patch({ chat_path })} /></Field>
               <Field label={t('managementEmbeddingsPath')} hint={t('managementEmbeddingsPathHint')}><TextField value={provider.embeddings_path} onChange={(embeddings_path) => patch({ embeddings_path })} /></Field>
               <Field label={t('managementNote')} wide><TextField value={provider.note} mono={false} onChange={(note) => patch({ note })} /></Field>

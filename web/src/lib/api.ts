@@ -213,6 +213,9 @@ export interface ProviderConfig {
   supports_stream: boolean
   models: string[]
   headers: Record<string, string>
+  /** API-only markers for redacted authentication headers. */
+  headers_source: Record<string, 'literal' | 'env'>
+  headers_clear: string[]
   chat_path: string
   embeddings_path: string
   protocol: Protocol
@@ -226,8 +229,14 @@ export interface ProviderConfig {
   credentials_file: string
   /** Bedrock SigV4 credentials; `${VAR}` references are resolved at signing time. */
   aws_access_key: string
+  aws_access_key_source?: 'literal' | 'env'
+  aws_access_key_clear?: boolean
   aws_secret_key: string
+  aws_secret_key_source?: 'literal' | 'env'
+  aws_secret_key_clear?: boolean
   aws_session_token: string
+  aws_session_token_source?: 'literal' | 'env'
+  aws_session_token_clear?: boolean
   /** Drop the Responses API's server-side state (item ids, `encrypted*` fields,
    *  `previous_response_id`) before forwarding. Only a relay whose protocol is
    *  `openai_responses` carries that state. */

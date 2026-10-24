@@ -19,6 +19,8 @@ namespace literouter::i18n {
 namespace {
 
 const std::unordered_map<std::string_view, const char*> kZhTranslations = {
+    {"cross-origin management writes are not allowed", "不允许跨源写入管理接口"},
+    {"configured server.api_key resolves to empty; authentication remains closed", "配置的 server.api_key 解析为空；鉴权将保持拒绝访问"},
     {"PEM certificate chain absolute path for HTTPS", "HTTPS 的 PEM 证书链绝对路径"},
     {"Unencrypted PEM private key absolute path for HTTPS", "HTTPS 的未加密 PEM 私钥绝对路径"},
     {"tls_cert_file and tls_key_file must both be set, or both empty for HTTP", "tls_cert_file 与 tls_key_file 必须同时填写，或同时留空使用 HTTP"},

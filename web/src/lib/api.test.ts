@@ -45,6 +45,8 @@ describe('normalizeConfig', () => {
     // has to be restored here or the provider form renders `undefined` into an
     // input.
     expect(provider.headers).toEqual({})
+    expect(provider.headers_source).toEqual({})
+    expect(provider.headers_clear).toEqual([])
     expect(provider.protocol).toBe('openai')
     expect(provider.price_in_per_million).toBe(0)
     expect(provider.price_out_per_million).toBe(0)
@@ -105,9 +107,13 @@ describe('normalizeConfig', () => {
     const provider = normalizeProvider({
       headers: null,
       models: null,
+      headers_clear: 'bad',
+      headers_source: 'bad',
     } as never)
     expect(provider.headers).toEqual({})
     expect(provider.models).toEqual([])
+    expect(provider.headers_clear).toEqual([])
+    expect(provider.headers_source).toEqual({})
 
     const config = normalizeConfig({ providers: null, routes: null } as never)
     expect(config.providers).toEqual([])
@@ -128,8 +134,12 @@ describe('normalizeConfig', () => {
     const config = normalizeConfig({ providers: [{ id: 'a' }, { id: 'b' }] })
     config.providers[0]!.models.push('new-model')
     config.providers[0]!.headers.Authorization = 'new-value'
+    config.providers[0]!.headers_clear.push('Authorization')
+    config.providers[0]!.headers_source.Authorization = 'literal'
     expect(config.providers[1]!.models).toEqual([])
     expect(config.providers[1]!.headers).toEqual({})
+    expect(config.providers[1]!.headers_clear).toEqual([])
+    expect(config.providers[1]!.headers_source).toEqual({})
     expect(PROVIDER_DEFAULTS.models).toEqual([])
     expect(PROVIDER_DEFAULTS.headers).toEqual({})
     const raw = { id: 'c', models: ['m'], headers: { Accept: 'application/json' } }

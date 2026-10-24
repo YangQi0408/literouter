@@ -846,6 +846,21 @@ void testValidateProviders() {
 void testValidateServer() {
     LR_GROUP("validate(): server");
     {
+        const lr_test::EnvGuard key{"LR_CONFIG_ADMIN_KEY"};
+        key.clear();
+        AppConfig config;
+        config.server.api_key = "${LR_CONFIG_ADMIN_KEY}";
+        LR_CHECK_MSG(findIssue(literouter::validate(config), "server.api_key", kError) != nullptr,
+                     "an unset administrator key was accepted");
+        config.server.api_key = "${LR_CONFIG_ADMIN_KEY:-usable-fallback}";
+        LR_CHECK_MSG(literouter::validate(config).ok(), "a usable fallback was refused");
+        config.server.api_key = "$LR_CONFIG_ADMIN_KEY";
+        key.assign("usable-key");
+        LR_CHECK_MSG(literouter::validate(config).ok(), "a resolved key was refused");
+        key.assign("");
+        LR_CHECK_MSG(!literouter::validate(config).ok(), "an empty administrator key was accepted");
+    }
+    {
         AppConfig config;
         config.server.port = 70000;
         const ValidationReport report = literouter::validate(config);

@@ -389,6 +389,68 @@ bool ciEqual(std::string_view a, std::string_view b) {
     return a.size() == b.size() && toLower(a) == toLower(b);
 }
 
+bool isSensitiveHeader(std::string_view name, std::string_view value) {
+    const std::string key = toLower(name);
+    const std::string text = toLower(trim(value));
+    return key == "authorization" || key == "proxy-authorization" ||
+           key == "api-key" || key == "x-api-key" || key == "x-goog-api-key" ||
+           endsWith(key, "-key") || endsWith(key, "_key") || key.find("apikey") != std::string::npos ||
+           key.find("token") != std::string::npos || key.find("secret") != std::string::npos ||
+           key.find("password") != std::string::npos || key.find("auth") != std::string::npos ||
+           startsWith(text, "bearer ") || startsWith(text, "basic ") ||
+           (isSecretReference(value) && value.find(":-") != std::string_view::npos);
+}
+
+constexpr std::array<std::pair<const char *, std::string ProviderConfig::*>, 4> kProviderSecrets{{
+    {"api_key", &ProviderConfig::api_key},
+    {"aws_access_key", &ProviderConfig::aws_access_key},
+    {"aws_secret_key", &ProviderConfig::aws_secret_key},
+    {"aws_session_token", &ProviderConfig::aws_session_token},
+}};
+
+bool isSafeSecretReference(std::string_view raw) {
+    const std::string text = trim(raw);
+    const std::string name = secretReferenceName(text);
+    if (name.empty()) return false;
+    const auto letter = [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'; };
+    if (!letter(name.front()) || !std::ranges::all_of(name, [&](char c) { return letter(c) || (c >= '0' && c <= '9'); })) return false;
+    return text == "$" + name || text == "${" + name + "}";
+}
+
+void hideConfigSecret(json &entry, const std::string &field) {
+    const std::string raw = entry.value(field, std::string{});
+    if (raw.empty()) return;
+    if (isSafeSecretReference(raw)) {
+        entry[field + "_source"] = "env";
+    } else {
+        entry[field] = "";
+        entry[field + "_source"] = "literal";
+    }
+}
+
+bool safeAdminWrite(const h::Request &req) {
+    if (req.method == "GET" || req.method == "HEAD" || req.method == "OPTIONS") return true;
+    if (toLower(req.get_header_value("Sec-Fetch-Site")) == "cross-site") return false;
+    if (!req.has_header("Origin")) return true; // CLI and non-browser admin clients.
+    const std::string origin = toLower(trim(req.get_header_value("Origin")));
+    const auto scheme_end = origin.find("://");
+    if (scheme_end == std::string::npos) return false;
+    const auto scheme = origin.substr(0, scheme_end);
+    if (scheme != "http" && scheme != "https") return false;
+    const std::string transport = req.ssl != nullptr ? "https" : "http";
+    if (scheme != transport && !(transport == "http" && scheme == "https" &&
+                                toLower(req.get_header_value("X-Forwarded-Proto")) == "https")) return false;
+    const std::string authority = origin.substr(scheme_end + 3);
+    if (authority.empty() || authority.find_first_of("/@?#\\ \t\r\n") != std::string::npos) return false;
+    const auto canonical = [&scheme](std::string host) {
+        const std::string port = scheme == "https" ? ":443" : ":80";
+        if (endsWith(host, port)) host.resize(host.size() - port.size());
+        return host;
+    };
+    // Use the actual HTTP authority so a same-origin reverse proxy remains usable.
+    return canonical(authority) == canonical(toLower(trim(req.get_header_value("Host"))));
+}
+
 ProviderConfig providerForRequest(const ProviderConfig &provider, const h::Request &req) {
     // Business headers, including unknown SDK/relay extensions, survive by
     // default. Credentials and transport metadata belong to this hop: the
@@ -2328,7 +2390,9 @@ struct ProxyServer::Impl {
     // on a machine with one operator.
     static bool authorized(const AppConfig &cfg, const h::Request &req) {
         if (cfg.server.api_key.empty()) return true;
-        return secureEquals(resolveSecret(cfg.server.api_key), requestKey(req));
+        const std::string expected = resolveSecret(cfg.server.api_key);
+        // A configured reference resolving to nothing is not an open listener.
+        return !expected.empty() && secureEquals(expected, requestKey(req));
     }
 
     bool admitClient(const h::Request &req, h::Response &res, RequestContext &ctx) {
@@ -3109,7 +3173,7 @@ struct ProxyServer::Impl {
             for (const auto &[name, value] : provider.headers) {
                 if (!name.empty()) {
                     upstream.headers.erase(name);
-                    upstream.set_header(name, value);
+                    upstream.set_header(name, isSecretReference(value) ? resolveSecret(value) : value);
                 }
             }
 
@@ -3871,6 +3935,11 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         } else {
             Impl::applyCors(req, res);
         }
+        if (startsWith(req.path, kAdminPrefix) && !safeAdminWrite(req)) {
+            sendError(res, 403, "cross-origin management writes are not allowed",
+                      "authentication_error", "cross_origin_admin_request");
+            return h::Server::HandlerResponse::Handled;
+        }
         if (req.method == "OPTIONS") {
             res.status = 204;
             return h::Server::HandlerResponse::Handled;
@@ -4191,24 +4260,31 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         if (doc.is_discarded() || !doc.is_object()) {
             doc = json::object();
         }
-        const auto hideKey = [](json &entry) {
-            const auto raw = entry.value("api_key", std::string{});
-            if (raw.empty()) return;
-            // A fallback is an actual credential embedded in the reference.
-            // Mask it like a stored literal; empty PUT values preserve the
-            // original reference without exposing its fallback in the browser.
-            if (isSecretReference(raw) && raw.find(":-") == std::string::npos)
-                entry["api_key_source"] = "env";
-            else { entry["api_key"] = ""; entry["api_key_source"] = "literal"; }
-        };
-        if (doc.contains("server")) hideKey(doc["server"]);
+        if (doc.contains("server")) hideConfigSecret(doc["server"], "api_key");
         if (auto providers = doc.find("providers");
             providers != doc.end() && providers->is_array()) {
             for (auto &entry : *providers) {
                 if (!entry.is_object()) {
                     continue;
                 }
-                hideKey(entry);
+                for (const auto &[field, member] : kProviderSecrets) {
+                    (void)member;
+                    hideConfigSecret(entry, field);
+                }
+                if (auto headers = entry.find("headers"); headers != entry.end()) {
+                    json sources = json::object();
+                    for (auto it = headers->begin(); it != headers->end(); ++it) {
+                        const std::string raw = it.value().get<std::string>();
+                        if (raw.empty() || !isSensitiveHeader(it.key(), raw)) continue;
+                        if (isSafeSecretReference(raw)) {
+                            sources[it.key()] = "env";
+                        } else {
+                            it.value() = "";
+                            sources[it.key()] = "literal";
+                        }
+                    }
+                    if (!sources.empty()) entry["headers_source"] = std::move(sources);
+                }
             }
         }
         const std::string path = impl_->configPath();
@@ -4247,26 +4323,32 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
             return;
         }
 
-        // Which ids asked to be cleared, and which keep what the file has.
-        std::set<std::string, std::less<>> clearing;
-        if (const auto providers = doc.find("providers");
-            providers != doc.end() && providers->is_array()) {
-            for (const auto &entry : *providers) {
-                if (entry.is_object() && entry.value("api_key_clear", false) &&
-                    entry.contains("id") && entry["id"].is_string()) {
-                    clearing.insert(entry["id"].get<std::string>());
+        // Metadata is API-only; the on-disk codec deliberately never stores it.
+        for (std::size_t i = 0; i < parsed->providers.size(); ++i) {
+            auto &provider = parsed->providers[i];
+            const auto &entry = doc.at("providers").at(i);
+            const ProviderConfig *stored = current.provider(provider.id);
+            for (const auto &[field, member] : kProviderSecrets) {
+                if (entry.value(std::string{field} + "_clear", false)) {
+                    (provider.*member).clear();
+                } else if ((provider.*member).empty() && stored != nullptr) {
+                    provider.*member = stored->*member;
                 }
             }
-        }
-        for (auto &provider : parsed->providers) {
-            if (clearing.contains(provider.id)) {
-                provider.api_key.clear();
-                continue;
-            }
-            if (provider.api_key.empty()) {
-                if (const ProviderConfig *stored = current.provider(provider.id);
-                    stored != nullptr && !stored->api_key.empty()) {
-                    provider.api_key = stored->api_key;
+            for (auto &[name, value] : provider.headers) {
+                bool clearing = false;
+                if (const auto flags = entry.find("headers_clear");
+                    flags != entry.end() && flags->is_array()) {
+                    for (const auto &flag : *flags) {
+                        if (flag.is_string() && ciEqual(name, flag.get<std::string>())) clearing = true;
+                    }
+                }
+                if (!value.empty() || clearing || stored == nullptr) continue;
+                for (const auto &[old_name, old_value] : stored->headers) {
+                    if (ciEqual(name, old_name) && isSensitiveHeader(old_name, old_value)) {
+                        value = old_value;
+                        break;
+                    }
                 }
             }
         }

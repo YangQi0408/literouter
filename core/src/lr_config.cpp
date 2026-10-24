@@ -416,6 +416,10 @@ ValidationReport validate(const AppConfig &config) {
     if (config.server.host.empty()) {
         addIssue(report, ValidationIssue::Level::Error, "server.host", "host must not be empty");
     }
+    if (!config.server.api_key.empty() && resolveSecret(config.server.api_key).empty()) {
+        addIssue(report, ValidationIssue::Level::Error, "server.api_key",
+                 "configured server.api_key resolves to empty; authentication remains closed");
+    }
     const auto &tls = config.server;
     if (tls.tls_cert_file.empty() != tls.tls_key_file.empty()) {
         addIssue(report, ValidationIssue::Level::Error, "server.tls_cert_file",

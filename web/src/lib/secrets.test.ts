@@ -1,10 +1,24 @@
 import { describe, expect, it } from 'vitest'
 
-import { administratorKeyAfterSave, generateApiKey, hasSecret } from '@/lib/secrets'
+import { administratorKeyAfterSave, generateApiKey, hasSecret, providerSecret, providerSecretChanges } from '@/lib/secrets'
 import { settleSavedDraft } from '@/lib/draft'
 import { makeConfig } from '@/lib/config-fixture'
 
 describe('hasSecret reads what the server actually sent', () => {
+  it('edits redacted AWS credentials with the same explicit clear semantics', () => {
+    const provider = makeConfig().providers[0]!
+    provider.aws_secret_key_source = 'literal'
+    expect(hasSecret(providerSecret(provider, 'aws_secret_key'))).toBe(true)
+    expect(providerSecretChanges('aws_secret_key', { api_key: '', api_key_clear: true })).toEqual({ aws_secret_key: '', aws_secret_key_clear: true })
+    const submitted = makeConfig()
+    submitted.providers[0]!.aws_secret_key = 'submitted-secret'
+    const saved = structuredClone(submitted)
+    saved.providers[0]!.aws_secret_key = ''
+    saved.providers[0]!.aws_secret_key_source = 'literal'
+    const edited = structuredClone(submitted)
+    edited.providers[0]!.note = 'newer note'
+    expect(settleSavedDraft(edited, submitted, saved).providers[0]).toMatchObject({ aws_secret_key: '', aws_secret_key_source: 'literal', note: 'newer note' })
+  })
   it('counts a stored literal the server blanked but marked', () => {
     // The config endpoint never returns a literal key; it returns "" plus
     // `api_key_source: "literal"`. Treating that as "no key" would tell an

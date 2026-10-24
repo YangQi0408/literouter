@@ -267,7 +267,7 @@ Key features supported across transformations:
 
 Administrative endpoints are prefixed with `/__literouter`. If `server.api_key` is set, Bearer authorization is required.
 
-Neither the admin API nor the web console sends CORS headers; only the client-facing endpoints keep `Access-Control-Allow-Origin: *`. The request log can hold prompts, and letting any page read it cross-origin would hand those prompts out. Every admin response carries `Cache-Control: no-store`.
+Neither the admin API nor the web console sends CORS headers; only the client-facing endpoints keep `Access-Control-Allow-Origin: *`. The request log can hold prompts, and letting any page read it cross-origin would hand those prompts out. Every admin response carries `Cache-Control: no-store`. Management writes reject foreign/null Origins and `Sec-Fetch-Site: cross-site` with 403 even without an API key; same-origin console requests and CLI clients without an Origin continue to work. A configured administrator key that resolves to empty fails validation and never admits unauthenticated requests, even with `serve --force`.
 
 ### 1. Snapshot Status
 
@@ -451,7 +451,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
     "validation": { "ok": false, "summary": "0 errors, 1 warning", "issues": [ "..." ] }
   }
   ```
-- **Redaction**: an `api_key` that is a `${VAR}` reference is returned as written — it names a variable, not a key. References containing fallback credentials, such as `${VAR:-fallback}`, are hidden too. A literal key is replaced by an empty string and marked `"api_key_source": "literal"`. Config GET never returns stored plaintext keys.
+- **Redaction**: server/provider `api_key` and provider `aws_access_key`, `aws_secret_key`, `aws_session_token` are blanked when literal or carrying a fallback credential. Each carries a `<field>_source: "literal"` marker; pure `$VAR` / `${VAR}` references remain visible with source `"env"`. Authentication headers (authorization, API-key, auth/token/secret/password names, Basic/Bearer values) receive the same treatment, with markers in `headers_source`. Ordinary business headers and `credentials_file` paths remain editable. Unknown custom headers cannot be identified as credentials reliably: keep secrets in the dedicated credential fields. API-only markers are never persisted.
 
 ### 10. Update & Persist Running Config
 
@@ -462,6 +462,8 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
   - An empty server or provider `api_key` preserves its stored value (safe round-trip from the redacted GET response). Providers match by ID;
   - `api_key_clear: true`: explicitly clears that secret, subject to validation;
   - Non-empty string: updates to the new value (supports `${VAR}` placeholders).
+  - AWS fields follow the same blank-means-keep rule with `<field>_clear: true` for explicit removal. Blank authentication-header values keep the stored value case-insensitively; `headers_clear: ["Authorization"]` explicitly clears a value, and removing a header entry removes it. Provider IDs remain the identity used for preservation.
+  - Environment references in provider header values are resolved only when sending upstream, on buffered, streaming and probe paths; saves preserve the reference text.
 - **Persistence**: When started with a config path, saves atomically using temporary-file-and-rename and calls `updateConfig()`; when running without a config path, updates memory only and returns `"saved": false`.
 - **Response**: `{"ok": true, "saved": true, "path": "...", "summary": "...", "issues": [...]}`
 
