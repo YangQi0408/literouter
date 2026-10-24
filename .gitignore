@@ -44,3 +44,8 @@ __pycache__/
 
 # Web console frontend dependencies
 web/node_modules/
+
+# Staging directory the release workflow fills with the published Linux binary
+# before building the container image with BINARY_SOURCE=prebuilt. Never
+# committed: it is a build output, and 13 MB of it.
+prebuilt/

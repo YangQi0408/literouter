@@ -37,3 +37,9 @@ web/.vite/
 __pycache__/
 *.pyc
 .mcpp/
+
+# The release workflow drops the already-published Linux binary here and builds
+# with `--build-arg BINARY_SOURCE=prebuilt`. It must stay *out* of the ignore
+# list above, or that COPY in the `prebuilt` stage finds nothing. Nothing else
+# should leave a directory here; a plain `docker build .` never reads it,
+# because the default BINARY_SOURCE is `builder`.

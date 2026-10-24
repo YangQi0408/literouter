@@ -17,6 +17,33 @@
 
 ARG RUNTIME_BASE=debian:trixie-slim
 
+# Which stage supplies the binary. `builder` compiles from source; `prebuilt`
+# packages one the release workflow already built. See the note on that stage.
+#
+# BuildKit only builds the stages the target actually depends on, so picking
+# `prebuilt` skips the compile stage entirely — which is the whole point: the
+# toolchain fetch is what made a source build take twelve minutes and fail
+# intermittently when a download crossed xlings' ten-minute deadline.
+ARG BINARY_SOURCE=builder
+
+# ── prebuilt ─────────────────────────────────────────────────────────────────
+# The cheap path, used by the image job in release.yml.
+#
+# That job downloads the Linux binary it just published as a release asset — the
+# same artifact users get from the Releases page — and drops it at
+# `prebuilt/literouter` in the build context. Packaging a file that already
+# exists beats recompiling it, and the file is already relocatable: release.yml
+# runs patch_elf_interp.py and `patchelf --set-rpath '$ORIGIN'` over it before
+# packaging, so its interpreter is the standard /lib64/ld-linux-x86-64.so.2 and
+# its only shared dependencies are libm and libc.
+#
+# This stage is never reached by a plain `docker build .`, because the default
+# BINARY_SOURCE is `builder`. The directory therefore does not have to exist in
+# the repository — only the release workflow creates it.
+FROM ${RUNTIME_BASE} AS prebuilt
+COPY prebuilt/literouter /out/literouter
+RUN chmod 0755 /out/literouter
+
 # ── builder ──────────────────────────────────────────────────────────────────
 FROM ${RUNTIME_BASE} AS builder
 
@@ -82,6 +109,13 @@ RUN set -eu; \
     cp "$bin" /out/literouter; \
     chmod 0755 /out/literouter
 
+# ── binary ───────────────────────────────────────────────────────────────────
+# Resolves to whichever stage BINARY_SOURCE named, so the runtime stage can copy
+# from one fixed place. A direct `COPY --from=${BINARY_SOURCE}` would work, but
+# going through a named stage keeps the error readable when the arg names a stage
+# that does not exist.
+FROM ${BINARY_SOURCE} AS binary
+
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM ${RUNTIME_BASE} AS runtime
 
@@ -98,7 +132,7 @@ RUN apt-get update \
  && mkdir -p /etc/literouter /var/lib/literouter \
  && chown -R literouter:literouter /etc/literouter /var/lib/literouter
 
-COPY --from=builder /out/literouter /usr/local/bin/literouter
+COPY --from=binary /out/literouter /usr/local/bin/literouter
 
 # Config and state are separate mounts on purpose. The config holds keys and is
 # meant to be edited and backed up; the state directory holds the telemetry file,
