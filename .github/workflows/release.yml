@@ -225,6 +225,56 @@ jobs:
           done)
           ls -lh dist-release
 
+      # A .app bundle and a Windows installer are the forms those two platforms
+      # expect a downloadable program to arrive in; the tarball and the zip stay
+      # because the install scripts and the container image consume them.
+      - name: Package macOS app bundle
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ needs.check-release.outputs.version }}
+          # Optional: a Developer ID lets the bundle be signed and notarized.
+          # Without it the script says so and leaves the bundle ad-hoc signed,
+          # which still runs once the user clears the quarantine flag.
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          binary="$(find target -type f -name literouter -path '*/bin/*' | head -n 1)"
+          args=(--binary "$binary" --version "$VERSION" --output dist-release)
+          if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+            args+=(--sign "$MACOS_SIGN_IDENTITY")
+          fi
+          bash scripts/make_macos_app.sh "${args[@]}"
+          # Zipped with ditto, not `zip`: ditto is what preserves the bundle's
+          # resource forks and symlinks, and it is what Apple's own tooling
+          # produces. A plain `zip -r` of a .app is a known way to ship a bundle
+          # that will not launch.
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist-release/literouter.app \
+            "dist-release/literouter-${VERSION}-macos-arm64-app.zip"
+          rm -rf dist-release/literouter.app
+          # Checksum the one file this step made, by name. A glob in the output
+          # redirect would create a file literally called `...-app.zip.sha256`
+          # only by accident, and `shasum` prints the path it was given, so the
+          # entry has to be relative for `shasum -c` to work from that directory.
+          app_zip="literouter-${VERSION}-macos-arm64-app.zip"
+          (cd dist-release && shasum -a 256 "$app_zip" > "$app_zip.sha256")
+          ls -lh dist-release
+
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        env:
+          VERSION: ${{ needs.check-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          binary="$(find target -type f -name literouter.exe -path '*/bin/*' | head -n 1)"
+          bash scripts/make_windows_installer.sh --binary "$binary" --version "$VERSION"
+          # Only the installer is new here; the .exe and .zip checksums were
+          # written by the packaging step above, and rewriting them would be a
+          # second, redundant pass over the same files.
+          setup="literouter-${VERSION}-windows-x86_64-setup.exe"
+          (cd dist-release && (sha256sum "$setup" 2>/dev/null || shasum -a 256 "$setup") > "$setup.sha256")
+          ls -lh dist-release
+
       - name: Upload release assets
         uses: actions/upload-artifact@v4
         with:

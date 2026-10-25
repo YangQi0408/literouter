@@ -11,6 +11,9 @@
 - [1. 快速安装方式](#1-快速安装方式)
   - [方式 A：一键安装脚本（推荐，Linux / macOS）](#方式-a一键安装脚本推荐linux--macos)
   - [方式 B：GitHub Releases 预编译包（Linux / macOS / Windows）](#方式-bgithub-releases-预编译包linux--macos--windows)
+    - [macOS：使用 `.app`](#macos使用-app)
+    - [Windows：使用安装程序](#windows使用安装程序)
+    - [手动安装裸二进制](#手动安装裸二进制)
   - [方式 C：从源码构建](#方式-c从源码构建)
 - [2. 后台常驻与自启动服务](#2-后台常驻与自启动服务)
   - [方案 1：Linux Systemd 系统服务（推荐服务器使用）](#方案-1linux-systemd-系统服务推荐服务器使用)
@@ -62,7 +65,41 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 
 ### 方式 B：GitHub Releases 预编译包（Linux / macOS / Windows）
 
-如果你偏好手动管理，直接前往 [GitHub Releases](https://github.com/YangQi0408/literouter/releases) 页面下载对应系统的压缩包：
+如果你偏好手动管理，直接前往 [GitHub Releases](https://github.com/YangQi0408/literouter/releases) 页面下载对应系统的产物。每个平台提供两种形式，**日常使用建议选带安装器的那个**：
+
+| 平台 | 推荐形式 | 说明 |
+|---|---|---|
+| **macOS** | `literouter-<版本>-macos-arm64-app.zip` | `.app` 应用包，解压后拖进「应用程序」即可。双击启动，有独立的 Dock 图标与 Gatekeeper 身份 |
+| **Windows** | `literouter-<版本>-windows-x86_64-setup.exe` | 安装程序。装到 `Program Files`、生成开始菜单项、可在「应用和功能」里卸载 |
+| **Linux** | `literouter-<版本>-linux-x86_64.tar.gz` | 单个可执行文件（本项目的 Linux 惯例；AppImage 不再提供） |
+
+同时仍提供裸二进制（`.tar.gz` / `.zip` 里的 `literouter`），供安装脚本与容器镜像使用。
+
+#### macOS：使用 `.app`
+
+1. 解压 `literouter-...-app.zip`，把 `literouter.app` 拖进 `/Applications`；
+2. 首次启动若被 Gatekeeper 拦住（提示「无法验证开发者」），右键点图标选「打开」，或执行：
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/literouter.app
+   ```
+3. 双击后会在终端窗口里以 `serve` 前台运行。
+
+> `.app` 里的可执行文件就是同一个二进制，所以 `literouter` 的全部子命令仍可在终端直接调用。若已把二进制放进 `PATH`，用命令行即可，无需 `.app`。
+
+#### Windows：使用安装程序
+
+1. 运行 `literouter-...-setup.exe`；
+2. 安装向导里有两个**默认不勾选**的选项：
+   - **加入系统 PATH** —— 勾选后可在任意终端直接输入 `literouter`。不勾选是为了不覆盖你 PATH 上已有的同名程序；
+   - **登录时启动网关** —— 勾选后创建计划任务。
+3. 开始菜单会生成三个快捷方式：启动网关、查看状态、打开文档；
+4. 卸载走「应用和功能」，卸载前会先尝试优雅停止正在运行的网关。
+
+> 安装程序**不会**自动启动网关（`serve` 是前台阻塞进程，从安装向导里拉起会让向导一直等），也不会改防火墙规则（默认只绑回环，等你真的绑 `0.0.0.0` 时系统会自己弹提示）。
+
+#### 手动安装裸二进制
+
+如果你偏好手动管理：
 
 1. **解压产物**：每个发布包仅包含一个独立的 `literouter`（Windows 上为 `literouter.exe`）二进制文件。内置 Web 控制台所有静态资源已在编译期内嵌（`#embed`），无需 Node.js 或任何前端依赖；
 2. **放置到 PATH**：

@@ -11,6 +11,9 @@ This document covers installation methods, background service setup (systemd / l
 - [1. Installation Options](#1-installation-options)
   - [Option A: One-Line Installer Script (Recommended for Linux / macOS)](#option-a-one-line-installer-script-recommended-for-linux--macos)
   - [Option B: GitHub Releases Prebuilt Binaries (Linux / macOS / Windows)](#option-b-github-releases-prebuilt-binaries-linux--macos--windows)
+    - [macOS: using the `.app`](#macos-using-the-app)
+    - [Windows: using the installer](#windows-using-the-installer)
+    - [Installing the bare binary by hand](#installing-the-bare-binary-by-hand)
   - [Option C: Build from Source](#option-c-build-from-source)
 - [2. Running as a Background Service](#2-running-as-a-background-service)
   - [Setup 1: Linux Systemd System Service (Recommended for Servers)](#setup-1-linux-systemd-system-service-recommended-for-servers)
@@ -62,7 +65,41 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 
 ### Option B: GitHub Releases Prebuilt Binaries (Linux / macOS / Windows)
 
-For manual installation, head over to the [GitHub Releases](https://github.com/YangQi0408/literouter/releases) page and download the archive for your operating system:
+For manual installation, head over to the [GitHub Releases](https://github.com/YangQi0408/literouter/releases) page and download the artifact for your operating system. Each platform ships two forms — **the installer is the one to pick for everyday use**:
+
+| Platform | Recommended | Notes |
+|---|---|---|
+| **macOS** | `literouter-<version>-macos-arm64-app.zip` | A `.app` bundle: unzip, drag to Applications, double-click. Gets its own Dock icon and Gatekeeper identity |
+| **Windows** | `literouter-<version>-windows-x86_64-setup.exe` | An installer: installs to `Program Files`, adds Start-menu entries, uninstalls from Apps & features |
+| **Linux** | `literouter-<version>-linux-x86_64.tar.gz` | A single executable, which is the convention on this platform (no AppImage) |
+
+The bare binaries (the `literouter` inside the `.tar.gz` / `.zip`) are still published, because the install scripts and the container image consume them.
+
+#### macOS: using the `.app`
+
+1. Unzip `literouter-...-app.zip` and drag `literouter.app` into `/Applications`;
+2. If Gatekeeper refuses the first launch ("cannot be verified"), right-click the icon and choose **Open**, or run:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/literouter.app
+   ```
+3. Double-clicking runs `serve` in the foreground, in a Terminal window.
+
+> The executable inside the bundle is the same binary, so every `literouter` subcommand still works from a terminal. If the binary is already on your `PATH`, use it there — the `.app` adds nothing.
+
+#### Windows: using the installer
+
+1. Run `literouter-...-setup.exe`;
+2. Two options in the wizard are **off by default**:
+   - **Add to system PATH** — lets you type `literouter` in any terminal. Off by default so it cannot shadow an existing `literouter` already on your PATH;
+   - **Start the gateway when I sign in** — creates a scheduled task.
+3. The Start menu gets three entries: start the gateway, show status, open the documentation;
+4. Uninstall through Apps & features; it tries to stop a running gateway gracefully first.
+
+> The installer deliberately does **not** start the gateway (`serve` blocks in the foreground, so launching it from the wizard would leave the wizard waiting forever), and does **not** touch firewall rules (the default bind is loopback; Windows will prompt on the day you bind `0.0.0.0`).
+
+#### Installing the bare binary by hand
+
+If you would rather manage it yourself:
 
 1. **Standalone Binaries**: Each release package contains a self-contained `literouter` executable (`literouter.exe` on Windows). All Web Console frontend assets are embedded into the binary at compile time (`#embed`) — zero Node.js, Python, or external runtime dependencies needed;
 2. **Move to PATH**:
