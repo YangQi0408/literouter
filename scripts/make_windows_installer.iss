@@ -72,12 +72,24 @@ UninstallDisplayIcon={app}\{#AppExeName}
 DisableProgramGroupPage=yes
 
 [Languages]
+; English only, and the reason is not laziness: Inno Setup ships Default.isl
+; with the compiler, but every other language is a separate download from the
+; Inno Setup translations page — Chocolatey's package does not include them.
+; Naming ChineseSimplified.isl here made the whole installer fail to compile on
+; the release runner with "Couldn't open include file", which cost a v0.5.0
+; build before it was spotted.
+;
+; Rather than fetch a .isl at package time (a network dependency in a release
+; step, for one language), the few strings a user actually reads are given both
+; forms inline below. That keeps the compiler self-contained.
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Tasks]
-Name: "addtopath"; Description: "Add literouter to the system PATH"; GroupDescription: "Optional:"; Flags: unchecked
-Name: "startup";   Description: "Start the gateway when I sign in";  GroupDescription: "Optional:"; Flags: unchecked
+; The only task. "Start the gateway when I sign in" used to live here too, but
+; autostart moved to the desktop app's own --autostart flag, and a checkbox no
+; [Code] section reads is a switch that does nothing — worse than not offering
+; it.
+Name: "addtopath"; Description: "Add literouter to the system PATH (so `literouter` works in any terminal)"; GroupDescription: "Optional:"; Flags: unchecked
 
 [Files]
 Source: "{#SourceBinary}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
