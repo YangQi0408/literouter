@@ -6,7 +6,7 @@
 # on every `mcpp build --workspace`, which is a large tax on a project whose own
 # product is a single dependency-light binary. Build it on demand:
 #
-#     mcpp build -p .   (from this directory)
+#     cd tray && mcpp build
 #
 # CI and release both build `-p core` / `-p cli` only, so nothing here can break
 # a release.
