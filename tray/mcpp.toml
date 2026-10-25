@@ -1,30 +1,32 @@
-# literouter-tray — a tray-only companion to `literouter serve`.
+# literouter-tray — the desktop app.
 #
-# Deliberately NOT a member of the root virtual workspace. It is the only thing
-# in this repository that pulls eui-neo, and eui-neo brings GLFW, OpenGL, freetype,
-# libpng and glib/gio behind it. A workspace member would put that whole closure
-# on every `mcpp build --workspace`, which is a large tax on a project whose own
-# product is a single dependency-light binary. Build it on demand:
+# A workspace member because it links literouter.core to run the gateway in its
+# own process. That is what removes the platform-specific process layer a
+# spawned-child design would need on every platform (posix_spawn/CreateProcessW,
+# kill/GenerateConsoleCtrlEvent, waitpid/WaitForSingleObject, pipe/CreatePipe).
+# core's manifest pins its dependencies with `workspace = true`, which mcpp only
+# resolves for packages inside the workspace that declares them, so membership
+# is a requirement rather than a preference.
 #
-#     cd tray && mcpp build
-#
-# CI and release both build `-p core` / `-p cli` only, so nothing here can break
-# a release.
+# The cost is real and worth stating: a workspace build now pulls eui-neo's
+# graphics closure (GLFW, OpenGL, freetype, libpng, glib/gio), which is several
+# minutes on a cold cache. `mcpp build -p core -p cli` still builds only the
+# headless pair.
 [package]
 namespace   = "literouter"
 name        = "tray"
 version     = "0.4.0"
-description = "literouter — tray icon that starts and stops the local gateway"
+description = "literouter — the desktop app: tray icon, embedded gateway, opens the console"
 license     = "Apache-2.0"
 
-[toolchain]
-default = "llvm@22.1.8"
+[dependencies.literouter]
+core = { path = "../core" }
 
 [dependencies.compat]
-# Pinned exactly, like every other third-party pin in this repository. The tray
-# API this program drives (initializeTray / pollTray / consumeTrayShowRequested /
-# consumeTrayExitRequested) is stable across 0.5.x and 0.6.x, but the menu it
-# presents is hard-coded inside the library — see the note in src/main.cpp.
+# Pinned exactly, like every other third-party pin here. The tray API this
+# drives (initializeTray / pollTray / consumeTrayShowRequested /
+# consumeTrayExitRequested / openUrl / resolveResourcePath) is stable across
+# 0.5.x and 0.6.x; the menu it presents is hard-coded inside the library.
 eui-neo = "0.6.0"
 
 [targets.literouter-tray]
@@ -34,3 +36,15 @@ main = "src/main.cpp"
 [build]
 bmi_schedule = "on"
 jobs = "auto"
+
+# Windows needs shell32 for SHGetKnownFolderPath and ole32 for the shell link
+# COM objects the autostart entry is written through. eui-neo's own Windows leg
+# already links user32/shell32/ole32 for its tray, so these are additions to a
+# set that exists rather than a new dependency.
+[windows]
+ldflags = ["-lshell32", "-lole32", "-luser32"]
+
+# macOS: eui-neo links Cocoa and the audio frameworks for its AppKit tray; the
+# autostart path needs nothing beyond the C++ standard library.
+[macosx]
+ldflags = ["-framework", "Cocoa", "-lobjc"]

@@ -100,6 +100,12 @@ jobs:
       - name: Build cli
         run: mcpp build -p cli
 
+      # The desktop app links core, so it builds after it. Kept as its own step
+      # so a failure in eui-neo's graphics closure reads as that and not as a
+      # failure of the product's own code.
+      - name: Build tray
+        run: mcpp build -p tray
+
       - name: Verify config docs match the build (Linux)
         if: runner.os == 'Linux'
         run: |

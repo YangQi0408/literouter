@@ -16,6 +16,7 @@
 set -euo pipefail
 
 BINARY=""
+APP_BINARY=""
 VERSION=""
 
 usage() {
@@ -23,6 +24,7 @@ usage() {
 Build literouter-<version>-windows-x86_64-setup.exe.
 
   --binary PATH      the built literouter.exe (required)
+  --app PATH         the built literouter-tray.exe (optional; the desktop app)
   --version VERSION  version string for the installer (required)
   -h, --help         show this message
 EOF
@@ -31,6 +33,7 @@ EOF
 while [ $# -gt 0 ]; do
     case "$1" in
         --binary)  BINARY="${2:?--binary needs a path}"; shift 2 ;;
+        --app)     APP_BINARY="${2:?--app needs a path}"; shift 2 ;;
         --version) VERSION="${2:?--version needs a value}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -76,6 +79,10 @@ STAGE="$REPO_ROOT/scripts/.installer-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp "$BINARY" "$STAGE/literouter.exe"
+if [ -n "$APP_BINARY" ]; then
+    [ -f "$APP_BINARY" ] || { echo "error: $APP_BINARY does not exist" >&2; exit 1; }
+    cp "$APP_BINARY" "$STAGE/literouter-tray.exe"
+fi
 for doc in README.md README_en.md LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
     [ -f "$REPO_ROOT/$doc" ] && cp "$REPO_ROOT/$doc" "$STAGE/"
 done
@@ -92,7 +99,11 @@ sed -i 's|"\.\.\\|"|g' "$STAGE/installer.iss"
 sed -i 's|^OutputDir=\.\.\\dist-release|OutputDir=dist-release|' "$STAGE/installer.iss"
 
 mkdir -p "$STAGE/dist-release"
-"$ISCC" //Q //DAppVersion="$VERSION" "$STAGE/installer.iss"
+iscc_args=(//Q //DAppVersion="$VERSION")
+if [ -n "$APP_BINARY" ]; then
+    iscc_args+=(//DSourceApp="literouter-tray.exe")
+fi
+"$ISCC" "${iscc_args[@]}" "$STAGE/installer.iss"
 
 OUTPUT="$STAGE/dist-release/literouter-$VERSION-windows-x86_64-setup.exe"
 [ -f "$OUTPUT" ] || { echo "error: ISCC produced no installer at $OUTPUT" >&2; exit 1; }

@@ -177,6 +177,12 @@ jobs:
           mcpp build -p core --release
           mcpp build -p cli --release
 
+      # The desktop app. It links core, so it builds after it; on Linux it also
+      # needs the graphics closure eui-neo pulls, which is why it is a separate
+      # step whose failure is visible on its own.
+      - name: Build desktop app
+        run: mcpp build -p tray --release
+
       - name: Install Linux packaging tools
         if: runner.os == 'Linux'
         run: |
@@ -195,18 +201,32 @@ jobs:
           mkdir -p "$staging" dist-release
 
           if [ "$RUNNER_OS" = "Windows" ]; then
-            binary="$(find target -type f -name literouter.exe -path '*/bin/*' | head -n 1)"
+            binary="$(find target -type f -name literouter.exe -path '*/bin/cli/*' | head -n 1)"
             cp "$binary" "$staging/literouter.exe"
             cp "$binary" "dist-release/$package.exe"
             cp "$binary" "dist-release/literouter-windows-x86_64.exe"
+            app="$(find target -type f -name literouter-tray.exe -path '*/bin/tray/*' | head -n 1)"
+            if [ -n "$app" ]; then
+              cp "$app" "$staging/literouter-tray.exe"
+            fi
           else
-            binary="$(find target -type f -name literouter -path '*/bin/*' | head -n 1)"
+            binary="$(find target -type f -name literouter -path '*/bin/cli/*' | head -n 1)"
             if [ "$RUNNER_OS" = "Linux" ]; then
               python3 scripts/patch_elf_interp.py "$binary"
               patchelf --set-rpath '$ORIGIN' "$binary" 2>/dev/null || true
             fi
             cp "$binary" "$staging/literouter"
             chmod 0755 "$staging/literouter"
+            # The desktop app travels with the archive: it is the form most
+            # users want, and keeping it beside the CLI binary means one
+            # download covers both. Its absence is not fatal — the headless
+            # front end does not need it — so a build that skipped it still
+            # produces a usable archive.
+            app="$(find target -type f -name literouter-tray -path '*/bin/tray/*' | head -n 1)"
+            if [ -n "$app" ]; then
+              cp "$app" "$staging/literouter-tray"
+              chmod 0755 "$staging/literouter-tray"
+            fi
             cp "$binary" "dist-release/$package"
             cp "$binary" "dist-release/literouter-$PLATFORM"
           fi
@@ -238,7 +258,14 @@ jobs:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
           set -euo pipefail
-          binary="$(find target -type f -name literouter -path '*/bin/*' | head -n 1)"
+          # The bundle wraps the desktop app, not the CLI: double-clicking a
+          # bundle is what the .app exists for, and the CLI has no window to
+          # show. The CLI still travels in the tarball beside it.
+          binary="$(find target -type f -name literouter-tray -path '*/bin/tray/*' | head -n 1)"
+          if [ -z "$binary" ]; then
+            echo "the desktop app was not built; skipping the .app bundle" >&2
+            exit 0
+          fi
           args=(--binary "$binary" --version "$VERSION" --output dist-release)
           if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
             args+=(--sign "$MACOS_SIGN_IDENTITY")

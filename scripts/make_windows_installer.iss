@@ -27,6 +27,11 @@
 #endif
 
 #define AppName        "literouter"
+; The desktop app is the primary install target; the CLI ships beside it as the
+; headless/scripting front end. Both are the same product, so both go in.
+#ifndef SourceApp
+  #define SourceApp ""
+#endif
 #define AppPublisher   "literouter contributors"
 #define AppUrl         "https://github.com/YangQi0408/literouter"
 #define AppExeName     "literouter.exe"
@@ -59,7 +64,11 @@ WizardStyle=modern
 ; The config and state live under %APPDATA% / %LOCALAPPDATA% and are the user's
 ; data. An uninstall that removed them would delete relays the user typed in by
 ; hand; the [UninstallDelete] section below is explicit about what it touches.
+#if SourceApp != ""
+UninstallDisplayIcon={app}\literouter-tray.exe
+#else
 UninstallDisplayIcon={app}\{#AppExeName}
+#endif
 DisableProgramGroupPage=yes
 
 [Languages]
@@ -72,6 +81,11 @@ Name: "startup";   Description: "Start the gateway when I sign in";  GroupDescri
 
 [Files]
 Source: "{#SourceBinary}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
+; Present when the release build produced it. `skipifsourcedoesntexist` keeps a
+; CLI-only build installable instead of failing the whole installer.
+#if SourceApp != ""
+Source: "{#SourceApp}"; DestDir: "{app}"; DestName: "literouter-tray.exe"; Flags: ignoreversion
+#endif
 Source: "..\README.md";      DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "..\README_en.md";   DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE";        DestDir: "{app}"; Flags: ignoreversion
@@ -79,10 +93,14 @@ Source: "..\NOTICE";         DestDir: "{app}"; Flags: ignoreversion skipifsource
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\literouter (start gateway)"; Filename: "{app}\{#AppExeName}"; Parameters: "serve"; WorkingDir: "{app}"
-Name: "{group}\literouter (status)";        Filename: "{app}\{#AppExeName}"; Parameters: "status"; WorkingDir: "{app}"
-Name: "{group}\literouter documentation";   Filename: "{app}\README.md"
-Name: "{group}\Uninstall literouter";       Filename: "{uninstallexe}"
+; The app first, because that is what most users want to click.
+#if SourceApp != ""
+Name: "{group}\literouter";                 Filename: "{app}\literouter-tray.exe"; WorkingDir: "{app}"
+#endif
+Name: "{group}\literouter (headless gateway)"; Filename: "{app}\{#AppExeName}"; Parameters: "serve"; WorkingDir: "{app}"
+Name: "{group}\literouter (status)";           Filename: "{app}\{#AppExeName}"; Parameters: "status"; WorkingDir: "{app}"
+Name: "{group}\literouter documentation";      Filename: "{app}\README.md"
+Name: "{group}\Uninstall literouter";          Filename: "{uninstallexe}"
 
 [Run]
 ; The gateway is not started by the installer. `serve` blocks in the
@@ -169,6 +187,10 @@ begin
          ewWaitUntilTerminated, ResultCode);
     Sleep(1500);
     Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExeName}', '',
+         SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // The desktop app runs the gateway in its own process, so stopping only the
+    // CLI binary would leave the port bound and the app's exe locked.
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM literouter-tray.exe', '',
          SW_HIDE, ewWaitUntilTerminated, ResultCode);
     RemoveFromPath(ExpandConstant('{app}'));
   end;

@@ -194,18 +194,34 @@ literouter bench --model gpt-4o  # 对比各中转站在同一模型上的真实
 literouter config validate       # 深度校验配置文件的正确性与安全性
 ```
 
-### 系统托盘（可选）
+### 桌面应用（托盘版）
 
-`tray/` 下有一个独立的托盘小程序，用图标代替终端窗口来管理网关：启动时拉起
-`literouter serve`，退出时干净地停掉它，点 **Show** 用浏览器打开内置 Web 控制台。
-它不随主工作区构建（会引入 GLFW / OpenGL / glib 一整套图形依赖），需要时单独编译：
+`tray/` 是 **literouter 的桌面形态**：双击打开 → 网关在**同一进程内**启动 →
+浏览器自动打开内置 Web 控制台 → 程序驻留系统托盘。它自己没有窗口，控制台就是它的界面。
 
 ```bash
-cd tray && mcpp build && ./target/*/*/bin/*/literouter-tray
+mcpp build -p tray
+./target/*/*/bin/tray/literouter-tray
 ```
 
-⚠️ 受 EUI-NEO 的托盘 API 限制，菜单只有 **Show** / **Exit** 两项——启停网关跟随
-托盘进程的生命周期，而不是独立的菜单项。细节与限制见 [`tray/README.md`](tray/README.md)。
+托盘菜单只有 **Show**（打开控制台）与 **Exit**（停止网关并退出）两项，这是
+EUI-NEO 托盘 API 的硬限制，不是本项目的取舍。网关随程序生命周期启停。
+
+**自启动是可选的，且默认不写入。** 需要时显式执行 `literouter-tray --autostart`，
+它只写**用户级**位置（Linux `~/.config/autostart`、macOS `~/Library/LaunchAgents`、
+Windows 启动文件夹），可手工删除、无需提权，不碰系统服务：
+
+```bash
+literouter-tray --autostart         # 添加登录自启，然后继续运行
+literouter-tray --no-autostart      # 移除，然后继续运行
+literouter-tray --autostart-status  # 只查询状态
+```
+
+> 想要**无界面常驻**（开机即起、不依赖登录会话），那是 CLI 的显式选项：
+> `install.sh --service`（Linux）或 `install-windows.ps1 -Service`（Windows）。
+> 两条路径互相独立。
+
+细节、跨平台实现与限制见 [`tray/README.md`](tray/README.md)。
 
 ---
 

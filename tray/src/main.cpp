@@ -1,385 +1,250 @@
-// literouter-tray — a tray icon that starts, stops and opens the local gateway.
+// literouter — the desktop app.
 //
-// ── What this program is, and what it deliberately is not ────────────────────
+// One process, no window of its own. It starts the gateway in-process, puts an
+// icon in the system tray, opens the built-in web console in the default
+// browser, and stops the gateway when it exits. The console is the entire UI;
+// this program is the thing you double-click.
 //
-// There is no window. eui-neo's tray support is reachable without ever creating
-// one (`core::platform::initializeTray` / `pollTray` touch no GL context and no
-// window handle), which is what makes a tray-only program possible at all.
+// ── Why the gateway runs in this process ────────────────────────────────────
 //
-// The menu, however, is NOT ours: eui-neo hard-codes exactly three entries —
-// "Show", a separator, and "Exit" — in all three of its backends (AppKit, Win32
-// and the Linux SNI one), and exposes the outcome as two booleans
-// (`consumeTrayShowRequested` / `consumeTrayExitRequested`). There is no API for
-// adding items. So this program maps the two entries it can actually observe:
+// The alternative — spawn `literouter serve` as a child and supervise it — was
+// the first design, and it cost a platform-specific process layer on every
+// platform: posix_spawn or CreateProcessW to start, kill(SIGTERM) or
+// GenerateConsoleCtrlEvent to stop, waitpid or WaitForSingleObject to reap, and
+// a pipe or an inherited handle to read the child's status. Five behaviours
+// that differ per platform, all of them only exercised on the platform they
+// were written for.
 //
-//   Show  → open the built-in web console in the default browser
-//   Exit  → stop the gateway (if this program started it) and quit
+// literouter.core is a library. Linking it means start() and stop() are plain
+// function calls, the snapshot is a struct read, and there is no child process
+// to leak, orphan or mis-signal. That removes the entire platform layer: what
+// is left below is C++ and EUI-NEO's tray API, both of which already work on
+// all three platforms. The cost is that this binary carries the proxy engine
+// (~19 MB with eui-neo's graphics closure) instead of shelling out to a 2 MB
+// one, which is the right trade for an application the user installs.
 //
-// Starting and stopping the gateway therefore hangs off the process lifetime
-// rather than a menu entry: the gateway is spawned when this program starts and
-// stopped when it exits. That is the whole supervision model, and it is why
-// `serve` is started with SIGTERM as the stop signal — the CLI installs a
-// handler for it and shuts the listener down cleanly.
+// ── The tray menu is two entries, and that is not a choice ──────────────────
 //
-// ── Why a child process instead of linking core ──────────────────────────────
+// EUI-NEO hard-codes Show / separator / Exit in all three of its backends
+// (AppKit, Win32, StatusNotifierItem) and exposes the outcome as two booleans.
+// There is no API for adding items. So:
 //
-// Linking `literouter.core` would put the proxy inside this binary, but the
-// console URL, the config path and the state directory all follow the CLI's own
-// resolution rules, and the operator may already be running `literouter serve`
-// from a shell. Driving the same `literouter` binary keeps one source of truth
-// for all of it: this program starts the gateway exactly the way the operator
-// would, and an already-running instance is detected and adopted rather than
-// fought with.
+//   Show → open the console in the browser
+//   Exit → stop the gateway and quit
+//
+// Starting is implicit: the gateway is up for as long as this program runs.
+// That is also why autostart is the natural way to keep the gateway always
+// available, and why this program never writes an autostart entry unless the
+// user asks for one — see autostart.cpp.
 
-#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <string>
-#include <string_view>
 #include <thread>
-#include <vector>
-
-#include <fcntl.h>
-#include <spawn.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include "eui_neo.h"
 #include "eui/platform.h"
 
-extern char **environ;
+import literouter.core;
+
+#include "tray_autostart.hpp"
 
 namespace {
 
-using namespace std::chrono_literals;
-
-// ── locating the gateway ─────────────────────────────────────────────────────
-
-// The binary to supervise. Resolution order is deliberately boring: an explicit
-// override first, then whatever is on PATH (which is how a package or a systemd
-// unit would install it), then the in-tree build product. The last one keeps
-// this usable straight out of a checkout without an install step.
-std::string gatewayBinary() {
-    if (const char *explicitPath = std::getenv("LITEROUTER_BIN");
-        explicitPath != nullptr && *explicitPath != '\0') {
-        return explicitPath;
-    }
-    if (const char *onPath = std::getenv("PATH"); onPath != nullptr) {
-        std::string_view rest = onPath;
-        while (!rest.empty()) {
-            const auto colon = rest.find(':');
-            const auto dir = rest.substr(0, colon);
-            if (!dir.empty()) {
-                std::filesystem::path candidate{std::string{dir}};
-                candidate /= "literouter";
-                std::error_code ec;
-                if (std::filesystem::is_regular_file(candidate, ec) &&
-                    ::access(candidate.c_str(), X_OK) == 0) {
-                    return candidate.string();
-                }
-            }
-            if (colon == std::string_view::npos) {
-                break;
-            }
-            rest.remove_prefix(colon + 1);
-        }
-    }
-    // In-tree fallback: target/<triple>/<hash>/bin/cli/literouter. The hash is
-    // not knowable here, so the newest one wins — the same rule CI's own
-    // "newest binary" lookups use.
-    std::error_code ec;
-    const std::filesystem::path target{"target"};
-    std::filesystem::path best;
-    std::filesystem::file_time_type bestTime{};
-    if (std::filesystem::is_directory(target, ec)) {
-        for (const auto &triple : std::filesystem::directory_iterator(target, ec)) {
-            if (!triple.is_directory()) continue;
-            for (const auto &build : std::filesystem::directory_iterator(triple.path(), ec)) {
-                if (!build.is_directory()) continue;
-                const auto candidate = build.path() / "bin" / "cli" / "literouter";
-                if (!std::filesystem::is_regular_file(candidate, ec)) continue;
-                const auto stamp = std::filesystem::last_write_time(candidate, ec);
-                if (best.empty() || stamp > bestTime) {
-                    best = candidate;
-                    bestTime = stamp;
-                }
-            }
-        }
-    }
-    return best.string();
-}
-
-// ── gateway supervision ──────────────────────────────────────────────────────
-
-class Gateway {
-public:
-    ~Gateway() { stop(); }
-
-    Gateway(const Gateway &) = delete;
-    Gateway &operator=(const Gateway &) = delete;
-    Gateway() = default;
-
-    // True when something is already serving the configured port. Checked by
-    // asking the CLI rather than by probing the port, because `status` knows
-    // which config file it would have used and whether the answer came from a
-    // real literouter.
-    bool alreadyRunning() const {
-        std::string out;
-        // `status --json` exits non-zero when nothing answers; the exit code is
-        // the signal here, not the body.
-        return runCaptured({"status", "--json", "--quiet"}, out) == 0;
-    }
-
-    // Spawns `literouter serve` and remembers the pid. Returns an empty string
-    // on success, or a human-readable reason on failure.
-    std::string start() {
-        if (pid_ > 0) {
-            return {};
-        }
-        const std::string binary = gatewayBinary();
-        if (binary.empty()) {
-            return "cannot find the `literouter` binary (set LITEROUTER_BIN to point at it)";
-        }
-
-        std::array<char *, 4> argv{};
-        argv[0] = const_cast<char *>(binary.c_str());
-        argv[1] = const_cast<char *>("serve");
-        argv[2] = const_cast<char *>("--quiet");
-        argv[3] = nullptr;
-
-        // Its stdout/stderr go to this program's, so the operator sees the
-        // gateway's own startup banner and errors in the terminal they started
-        // the tray from. Detached from the terminal's signal group (POSIX_SPAWN_
-        // SETSIGDEF + a separate process group) so Ctrl-C on the tray does not
-        // race the graceful path below.
-        posix_spawnattr_t attr;
-        posix_spawnattr_init(&attr);
-        sigset_t defaultSignals;
-        sigemptyset(&defaultSignals);
-        sigaddset(&defaultSignals, SIGINT);
-        sigaddset(&defaultSignals, SIGTERM);
-        posix_spawnattr_setsigdefault(&attr, &defaultSignals);
-        posix_spawnattr_setpgroup(&attr, 0);
-        posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP);
-
-        pid_t child = 0;
-        const int rc = posix_spawn(&child, binary.c_str(), nullptr, &attr,
-                                   argv.data(), environ);
-        posix_spawnattr_destroy(&attr);
-        if (rc != 0) {
-            return std::string{"cannot start `"} + binary + " serve`: " + std::strerror(rc);
-        }
-        pid_ = child;
-        return {};
-    }
-
-    // SIGTERM, then wait. `literouter serve` installs a handler for it and
-    // shuts the listener down cleanly; SIGKILL would leave the pid file behind
-    // and skip the telemetry flush.
-    void stop() {
-        if (pid_ <= 0) {
-            return;
-        }
-        ::kill(pid_, SIGTERM);
-        // 5 seconds is generous for a listener that is not mid-request. A
-        // request in flight gets that long to finish before we escalate.
-        const auto deadline = std::chrono::steady_clock::now() + 5s;
-        int status = 0;
-        while (std::chrono::steady_clock::now() < deadline) {
-            const pid_t done = ::waitpid(pid_, &status, WNOHANG);
-            if (done == pid_ || done < 0) {
-                pid_ = -1;
-                return;
-            }
-            std::this_thread::sleep_for(50ms);
-        }
-        ::kill(pid_, SIGKILL);
-        ::waitpid(pid_, &status, 0);
-        pid_ = -1;
-    }
-
-    pid_t pid() const { return pid_; }
-
-private:
-    // Runs `literouter <args>` to completion and captures stdout. Used only for
-    // the short-lived `status` probe; the server itself is spawned detached.
-    static int runCaptured(const std::vector<std::string> &args, std::string &out) {
-        const std::string binary = gatewayBinary();
-        if (binary.empty()) {
-            return -1;
-        }
-        std::vector<char *> argv;
-        argv.push_back(const_cast<char *>(binary.c_str()));
-        for (const auto &arg : args) {
-            argv.push_back(const_cast<char *>(arg.c_str()));
-        }
-        argv.push_back(nullptr);
-
-        int pipeFds[2];
-        if (::pipe(pipeFds) != 0) {
-            return -1;
-        }
-        posix_spawn_file_actions_t actions;
-        posix_spawn_file_actions_init(&actions);
-        posix_spawn_file_actions_adddup2(&actions, pipeFds[1], STDOUT_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipeFds[0]);
-        posix_spawn_file_actions_addclose(&actions, pipeFds[1]);
-
-        pid_t child = 0;
-        const int rc = posix_spawn(&child, binary.c_str(), &actions, nullptr,
-                                   argv.data(), environ);
-        posix_spawn_file_actions_destroy(&actions);
-        ::close(pipeFds[1]);
-        if (rc != 0) {
-            ::close(pipeFds[0]);
-            return -1;
-        }
-        char buffer[4096];
-        ssize_t got = 0;
-        while ((got = ::read(pipeFds[0], buffer, sizeof buffer)) > 0) {
-            out.append(buffer, static_cast<std::size_t>(got));
-        }
-        ::close(pipeFds[0]);
-        int status = 0;
-        ::waitpid(child, &status, 0);
-        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    }
-
-    pid_t pid_ = -1;
+// Autostart is not a tray menu entry because EUI-NEO's menu cannot gain one —
+// see the header comment. It is a flag instead, which also means it can be set
+// from an installer or a script without a GUI:
+//
+//   literouter-tray --autostart          write the entry and keep running
+//   literouter-tray --no-autostart       remove it and keep running
+//   literouter-tray --autostart-status   report it and exit
+//
+// Nothing is written unless one of these is given.
+struct Options {
+    enum class Action { Run, EnableAutostart, DisableAutostart, ReportAutostart } action =
+        Action::Run;
 };
 
-// ── console URL ──────────────────────────────────────────────────────────────
-
-// The console lives at /ui/ on whatever the gateway is actually listening on.
-// `status --json` is the only honest source for that: the port can come from
-// the config file, from `--port`, or from the kernel when the config says 0.
-std::string consoleUrl() {
-    Gateway probe;
-    std::string body;
-    if (probe.alreadyRunning()) {
-        // Re-run capturing stdout; alreadyRunning() above only wanted the exit
-        // code, and this keeps the two concerns separate.
-        const std::string binary = gatewayBinary();
-        if (!binary.empty()) {
-            std::FILE *pipe = ::popen((binary + " status --json").c_str(), "r");
-            if (pipe != nullptr) {
-                char buffer[4096];
-                std::size_t got = 0;
-                while ((got = std::fread(buffer, 1, sizeof buffer, pipe)) > 0) {
-                    body.append(buffer, got);
-                }
-                ::pclose(pipe);
-            }
+Options parseArgs(int argc, char **argv) {
+    Options options;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--autostart") {
+            options.action = Options::Action::EnableAutostart;
+        } else if (arg == "--no-autostart") {
+            options.action = Options::Action::DisableAutostart;
+        } else if (arg == "--autostart-status") {
+            options.action = Options::Action::ReportAutostart;
         }
     }
-    // Minimal, dependency-free extraction of "base_url": "http://127.0.0.1:8787".
-    // A full JSON parser would be the wrong trade here: this reads one field out
-    // of a document this repository itself produces.
-    const auto key = body.find("\"base_url\"");
-    if (key != std::string::npos) {
-        const auto colon = body.find(':', key);
-        const auto open = body.find('"', colon);
-        const auto close = body.find('"', open + 1);
-        if (colon != std::string::npos && open != std::string::npos &&
-            close != std::string::npos && close > open + 1) {
-            return body.substr(open + 1, close - open - 1) + "/ui/";
-        }
-    }
-    // Nothing is listening: point at the documented default so Show still does
-    // something sensible, and the browser's own error says the rest.
-    return "http://127.0.0.1:8787/ui/";
+    return options;
 }
 
-// ── tray loop ────────────────────────────────────────────────────────────────
+const char *describe(lrtray::AutostartState state) {
+    switch (state) {
+    case lrtray::AutostartState::Enabled:     return "enabled";
+    case lrtray::AutostartState::Disabled:    return "disabled";
+    case lrtray::AutostartState::Unsupported: return "unsupported";
+    }
+    return "unknown";
+}
+
+using namespace std::chrono_literals;
 
 volatile std::sig_atomic_t g_quit = 0;
 
 extern "C" void handleSignal(int) { g_quit = 1; }
 
+// The console lives at /ui/ on whatever the gateway is actually listening on.
+// Reading it back from the server rather than from the config is what makes
+// `port: 0` (kernel-assigned) work.
+std::string consoleUrl(const literouter::ProxyServer &server) {
+    const int port = server.boundPort();
+    if (port <= 0) {
+        return {};
+    }
+    return std::format("http://127.0.0.1:{}/ui/", port);
+}
+
 std::string iconPath() {
     // resolveResourcePath() looks next to the executable first, which is where
-    // an installed bundle would keep the icon. The explicit fallbacks cover a
-    // run straight out of the checkout.
-    const std::string resolved = core::platform::resolveResourcePath("assets/literouter-tray.png");
+    // an installed bundle keeps it. The fallbacks cover a run straight out of
+    // the build tree.
+    const std::string resolved =
+        core::platform::resolveResourcePath("assets/literouter-tray.png");
     std::error_code ec;
     if (!resolved.empty() && std::filesystem::is_regular_file(resolved, ec)) {
         return resolved;
     }
-    const std::filesystem::path beside{std::filesystem::current_path(ec) / "assets" /
-                                       "literouter-tray.png"};
+    const std::filesystem::path beside =
+        std::filesystem::current_path(ec) / "assets" / "literouter-tray.png";
     if (std::filesystem::is_regular_file(beside, ec)) {
         return beside.string();
     }
     return {};
 }
 
-int run() {
+int run(const Options &options) {
+    // The autostart actions are decided before the gateway is started: asking
+    // "is autostart on?" should not bind a port, and it should work on a machine
+    // where the port is already taken by another instance.
+    if (options.action == Options::Action::ReportAutostart) {
+        const lrtray::AutostartStatus status = lrtray::queryAutostart();
+        std::printf("%s\n", describe(status.state));
+        if (!status.path.empty()) {
+            std::printf("%s\n", status.path.c_str());
+        }
+        if (!status.message.empty()) {
+            std::fprintf(stderr, "literouter: %s\n", status.message.c_str());
+        }
+        return status.state == lrtray::AutostartState::Unsupported ? 1 : 0;
+    }
+    if (options.action == Options::Action::EnableAutostart ||
+        options.action == Options::Action::DisableAutostart) {
+        const lrtray::AutostartStatus status =
+            options.action == Options::Action::EnableAutostart ? lrtray::enableAutostart()
+                                                              : lrtray::disableAutostart();
+        std::printf("autostart %s: %s\n", describe(status.state), status.path.c_str());
+        if (!status.message.empty()) {
+            std::fprintf(stderr, "literouter: %s\n", status.message.c_str());
+        }
+        if (status.state == lrtray::AutostartState::Unsupported) {
+            return 1;
+        }
+        // Falls through: setting autostart is usually done once, then the user
+        // expects the app to be running. Exiting here would make
+        // `literouter-tray --autostart` a no-op from their point of view.
+    }
+
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
 
-    Gateway gateway;
-
-    // Adopt an existing instance rather than starting a second one: the CLI
-    // refuses to share a port anyway, and a second spawn would only produce an
-    // error banner for a gateway that is already fine.
-    if (gateway.alreadyRunning()) {
-        std::fprintf(stderr, "literouter-tray: a gateway is already running; "
-                             "the tray will not manage it\n");
-    } else if (const std::string error = gateway.start(); !error.empty()) {
-        std::fprintf(stderr, "literouter-tray: %s\n", error.c_str());
+    // loadOrSeed: a first run writes the seed config and keeps going, which is
+    // what "double-click the app" has to mean. A config that exists but cannot
+    // be parsed is a different case and is reported rather than replaced — the
+    // user may have hand-edited it.
+    const auto store = literouter::ConfigStore::loadOrSeed(literouter::defaultConfigPath());
+    if (!store) {
+        std::fprintf(stderr, "literouter: %s\n", store.error().c_str());
         return 1;
     }
 
-    core::platform::TrayOptions options;
-    options.tooltip = "literouter";
-    options.iconPath = iconPath();
+    literouter::ProxyServer server;
+    server.setConfigPath(literouter::pathToUtf8(literouter::defaultConfigPath()));
 
-    if (!core::platform::initializeTray(options)) {
-        // The gateway is already running by now; leaving it up would strand it
-        // with no way to stop it from here. Undo the start before failing.
-        gateway.stop();
+    literouter::AppConfig config = store->config();
+    if (const auto started = server.start(config); !started) {
+        std::fprintf(stderr, "literouter: %s\n", started.error().c_str());
         std::fprintf(stderr,
-                     "literouter-tray: cannot create a tray icon. On Linux this needs a "
-                     "StatusNotifierWatcher on the session bus (KDE, or a GNOME extension "
-                     "such as AppIndicator); see the README's troubleshooting note.\n");
+                     "literouter: another instance may already be listening; open the "
+                     "console at http://127.0.0.1:%d/ui/ to use it\n",
+                     config.server.port);
         return 1;
     }
 
-    // The tray API is polled, not callback-driven: `pollTray(false)` drains
-    // whatever the desktop queued and the two consume* calls return and clear
-    // one-shot flags. 100 ms keeps a click feeling immediate without spinning.
+    const std::string url = consoleUrl(server);
+    std::printf("literouter is serving at %s\n", url.c_str());
+    std::fflush(stdout);
+
+    core::platform::TrayOptions trayOptions;
+    trayOptions.tooltip = "literouter";
+    trayOptions.iconPath = iconPath();
+
+    if (!core::platform::initializeTray(trayOptions)) {
+        server.stop();
+        std::fprintf(stderr,
+                     "literouter: cannot create a tray icon. On Linux this needs a "
+                     "StatusNotifierWatcher on the session bus (KDE, or a GNOME extension "
+                     "such as AppIndicator).\n");
+        return 1;
+    }
+
+    // Opening the console on launch is the point of the app: there is no window
+    // of its own, so without this the user double-clicks and sees nothing.
+    if (!core::platform::openUrl(url)) {
+        std::fprintf(stderr, "literouter: cannot open %s; open it by hand\n", url.c_str());
+    }
+
+    // Polled, not callback-driven: pollTray drains whatever the desktop queued
+    // and the two consume* calls return and clear one-shot flags. 100 ms keeps a
+    // click feeling immediate without spinning a core.
     while (g_quit == 0) {
         core::platform::pollTray(false);
 
         if (core::platform::consumeTrayShowRequested()) {
-            const std::string url = consoleUrl();
             if (!core::platform::openUrl(url)) {
-                std::fprintf(stderr, "literouter-tray: cannot open %s in a browser\n",
-                             url.c_str());
+                std::fprintf(stderr, "literouter: cannot open %s\n", url.c_str());
             }
         }
         if (core::platform::consumeTrayExitRequested()) {
+            break;
+        }
+        // The console's own shutdown button stops the listener from a handler
+        // thread. Without this the icon would outlive the gateway and Show
+        // would open a dead page.
+        if (!server.running()) {
+            std::printf("the gateway was stopped from the console; exiting\n");
+            std::fflush(stdout);
             break;
         }
         std::this_thread::sleep_for(100ms);
     }
 
     core::platform::shutdownTray();
-    gateway.stop();
+    server.stop();
     return 0;
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
     try {
-        return run();
+        return run(parseArgs(argc, argv));
     } catch (const std::exception &error) {
-        std::fprintf(stderr, "literouter-tray: %s\n", error.what());
+        std::fprintf(stderr, "literouter: %s\n", error.what());
         return 1;
     }
 }

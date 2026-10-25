@@ -1,13 +1,23 @@
 # literouter — one local AI endpoint that fans out to every relay you configured.
 #
-# Virtual workspace: the root produces no artifact. Two members:
+# Virtual workspace: the root produces no artifact. Three members:
 #   core/  literouter.core  — config, routing, proxy engine (library)
 #   cli/   literouter.cli   — the `literouter` command (binary)
+#   tray/  literouter.tray  — the desktop app: tray icon, embedded gateway
 #
-# `mcpp build` at the root builds both; `mcpp test` runs every member's tests;
-# `mcpp run -p cli -- serve` drives the single front end.
+# `mcpp build` at the root builds all three; `mcpp test` runs every member's
+# tests; `mcpp run -p cli -- serve` drives the headless front end.
+#
+# `tray` is a member rather than a standalone project because it links
+# literouter.core to run the gateway in its own process — and core's manifest
+# uses `workspace = true` for its dependency pins, which mcpp only resolves for
+# packages inside the workspace that declares them. The cost is that a
+# workspace build now pulls eui-neo's graphics closure (GLFW, OpenGL, freetype,
+# libpng, glib/gio); the benefit is that the tray has no platform-specific
+# process management at all, which is what makes it one implementation instead
+# of three.
 [workspace]
-members = ["core", "cli"]
+members = ["core", "cli", "tray"]
 
 # clang + libc++ is the toolchain mcpp builds the `std` PCM for; clangd consumes
 # that at target/<triple>/<hash>/pcm.cache/std.pcm, so the editor and the build

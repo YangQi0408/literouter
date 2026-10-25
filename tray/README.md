@@ -1,54 +1,74 @@
-# literouter-tray
+# literouter — the desktop app
 
-A tray-only companion to `literouter serve`. It puts an icon in the system tray,
-starts the gateway when it starts, stops the gateway when it exits, and opens the
-built-in web console when you pick **Show**.
+Double-click it and it opens your browser on the literouter console. It has no
+window of its own: the console *is* the interface, and the program lives in the
+system tray.
 
-There is no window. The icon *is* the program.
+```
+double-click  →  gateway starts in-process  →  browser opens at /ui/
+             →  tray icon stays                →  Exit stops the gateway
+```
 
 ---
 
-## What the menu can do, and why it is only two entries
+## The tray menu is two entries, and that is not a choice
 
 `literouter-tray` is built on [EUI-NEO](https://github.com/sudoevolve/EUI-NEO),
-which provides tray support without requiring a window. That is what makes a
-tray-only program possible.
+which provides tray support without requiring a window — that is what makes a
+tray-only program possible at all.
 
-EUI-NEO's tray menu, however, is **hard-coded inside the library**: every one of
-its three backends (AppKit on macOS, Win32 on Windows, StatusNotifierItem on
-Linux) presents exactly `Show` / separator / `Exit`, and the consumer side can
-only read two booleans — `consumeTrayShowRequested()` and
-`consumeTrayExitRequested()`. There is no API for adding items.
-
-So this program maps the two entries it can observe:
+Its tray menu, however, is **hard-coded inside the library**: every one of its
+three backends (AppKit on macOS, Win32 on Windows, StatusNotifierItem on Linux)
+presents exactly `Show` / separator / `Exit`, and the consumer side can only read
+two booleans. There is no API for adding items.
 
 | Entry | What it does |
 |---|---|
-| **Show** | Opens the built-in web console in your default browser, at whatever address the gateway is actually listening on |
-| **Exit** | Stops the gateway (if this program started it) and quits |
+| **Show** | Opens the console in your default browser |
+| **Exit** | Stops the gateway and quits |
 
-Starting and stopping the gateway therefore follows the process lifetime rather
-than a menu entry: the gateway is spawned when the tray starts and stopped when
-the tray exits. If you want an explicit start/stop control in the tray menu
-itself, that needs a change inside EUI-NEO's tray backends, not here.
+Starting is implicit: the gateway is up for as long as the app runs. Anything
+that would otherwise be a menu entry is a command-line flag — see *Autostart*.
+
+---
+
+## The gateway runs inside this process
+
+`literouter.core` is a library, so the app links it and calls `start()` / `stop()`
+directly instead of spawning `literouter serve` as a child.
+
+That decision is the reason there is one implementation instead of three. A
+supervised child would need, on every platform:
+
+| Job | POSIX | Windows |
+|---|---|---|
+| start | `posix_spawn` | `CreateProcessW` |
+| stop | `kill(SIGTERM)` | `GenerateConsoleCtrlEvent` |
+| reap | `waitpid` | `WaitForSingleObject` |
+| read status | `pipe` | `CreatePipe` + handle inheritance |
+| find the binary | `access(X_OK)` | `.exe` probing |
+
+Linking the library deletes that whole table. What remains is C++ and EUI-NEO's
+tray API, both of which already work on all three platforms. The cost is that
+this binary carries the proxy engine instead of shelling out to a smaller one —
+the right trade for an application you install.
 
 ---
 
 ## Build
 
-This is a **standalone project**, not a member of the repository's root virtual
-workspace. It is the only thing here that pulls EUI-NEO, which in turn brings
-GLFW, OpenGL, freetype, libpng and glib/gio. Making it a workspace member would
-put that whole closure on every `mcpp build --workspace` in a repository whose
-own product is a single dependency-light binary. CI and release both build
-`-p core` / `-p cli` only, so nothing here can break a release.
+The app is a member of the repository's virtual workspace, so it builds with the
+rest:
 
 ```bash
-cd tray
-mcpp build
+mcpp build            # from the repository root
 ```
 
-The binary lands in `target/<triple>/<hash>/bin/<name>/literouter-tray`.
+> ⚠️ A workspace build pulls EUI-NEO's graphics closure (GLFW, OpenGL, freetype,
+> libpng, glib/gio), which is several minutes on a cold cache. To build only the
+> headless front ends, use `mcpp build -p core -p cli`.
+
+The binary lands in `target/<triple>/<hash>/bin/tray/literouter-tray`.
 
 ### Runtime requirements (Linux)
 
@@ -60,53 +80,64 @@ The tray uses freedesktop **StatusNotifierItem** over D-Bus, which needs a
 - Other compositors (sway, niri, hyprland…): a panel or applet that implements
   the watcher — e.g. `noctalia`, `waybar` with the tray module, or `snixembed`.
 
-If nothing implements it, `initializeTray()` fails and the program says so
-instead of leaving a gateway running with no way to stop it.
+Without one, the app says so and exits rather than leaving a gateway running with
+no way to reach it.
 
 ---
 
 ## Usage
 
 ```bash
-# Supervise the literouter found on PATH
-./literouter-tray
-
-# Supervise a specific build
-LITEROUTER_BIN=/path/to/literouter ./literouter-tray
+literouter-tray                    # run the app
+literouter-tray --autostart        # add a sign-in entry, then run
+literouter-tray --no-autostart     # remove it, then run
+literouter-tray --autostart-status # report it and exit
 ```
 
-The gateway inherits the tray's environment, so `LITEROUTER_CONFIG`,
-`LITEROUTER_STATE_DIR` and friends work exactly as they do for `literouter
-serve`.
+The app inherits the environment, so `LITEROUTER_CONFIG` and
+`LITEROUTER_STATE_DIR` work as they do everywhere else. On first run it writes
+the seed config if there is none — "double-click and it works" has to mean that.
+A config that exists but does not parse is reported rather than replaced.
 
-If a gateway is **already running** when the tray starts, the tray adopts it
-rather than spawning a second one: the CLI refuses to share a port anyway, and a
-second spawn would only print an error banner about a gateway that is already
-fine. In that case the tray does not stop it on exit — it did not start it.
-
-### Binary resolution
-
-1. `$LITEROUTER_BIN`, if set.
-2. `literouter` on `$PATH`.
-3. The newest `target/<triple>/<hash>/bin/cli/literouter` in the checkout, so it
-   works straight out of a build tree.
+If the port is already taken (another instance is running), the app exits and
+tells you to open the existing console instead of fighting over the port.
 
 ---
 
-## How the gateway is stopped
+## Autostart
 
-`SIGTERM`, not `SIGKILL`. `literouter serve` installs a handler for it and shuts
-the listener down cleanly, which is what flushes telemetry and removes the pid
-file. If the process has not exited after five seconds (a request still in
-flight, for instance), the tray escalates to `SIGKILL` so a wedged gateway
-cannot outlive its tray.
+**Nothing is registered unless you ask for it.** The app never adds itself to
+your login items on first launch — silently installing a startup entry is
+exactly the kind of thing an installer should not do on someone's behalf.
+
+When you do ask (`--autostart`), the entry goes in a **user-scoped** location
+that you can delete by hand without elevation:
+
+| Platform | Path |
+|---|---|
+| Linux | `$XDG_CONFIG_HOME/autostart/literouter.desktop` |
+| macOS | `~/Library/LaunchAgents/io.github.yangqi0408.literouter.plist` |
+| Windows | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\literouter.lnk` |
+
+Deliberately *not* used, and why:
+
+- **No system service** (`systemd`, `LaunchDaemons`, Windows service). Those live
+  outside your home, run before anyone logs in, and need elevation to add or
+  remove. They suit a headless server; a tray app has to attach to a session.
+- **No scheduled task on Windows.** The Startup folder is visible in Explorer and
+  appears in Task Manager's Startup tab, so turning it off is one click rather
+  than a `schtasks` invocation.
+- **No PATH edits, no firewall rules, no registry Run keys.**
+
+If you *do* want a headless gateway at boot, that is the CLI's own explicit
+opt-in: `install.sh --service` (Linux) or `install-windows.ps1 -Service`
+(Windows). The app and that path are independent on purpose.
 
 ---
 
-## Limitations worth knowing
+## Limitations
 
-- **Two entries only.** See above — this is an EUI-NEO API limit.
-- **Linux-only build for now.** The supervision code uses `posix_spawn` /
-  `waitpid`. Windows and macOS would need their own spawn path.
-- **One tray per gateway.** There is no multiplexing; the tray manages the one
-  gateway its configuration points at.
+- **Two tray entries.** See above — this is an EUI-NEO API limit, not a design
+  choice here.
+- **One instance.** The app runs one gateway on the port your config names. Two
+  instances cannot share it (the CLI refuses to share a port either).
