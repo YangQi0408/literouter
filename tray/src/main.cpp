@@ -172,29 +172,62 @@ int run(const Options &options) {
         return 1;
     }
 
-    literouter::ProxyServer server;
-    server.setConfigPath(literouter::pathToUtf8(literouter::defaultConfigPath()));
-
     literouter::AppConfig config = store->config();
-    if (const auto started = server.start(config); !started) {
-        std::fprintf(stderr, "literouter: %s\n", started.error().c_str());
-        std::fprintf(stderr,
-                     "literouter: another instance may already be listening; open the "
-                     "console at http://127.0.0.1:%d/ui/ to use it\n",
-                     config.server.port);
-        return 1;
+
+    // ── Adopt an instance that is already serving, instead of losing to it ──
+    //
+    // The first version of this program exited when the port was taken, and told
+    // the user to open the console themselves. That is wrong for an application
+    // with no window: there is nowhere to tell them. stdout is discarded when a
+    // GUI program is launched from a file manager, eui-neo's tray tooltip is
+    // thrown away inside the library, and there is no notification API — so a
+    // failure message reaches nobody, and the user sees an app that did nothing.
+    //
+    // The behaviour that actually works is to join the running gateway: open its
+    // console, keep the icon, and leave it alone on exit because this program did
+    // not start it. Show then always opens a live page, which is the only channel
+    // a windowless program has.
+    bool ownsGateway = true;
+    std::string url;
+
+    const std::string probeUrl = std::format("http://{}:{}", config.server.host,
+                                             config.server.port);
+    const literouter::AdminStatus existing =
+        literouter::fetchStatus(probeUrl, config.server.api_key);
+    if (existing.reachable && existing.snapshot.running) {
+        ownsGateway = false;
+        // The snapshot's own base_url, not the probe URL: when the config says
+        // port 0 the running instance is on a kernel-assigned port, and only the
+        // instance knows which.
+        const std::string &base = existing.snapshot.base_url.empty()
+                                      ? probeUrl
+                                      : existing.snapshot.base_url;
+        url = base + "/ui/";
     }
 
-    const std::string url = consoleUrl(server);
-    std::printf("literouter is serving at %s\n", url.c_str());
-    std::fflush(stdout);
+    literouter::ProxyServer server;
+    if (ownsGateway) {
+        server.setConfigPath(literouter::pathToUtf8(literouter::defaultConfigPath()));
+        if (const auto started = server.start(config); !started) {
+            // Not "open it yourself" — this program cannot say that to anyone.
+            // Report on stderr for the case where it WAS started from a terminal,
+            // and still bring up the tray so the user has the icon and Show works
+            // against whatever is there.
+            std::fprintf(stderr, "literouter: %s\n", started.error().c_str());
+            url = probeUrl + "/ui/";
+        } else {
+            url = consoleUrl(server);
+        }
+    }
 
     core::platform::TrayOptions trayOptions;
     trayOptions.tooltip = "literouter";
     trayOptions.iconPath = iconPath();
 
     if (!core::platform::initializeTray(trayOptions)) {
-        server.stop();
+        if (ownsGateway) {
+            server.stop();
+        }
         std::fprintf(stderr,
                      "literouter: cannot create a tray icon. On Linux this needs a "
                      "StatusNotifierWatcher on the session bus (KDE, or a GNOME extension "
@@ -204,9 +237,14 @@ int run(const Options &options) {
 
     // Opening the console on launch is the point of the app: there is no window
     // of its own, so without this the user double-clicks and sees nothing.
-    if (!core::platform::openUrl(url)) {
-        std::fprintf(stderr, "literouter: cannot open %s; open it by hand\n", url.c_str());
-    }
+    //
+    // The return value is deliberately NOT checked. eui-neo's openUrl runs
+    // `xdg-open … &` through std::system(), so the shell backgrounds it and
+    // system() reports success the moment the fork happens — it returns true
+    // whether or not a browser ever appears. Treating that as a failure signal
+    // would be checking a constant. Measured: a foreground `xdg-open` on this
+    // machine prints zygote errors and still exits 0.
+    (void)core::platform::openUrl(url);
 
     // Polled, not callback-driven: pollTray drains whatever the desktop queued
     // and the two consume* calls return and clear one-shot flags. 100 ms keeps a
@@ -224,8 +262,9 @@ int run(const Options &options) {
         }
         // The console's own shutdown button stops the listener from a handler
         // thread. Without this the icon would outlive the gateway and Show
-        // would open a dead page.
-        if (!server.running()) {
+        // would open a dead page. Only meaningful for a gateway this program
+        // started: an adopted instance is not ours to outlive.
+        if (ownsGateway && !server.running()) {
             std::printf("the gateway was stopped from the console; exiting\n");
             std::fflush(stdout);
             break;
@@ -234,7 +273,12 @@ int run(const Options &options) {
     }
 
     core::platform::shutdownTray();
-    server.stop();
+    // Only a gateway this program started is this program's to stop. When the
+    // tray adopted an instance that was already serving, exiting must leave it
+    // running — the user may be using it from a terminal or a systemd unit.
+    if (ownsGateway) {
+        server.stop();
+    }
     return 0;
 }
 

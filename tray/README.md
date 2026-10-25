@@ -99,8 +99,23 @@ The app inherits the environment, so `LITEROUTER_CONFIG` and
 the seed config if there is none — "double-click and it works" has to mean that.
 A config that exists but does not parse is reported rather than replaced.
 
-If the port is already taken (another instance is running), the app exits and
-tells you to open the existing console instead of fighting over the port.
+### When a gateway is already running
+
+The app **adopts it** rather than exiting. It opens the running instance's
+console, keeps the tray icon, and leaves that gateway alone on exit — it did not
+start it, so stopping it is not its call. Show then works against a live page.
+
+This is not a nicety. A windowless program has exactly one channel to tell the
+user anything, and it is the browser: stdout is discarded when a GUI program is
+launched from a file manager, EUI-NEO's tray tooltip is dropped inside the
+library (`(void)options.tooltip`), and there is no notification API. So a
+"the port is taken, go open it yourself" message would reach nobody, and the app
+would look like it did nothing at all.
+
+The detection asks the running instance rather than probing the port: `GET
+/__literouter/status` on the configured address, and the instance's own
+`base_url` is what the console URL is built from — which is the only way
+`port: 0` (kernel-assigned) can work.
 
 ---
 
@@ -139,5 +154,9 @@ opt-in: `install.sh --service` (Linux) or `install-windows.ps1 -Service`
 
 - **Two tray entries.** See above — this is an EUI-NEO API limit, not a design
   choice here.
-- **One instance.** The app runs one gateway on the port your config names. Two
-  instances cannot share it (the CLI refuses to share a port either).
+- **One gateway per port.** The app runs the gateway on the port your config
+  names, or adopts an instance already there. It never runs two.
+- **Show cannot report failure.** `openUrl` in EUI-NEO runs `xdg-open … &`
+  through `std::system()`, so it returns success as soon as the fork happens,
+  whether or not a browser appears. The app calls it and does not pretend the
+  result means anything.
