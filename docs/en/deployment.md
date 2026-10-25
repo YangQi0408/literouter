@@ -71,9 +71,9 @@ For manual installation, head over to the [GitHub Releases](https://github.com/Y
 |---|---|---|
 | **macOS** | `literouter-<version>-macos-arm64-app.zip` | A `.app` bundle: unzip, drag to Applications, double-click. Gets its own Dock icon and Gatekeeper identity |
 | **Windows** | `literouter-<version>-windows-x86_64-setup.exe` | An installer: installs to `Program Files`, adds Start-menu entries, uninstalls from Apps & features |
-| **Linux** | `literouter-<version>-linux-x86_64.tar.gz` | A single executable, which is the convention on this platform (no AppImage) |
+| **Linux** | `literouter-<version>-linux-x86_64.tar.gz` | Contains both `literouter` (command line) and `literouter-tray` (desktop app); no AppImage |
 
-The bare binaries (the `literouter` inside the `.tar.gz` / `.zip`) are still published, because the install scripts and the container image consume them.
+The macOS and Windows install forms install the **desktop app** (tray icon with an embedded gateway). The bare `literouter` binaries inside the archives are what the install scripts and the container image consume.
 
 #### macOS: using the `.app`
 
@@ -82,20 +82,20 @@ The bare binaries (the `literouter` inside the `.tar.gz` / `.zip`) are still pub
    ```bash
    xattr -dr com.apple.quarantine /Applications/literouter.app
    ```
-3. Double-clicking runs `serve` in the foreground, in a Terminal window.
+3. Double-clicking starts the gateway inside the app's own process, opens `http://127.0.0.1:8787/ui/` in your browser, and puts an icon in the system tray. The app has **no window of its own** — the console is the interface;
+4. The tray menu has two entries: **Show** opens the console, **Exit** stops the gateway and quits.
 
-> The executable inside the bundle is the same binary, so every `literouter` subcommand still works from a terminal. If the binary is already on your `PATH`, use it there — the `.app` adds nothing.
+> If a gateway is already running (say you started `literouter serve` yourself), the app **adopts** it — it opens that instance's console, keeps the icon, and does not stop a gateway it did not start.
 
 #### Windows: using the installer
 
 1. Run `literouter-...-setup.exe`;
-2. Two options in the wizard are **off by default**:
+2. One option in the wizard is **off by default**:
    - **Add to system PATH** — lets you type `literouter` in any terminal. Off by default so it cannot shadow an existing `literouter` already on your PATH;
-   - **Start the gateway when I sign in** — creates a scheduled task.
-3. The Start menu gets three entries: start the gateway, show status, open the documentation;
+3. The Start menu gets: `literouter` (desktop app), `literouter (headless gateway)`, `literouter (status)`, the documentation, and uninstall;
 4. Uninstall through Apps & features; it tries to stop a running gateway gracefully first.
 
-> The installer deliberately does **not** start the gateway (`serve` blocks in the foreground, so launching it from the wizard would leave the wizard waiting forever), and does **not** touch firewall rules (the default bind is loopback; Windows will prompt on the day you bind `0.0.0.0`).
+> The installer does **not** start the gateway, does **not** register a login item (that is the app's `--autostart` or the CLI script's `-Service`, both of which you trigger explicitly), and does **not** touch firewall rules (the default bind is loopback; Windows will prompt on the day you bind `0.0.0.0`).
 
 #### Installing the bare binary by hand
 

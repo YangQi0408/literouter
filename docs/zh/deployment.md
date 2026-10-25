@@ -71,9 +71,9 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
 |---|---|---|
 | **macOS** | `literouter-<版本>-macos-arm64-app.zip` | `.app` 应用包，解压后拖进「应用程序」即可。双击启动，有独立的 Dock 图标与 Gatekeeper 身份 |
 | **Windows** | `literouter-<版本>-windows-x86_64-setup.exe` | 安装程序。装到 `Program Files`、生成开始菜单项、可在「应用和功能」里卸载 |
-| **Linux** | `literouter-<版本>-linux-x86_64.tar.gz` | 单个可执行文件（本项目的 Linux 惯例；AppImage 不再提供） |
+| **Linux** | `literouter-<版本>-linux-x86_64.tar.gz` | 归档内含 `literouter`（命令行）与 `literouter-tray`（桌面应用）两个可执行文件（AppImage 不再提供） |
 
-同时仍提供裸二进制（`.tar.gz` / `.zip` 里的 `literouter`），供安装脚本与容器镜像使用。
+macOS 与 Windows 的安装形态装的是**桌面应用**（托盘 + 内嵌网关）；归档里的裸 `literouter` 二进制供安装脚本与容器镜像使用。
 
 #### macOS：使用 `.app`
 
@@ -82,20 +82,20 @@ curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/
    ```bash
    xattr -dr com.apple.quarantine /Applications/literouter.app
    ```
-3. 双击后会在终端窗口里以 `serve` 前台运行。
+3. 双击后：网关在应用进程内启动，浏览器自动打开 `http://127.0.0.1:8787/ui/`，图标进入系统托盘。应用**没有自己的窗口**，控制台就是它的界面；
+4. 托盘菜单两项：**Show** 打开控制台，**Exit** 停止网关并退出。
 
-> `.app` 里的可执行文件就是同一个二进制，所以 `literouter` 的全部子命令仍可在终端直接调用。若已把二进制放进 `PATH`，用命令行即可，无需 `.app`。
+> 若网关已在运行（例如你自己开了一个 `literouter serve`），应用会**接管**它——打开它的控制台并驻留托盘，退出时不会停掉那个不是它启动的网关。
 
 #### Windows：使用安装程序
 
 1. 运行 `literouter-...-setup.exe`；
-2. 安装向导里有两个**默认不勾选**的选项：
+2. 安装向导里有一个**默认不勾选**的选项：
    - **加入系统 PATH** —— 勾选后可在任意终端直接输入 `literouter`。不勾选是为了不覆盖你 PATH 上已有的同名程序；
-   - **登录时启动网关** —— 勾选后创建计划任务。
-3. 开始菜单会生成三个快捷方式：启动网关、查看状态、打开文档；
+3. 开始菜单会生成：`literouter`（桌面应用）、`literouter (headless gateway)`、`literouter (status)`、文档、卸载；
 4. 卸载走「应用和功能」，卸载前会先尝试优雅停止正在运行的网关。
 
-> 安装程序**不会**自动启动网关（`serve` 是前台阻塞进程，从安装向导里拉起会让向导一直等），也不会改防火墙规则（默认只绑回环，等你真的绑 `0.0.0.0` 时系统会自己弹提示）。
+> 安装程序**不会**自动启动网关，不会注册登录自启（那是桌面应用的 `--autostart`，或 CLI 脚本的 `-Service`，两者都由你显式触发），也不会改防火墙规则（默认只绑回环，等你真的绑 `0.0.0.0` 时系统会自己弹提示）。
 
 #### 手动安装裸二进制
 

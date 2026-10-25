@@ -28,49 +28,121 @@ Simply point any AI tool (such as **Cursor, Claude Desktop, VS Code (Continue/Cl
 
 ---
 
-## 🚀 1-Minute Quick Installation
+## 🚀 Installation
 
-Prebuilt `literouter` binaries have zero runtime dependencies (Web Console assets are embedded into the binary at compile time):
+`literouter` ships in two shapes. Pick one first:
 
-### Option 1: One-Line Installer Script (Recommended for Linux / macOS)
+| Shape | For | What it looks like |
+|---|---|---|
+| **Desktop app** | Everyday personal use | Double-click → gateway starts + browser opens the console → icon in the system tray |
+| **Command-line gateway** | Servers, scripts, containers | `literouter serve` runs in the foreground, for systemd, Docker, or another program to drive |
+
+Both share the same config and the same core; installing one does not affect the other.
+
+### Option 1: Desktop App (recommended for individuals)
+
+Download the file for your platform from [GitHub Releases](https://github.com/YangQi0408/literouter/releases):
+
+| Platform | Download | How to run |
+|---|---|---|
+| **macOS** (Apple Silicon) | `literouter-<version>-macos-arm64-app.zip` | Unzip, drag `literouter.app` into Applications, double-click |
+| **Windows** (x86_64) | `literouter-<version>-windows-x86_64-setup.exe` | Run the installer, launch from the Start menu |
+| **Linux** (x86_64) | `literouter-<version>-linux-x86_64.tar.gz` | Unzip and run the `literouter-tray` inside |
+
+On launch it does three things: starts the gateway **in its own process**, opens `http://127.0.0.1:8787/ui/` in your browser, and puts an icon in the tray. It has no window of its own — **the console is the interface**.
+
+The tray menu has two entries (a limit of the underlying tray library):
+
+- **Show** — open the console
+- **Exit** — stop the gateway and quit
+
+> **First run** writes a config template to the default location; there is nothing to create by hand.
+>
+> **If a gateway is already running** (say you started `literouter serve` yourself), the app **adopts** it: it opens that instance's console, keeps the icon, and on exit leaves alone a gateway it did not start.
+
+#### Start at login (optional, off by default)
+
+The app **never registers itself**. Ask explicitly:
+
 ```bash
-# Auto-detects architecture, downloads latest release, and installs to /usr/local/bin/literouter (requires sudo)
+literouter-tray --autostart         # add the login entry, then keep running
+literouter-tray --no-autostart      # remove it
+literouter-tray --autostart-status  # report it
+```
+
+The entry goes in a **user-scoped** location you can delete by hand, no elevation needed:
+
+| Platform | Path |
+|---|---|
+| Linux | `~/.config/autostart/literouter.desktop` |
+| macOS | `~/Library/LaunchAgents/io.github.yangqi0408.literouter.plist` |
+| Windows | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\literouter.lnk` |
+
+**No system services, no PATH edits, no firewall rules, no registry Run keys.**
+
+### Option 2: Installer Script (Linux / macOS)
+
+For servers and command-line users. This installs the `literouter` CLI:
+
+```bash
+# Install to /usr/local/bin (needs sudo)
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | bash
 
-# Non-root installation to ~/.local/bin:
+# Install into your home directory, no root needed
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | bash -s -- --prefix ~/.local
 
-# Install and enable as a systemd background service (Linux):
+# Also register as a systemd service (Linux)
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --service -y
 
-# Keep it running after login on macOS (Apple Silicon):
-curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-macos.sh | bash -s -- --service
+# Uninstall (keeps config and telemetry)
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --uninstall
+```
 
-# Keep it running after login on Windows (PowerShell):
+**Supported platforms**: Linux x86_64 and macOS Apple Silicon. Intel Macs are refused with a clear message (use Rosetta or build from source).
+
+> ⚠️ The script does **not** install the desktop app. To have both, use Option 1 for the app and Option 2 for the CLI.
+
+### Option 3: Windows CLI Install (PowerShell)
+
+```powershell
+# Install to %LOCALAPPDATA%\literouter
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-windows.ps1)))
+
+# Also register a scheduled task (start at login)
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-windows.ps1))) -Service
 ```
 
-### Option 2: Prebuilt Binary Releases (Linux / macOS / Windows)
-Download the standalone binary for your platform from [GitHub Releases](https://github.com/YangQi0408/literouter/releases):
-- **Linux (x86_64)**: Extract, `chmod +x literouter`, and move to `/usr/local/bin/`;
-- **macOS (Apple Silicon / Intel)**: Extract and move to `/usr/local/bin/` or `~/.local/bin/`;
-- **Windows (x86_64)**: Extract `literouter.exe` to a permanent folder (such as `C:\Program Files\literouter\`), and add it to your system `PATH`.
+If you already installed the desktop app, the `-Service` path still works on its own — it is the "no tray, just run at boot" case.
 
-### Option 3: Docker / Docker Compose
+### Option 4: Docker / Docker Compose
+
 ```bash
-# Pull the published image (CI packages it at release time, takes seconds)
+# The published image, packaged by CI at release time (takes seconds)
 docker pull ghcr.io/yangqi0408/literouter:latest
 
-# Run with docker compose (binds to loopback, persistent config & state)
+# Bring it up (loopback binding, persistent config and state)
 docker compose up -d
 ```
 
-> The published image is built by the release workflow from the Linux binary it just published, so nothing compiles locally. Building from source with `docker compose build` instead downloads the full LLVM toolchain and takes about twelve minutes cold.
+> The image is built from the release's Linux binary, so nothing compiles locally. Building from source with `docker compose build` downloads the full LLVM toolchain and takes about 12 minutes cold.
 
-### Option 4: Build from Source (Developers)
+### Option 5: Build from Source
+
 ```bash
-# Compile entire workspace using modern mcpp build toolchain:
+# Everything: core library + CLI + desktop app
 mcpp build --workspace --release
+
+# Only the headless parts (much faster, no graphics dependencies)
+mcpp build -p core -p cli --release
+```
+
+> The desktop app depends on EUI-NEO, which pulls in GLFW, OpenGL, freetype, libpng and glib — several minutes on a cold cache. Use the second command if you only need the gateway.
+
+Where the build lands:
+
+```text
+target/<triple>/<build-hash>/bin/cli/literouter          # command line
+target/<triple>/<build-hash>/bin/tray/literouter-tray    # desktop app
 ```
 
 ---
@@ -78,6 +150,10 @@ mcpp build --workspace --release
 ## ⚡ Quickstart in 3 Steps
 
 ### Step 1: Start the Gateway
+
+**With the desktop app**: just double-click it. The gateway starts in the same process, the browser opens the console, and the icon appears in the tray — skip to step 2.
+
+**With the command-line build**:
 ```bash
 literouter serve
 ```
@@ -211,16 +287,21 @@ literouter config validate       # Deep validation of configuration syntax and s
 
 ## Building and Contributing
 
-Built with C++23 and [mcpp](https://github.com/mcpp-community/mcpp):
+This project is built with C++23 and [mcpp](https://github.com/mcpp-community/mcpp). The virtual workspace has three members: `core` (library), `cli` (command line), `tray` (desktop app).
 
 ```bash
-# Build workspace
+# Full build (all three)
 mcpp build --workspace
 
-# Run core test suites (all 13 suites pass)
+# Headless only — skips the graphics dependencies
+mcpp build -p core -p cli
+
+# Run the core test suites (all 13 pass)
 mcpp test -p core
 mcpp test -p cli
 ```
+
+> `tray` depends on EUI-NEO, which brings in GLFW / OpenGL / freetype / libpng / glib. Use `-p core -p cli` when you are only touching core logic; it saves several minutes.
 
 ## License
 

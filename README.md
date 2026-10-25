@@ -28,49 +28,121 @@
 
 ---
 
-## 🚀 1 分钟快速安装
+## 🚀 安装
 
-`literouter` 预编译二进制没有任何运行时依赖（内置 Web 控制台所有资源已内嵌打包），开箱即用：
+`literouter` 有两种形态，先选一种再装：
 
-### 方式 1：一键安装脚本（推荐，Linux / macOS）
+| 形态 | 适合谁 | 长什么样 |
+|---|---|---|
+| **桌面应用** | 日常自己用 | 双击图标 → 自动起网关 + 浏览器打开控制台 → 驻留系统托盘 |
+| **命令行网关** | 服务器 / 脚本 / 容器 | `literouter serve` 前台运行，供 systemd、Docker 或其他程序调用 |
+
+两者共用同一份配置和同一套核心，装哪个都不影响另一个。
+
+### 方式 1：桌面应用（推荐给个人用户）
+
+去 [GitHub Releases](https://github.com/YangQi0408/literouter/releases) 下载对应平台的文件：
+
+| 平台 | 下载 | 怎么用 |
+|---|---|---|
+| **macOS** (Apple Silicon) | `literouter-<版本>-macos-arm64-app.zip` | 解压，把 `literouter.app` 拖进「应用程序」，双击 |
+| **Windows** (x86_64) | `literouter-<版本>-windows-x86_64-setup.exe` | 运行安装程序，从开始菜单启动 |
+| **Linux** (x86_64) | `literouter-<版本>-linux-x86_64.tar.gz` | 解压后运行其中的 `literouter-tray` |
+
+双击后它做三件事：在**同一进程内**启动网关、用浏览器打开 `http://127.0.0.1:8787/ui/`、把图标放进托盘。程序自己没有窗口，**控制台就是它的界面**。
+
+托盘菜单只有两项（受底层托盘库限制）：
+
+- **Show** — 打开控制台
+- **Exit** — 停止网关并退出
+
+> **首次运行**会在默认路径生成配置模板，无需手动创建。
+>
+> **如果网关已经在跑**（比如你自己开了一个 `literouter serve`），桌面应用会**接管**它：打开它的控制台、驻留托盘，退出时**不会**停掉那个不是它启动的网关。
+
+#### 设为开机自启（可选，默认关闭）
+
+桌面应用**不会**自己注册启动项。需要时显式执行：
+
 ```bash
-# 自动探测系统架构，下载最新版本并安装至 /usr/local/bin/literouter（需 sudo 权限）
+literouter-tray --autostart         # 添加登录自启，然后继续运行
+literouter-tray --no-autostart      # 移除
+literouter-tray --autostart-status  # 只查询
+```
+
+它只写**用户级**位置，你可以手工删除、无需管理员权限：
+
+| 平台 | 位置 |
+|---|---|
+| Linux | `~/.config/autostart/literouter.desktop` |
+| macOS | `~/Library/LaunchAgents/io.github.yangqi0408.literouter.plist` |
+| Windows | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\literouter.lnk` |
+
+**不写系统服务、不改 PATH、不开防火墙、不动注册表 Run 键。**
+
+### 方式 2：命令行安装脚本（Linux / macOS）
+
+适合服务器或习惯命令行的用户。脚本安装的是 `literouter` CLI：
+
+```bash
+# 装到 /usr/local/bin（需要 sudo）
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | bash
 
-# 若无 root 权限，可安装到当前用户的 ~/.local/bin：
+# 装到当前用户目录，不需要 root
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | bash -s -- --prefix ~/.local
 
-# 同时安装并注册为 systemd 系统自启服务（Linux）：
+# 同时注册为 systemd 系统服务（Linux）
 curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --service -y
 
-# macOS 登录后自动驻留（Apple Silicon）：
-curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-macos.sh | bash -s -- --service
+# 卸载（保留配置与遥测数据）
+curl -fsSL https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install.sh | sudo bash -s -- --uninstall
+```
 
-# Windows 登录后自动驻留（PowerShell）：
+**支持平台**：Linux x86_64、macOS Apple Silicon。Intel Mac 会被明确拒绝（提示用 Rosetta 或自行编译）。
+
+> ⚠️ 脚本**不安装**桌面应用。想两者都要，用方式 1 装应用 + 方式 2 装 CLI。
+
+### 方式 3：Windows 命令行安装（PowerShell）
+
+```powershell
+# 装到 %LOCALAPPDATA%\literouter
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-windows.ps1)))
+
+# 同时注册为计划任务（登录自启）
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/YangQi0408/literouter/main/scripts/install-windows.ps1))) -Service
 ```
 
-### 方式 2：预编译二进制下载（Linux / macOS / Windows）
-直接前往 [GitHub Releases](https://github.com/YangQi0408/literouter/releases) 页面下载适合你系统的发布包：
-- **Linux (x86_64)**：解压后 `chmod +x literouter` 并移动到 `/usr/local/bin/`；
-- **macOS (Apple Silicon / Intel)**：解压后移动至 `/usr/local/bin/` 或 `~/.local/bin/`；
-- **Windows (x86_64)**：解压 `literouter.exe` 到任意常驻目录（如 `C:\Program Files\literouter\`），并将该目录添加到系统环境变量 `PATH`。
+如果你已经装了桌面应用，`--service` 这条路径仍然独立可用——它适合「不要托盘、开机就跑」的场景。
 
-### 方式 3：Docker / Docker Compose 容器化运行
+### 方式 4：Docker / Docker Compose
+
 ```bash
-# 拉取官方镜像（发布时由 CI 打包，秒级完成）
+# 官方镜像，发布时由 CI 打包，秒级完成
 docker pull ghcr.io/yangqi0408/literouter:latest
 
-# 一行命令拉起（端口绑定回环，持久化配置与状态）
+# 一行命令拉起（端口绑回环，配置与状态持久化）
 docker compose up -d
 ```
 
-> 官方镜像由发布流程用当次发布的 Linux 二进制构建，无需本地编译。若改用 `docker compose build` 从源码构建，需在镜像内下载完整 LLVM 工具链，冷构建约 12 分钟。
+> 镜像用当次发布的 Linux 二进制构建，不需要本地编译。若改用 `docker compose build` 从源码构建，需要下载完整 LLVM 工具链，冷构建约 12 分钟。
 
-### 方式 4：从源码编译（开发者 / 特殊架构）
+### 方式 5：从源码编译
+
 ```bash
-# 基于现代化构建系统 mcpp 一键全量构建
+# 全部构建：core 库 + CLI + 桌面应用
 mcpp build --workspace --release
+
+# 只要无界面的部分（快得多，不拉图形依赖）
+mcpp build -p core -p cli --release
+```
+
+> 桌面应用依赖 EUI-NEO，会连带编译 GLFW、OpenGL、freetype、libpng、glib 一整套图形库，冷缓存下需要几分钟。只跑网关的话用第二条命令。
+
+构建产物位置：
+
+```text
+target/<平台三元组>/<构建哈希>/bin/cli/literouter          # 命令行
+target/<平台三元组>/<构建哈希>/bin/tray/literouter-tray    # 桌面应用
 ```
 
 ---
@@ -78,6 +150,10 @@ mcpp build --workspace --release
 ## ⚡ 3 步极速上手
 
 ### 第 1 步：启动网关
+
+**装了桌面应用**：双击图标即可。网关会在同一进程内启动，浏览器自动打开控制台，图标进入托盘——直接跳到第 2 步。
+
+**装的命令行版本**：
 ```bash
 literouter serve
 ```
@@ -240,22 +316,21 @@ literouter-tray --autostart-status  # 只查询状态
 
 ## 贡献与源码构建
 
-本项目采用 C++23 与 [mcpp](https://github.com/mcpp-community/mcpp) 构建：
+本项目采用 C++23 与 [mcpp](https://github.com/mcpp-community/mcpp) 构建。虚拟工作区包含三个成员：`core`（库）、`cli`（命令行）、`tray`（桌面应用）。
 
 ```bash
-# 全量构建
+# 全量构建（三者都构建）
 mcpp build --workspace
+
+# 只构建无界面部分，跳过图形依赖
+mcpp build -p core -p cli
 
 # 运行全套核心单元测试（13 个套件全部通过）
 mcpp test -p core
 mcpp test -p cli
 ```
 
-`tray/` 是独立工程，不属于上面的虚拟工作区，因此 `--workspace` 不会构建它：
-
-```bash
-cd tray && mcpp build
-```
+> `tray` 依赖 EUI-NEO，会连带编译 GLFW / OpenGL / freetype / libpng / glib。只改核心逻辑时用 `-p core -p cli` 能省下几分钟。
 
 ## 开源许可
 
