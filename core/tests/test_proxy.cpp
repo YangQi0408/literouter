@@ -19,14 +19,9 @@
 import nlohmann.json;
 import literouter.core;
 
-#ifndef _WIN32
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
+// Socket vocabulary for the raw-socket stubs below. Portable to all three
+// platforms; see the header for why these stubs cannot use httplib.
+#include "lr_test_socket.h"
 
 namespace {
 
@@ -379,7 +374,6 @@ private:
     httplib::Headers last_chat_headers_;
 };
 
-#ifndef _WIN32
 // Accepts the connection and hangs up without sending a byte. This is the one
 // upstream failure nothing built on httplib::Server can reproduce, because that
 // server always writes a response, and it is the failure the proxy's
@@ -393,28 +387,13 @@ public:
     HangingRelay() = default;
 
     bool start() {
-        listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (listen_fd_ < 0) {
+        listen_fd_ = lr_test::listenLoopback(&port_);
+        if (listen_fd_ == lr_invalid_socket) {
             return false;
         }
-        const int one = 1;
-        ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        address.sin_port = 0;
-        if (::bind(listen_fd_, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
-            ::listen(listen_fd_, 16) != 0) {
-            return false;
-        }
-        socklen_t length = sizeof(address);
-        if (::getsockname(listen_fd_, reinterpret_cast<sockaddr *>(&address), &length) != 0) {
-            return false;
-        }
-        port_ = ntohs(address.sin_port);
         // Non-blocking accept: the loop must never be parked in accept() when
         // stop() wants it gone.
-        ::fcntl(listen_fd_, F_SETFL, ::fcntl(listen_fd_, F_GETFL, 0) | O_NONBLOCK);
+        lrSetNonBlocking(listen_fd_);
         thread_ = std::thread([this] { loop(); });
         return true;
     }
@@ -426,9 +405,9 @@ public:
         if (thread_.joinable()) {
             thread_.join();
         }
-        if (listen_fd_ >= 0) {
-            ::close(listen_fd_);
-            listen_fd_ = -1;
+        if (listen_fd_ != lr_invalid_socket) {
+            lrClose(listen_fd_);
+            listen_fd_ = lr_invalid_socket;
         }
     }
 
@@ -438,31 +417,28 @@ public:
 private:
     void loop() {
         while (!stopped_.load()) {
-            pollfd descriptor{listen_fd_, POLLIN, 0};
-            if (::poll(&descriptor, 1, 25) <= 0) {
+            lr_pollfd descriptor{listen_fd_, lr_pollin, 0};
+            if (lrPoll(&descriptor, 1, 25) <= 0) {
                 continue;
             }
-            const int client = ::accept(listen_fd_, nullptr, nullptr);
-            if (client < 0) {
+            const lr_socket_t client = lrAccept(listen_fd_);
+            if (client == lr_invalid_socket) {
                 continue;
             }
             connections_.fetch_add(1);
-            timeval timeout{};
-            timeout.tv_sec = 2;
-            ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            lrSetRecvTimeout(client, 2);
             char buffer[2048];
             // Let the request arrive first, so the client fails on the read
             // rather than on a half-written request.
-            ::recv(client, buffer, sizeof(buffer), 0);
+            lrRecv(client, buffer, sizeof(buffer));
             // A hard close (RST) rather than a FIN: an aborted connection is
             // unambiguous, whereas an empty 200 would look like an answer.
-            linger reset{1, 0};
-            ::setsockopt(client, SOL_SOCKET, SO_LINGER, &reset, sizeof(reset));
-            ::close(client);
+            lrSetLingerReset(client);
+            lrClose(client);
         }
     }
 
-    int listen_fd_ = -1;
+    lr_socket_t listen_fd_ = lr_invalid_socket;
     int port_ = 0;
     std::atomic<bool> stopped_{false};
     std::atomic<int> connections_{0};
@@ -489,26 +465,11 @@ public:
     ConnectProxy() = default;
 
     bool start() {
-        listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (listen_fd_ < 0) {
+        listen_fd_ = lr_test::listenLoopback(&port_);
+        if (listen_fd_ == lr_invalid_socket) {
             return false;
         }
-        const int one = 1;
-        ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        address.sin_port = 0;
-        if (::bind(listen_fd_, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
-            ::listen(listen_fd_, 16) != 0) {
-            return false;
-        }
-        socklen_t length = sizeof(address);
-        if (::getsockname(listen_fd_, reinterpret_cast<sockaddr *>(&address), &length) != 0) {
-            return false;
-        }
-        port_ = ntohs(address.sin_port);
-        ::fcntl(listen_fd_, F_SETFL, ::fcntl(listen_fd_, F_GETFL, 0) | O_NONBLOCK);
+        lrSetNonBlocking(listen_fd_);
         thread_ = std::thread([this] { loop(); });
         return true;
     }
@@ -520,9 +481,9 @@ public:
         if (thread_.joinable()) {
             thread_.join();
         }
-        if (listen_fd_ >= 0) {
-            ::close(listen_fd_);
-            listen_fd_ = -1;
+        if (listen_fd_ != lr_invalid_socket) {
+            lrClose(listen_fd_);
+            listen_fd_ = lr_invalid_socket;
         }
     }
 
@@ -537,22 +498,22 @@ public:
 private:
     void loop() {
         while (!stopped_.load()) {
-            pollfd descriptor{listen_fd_, POLLIN, 0};
-            if (::poll(&descriptor, 1, 25) <= 0) {
+            lr_pollfd descriptor{listen_fd_, lr_pollin, 0};
+            if (lrPoll(&descriptor, 1, 25) <= 0) {
                 continue;
             }
-            const int client = ::accept(listen_fd_, nullptr, nullptr);
-            if (client < 0) {
+            const lr_socket_t client = lrAccept(listen_fd_);
+            if (client == lr_invalid_socket) {
                 continue;
             }
             std::thread([this, client] { serve(client); }).detach();
         }
     }
 
-    static bool sendAll(int fd, std::string_view data) {
+    static bool sendAll(lr_socket_t fd, std::string_view data) {
         std::size_t sent = 0;
         while (sent < data.size()) {
-            const auto n = ::send(fd, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
+            const auto n = lrSend(fd, data.data() + sent, data.size() - sent);
             if (n <= 0) {
                 return false;
             }
@@ -561,21 +522,21 @@ private:
         return true;
     }
 
-    void serve(int client) {
+    void serve(lr_socket_t client) {
         // Read the request head, up to the blank line. The bodies in these tests
         // are small and arrive with the head in practice; only the head is
         // parsed here.
         std::string head;
         char buffer[4096];
         while (head.find("\r\n\r\n") == std::string::npos) {
-            const auto n = ::recv(client, buffer, sizeof(buffer), 0);
+            const auto n = lrRecv(client, buffer, sizeof(buffer));
             if (n <= 0) {
-                ::close(client);
+                lrClose(client);
                 return;
             }
             head.append(buffer, static_cast<std::size_t>(n));
             if (head.size() > 64 * 1024) {
-                ::close(client);
+                lrClose(client);
                 return;
             }
         }
@@ -585,7 +546,7 @@ private:
             const std::string target = head.substr(8, line_end - 8);
             const auto colon = target.rfind(':');
             if (colon == std::string::npos) {
-                ::close(client);
+                lrClose(client);
                 return;
             }
             {
@@ -601,27 +562,27 @@ private:
             }
             const std::string host = target.substr(0, colon);
             const int port = std::atoi(target.c_str() + colon + 1);
-            const int upstream = ::socket(AF_INET, SOCK_STREAM, 0);
+            const lr_socket_t upstream = ::socket(AF_INET, SOCK_STREAM, 0);
             sockaddr_in address{};
             address.sin_family = AF_INET;
             address.sin_port = htons(static_cast<std::uint16_t>(port));
-            if (upstream < 0 || ::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1 ||
+            if (upstream == lr_invalid_socket || ::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1 ||
                 ::connect(upstream, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
-                if (upstream >= 0) {
-                    ::close(upstream);
+                if (upstream != lr_invalid_socket) {
+                    lrClose(upstream);
                 }
                 sendAll(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
-                ::close(client);
+                lrClose(client);
                 return;
             }
             if (!sendAll(client, "HTTP/1.1 200 Connection Established\r\n\r\n")) {
-                ::close(upstream);
-                ::close(client);
+                lrClose(upstream);
+                lrClose(client);
                 return;
             }
             splice(client, upstream);
-            ::close(upstream);
-            ::close(client);
+            lrClose(upstream);
+            lrClose(client);
             return;
         }
 
@@ -634,14 +595,14 @@ private:
         const auto first_space = request_line.find(' ');
         const auto second_space = request_line.find(' ', first_space + 1);
         if (first_space == std::string::npos || second_space == std::string::npos) {
-            ::close(client);
+            lrClose(client);
             return;
         }
         const std::string method = request_line.substr(0, first_space);
         std::string uri = request_line.substr(first_space + 1, second_space - first_space - 1);
         if (!uri.starts_with("http://")) {
             sendAll(client, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
-            ::close(client);
+            lrClose(client);
             return;
         }
         std::string rest = uri.substr(7);
@@ -659,45 +620,45 @@ private:
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_port = htons(static_cast<std::uint16_t>(port));
-        if (upstream < 0 || ::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1 ||
+        if (upstream == lr_invalid_socket || ::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1 ||
             ::connect(upstream, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
-            if (upstream >= 0) {
-                ::close(upstream);
+            if (upstream != lr_invalid_socket) {
+                lrClose(upstream);
             }
             sendAll(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
-            ::close(client);
+            lrClose(client);
             return;
         }
         std::string rewritten = head;
         rewritten.replace(first_space + 1, uri.size(), path);
         if (!sendAll(upstream, rewritten)) {
-            ::close(upstream);
-            ::close(client);
+            lrClose(upstream);
+            lrClose(client);
             return;
         }
         splice(client, upstream);
-        ::close(upstream);
-        ::close(client);
+        lrClose(upstream);
+        lrClose(client);
     }
 
     // Two blocking relay threads, which is all a splice needs to be.
-    static void splice(int a, int b) {
+    static void splice(lr_socket_t a, lr_socket_t b) {
         std::atomic<bool> done{false};
-        auto pump = [&done](int from, int to) {
+        auto pump = [&done](lr_socket_t from, lr_socket_t to) {
             char buffer[8192];
             while (!done.load()) {
-                pollfd descriptor{from, POLLIN, 0};
-                if (::poll(&descriptor, 1, 100) <= 0) {
+                lr_pollfd descriptor{from, lr_pollin, 0};
+                if (lrPoll(&descriptor, 1, 100) <= 0) {
                     continue;
                 }
-                const auto n = ::recv(from, buffer, sizeof(buffer), 0);
+                const auto n = lrRecv(from, buffer, sizeof(buffer));
                 if (n <= 0) {
                     break;
                 }
                 std::size_t sent = 0;
                 while (sent < static_cast<std::size_t>(n)) {
-                    const auto m = ::send(to, buffer + sent,
-                                          static_cast<std::size_t>(n) - sent, MSG_NOSIGNAL);
+                    const auto m = lrSend(to, buffer + sent,
+                                          static_cast<std::size_t>(n) - sent);
                     if (m <= 0) {
                         done.store(true);
                         return;
@@ -714,7 +675,7 @@ private:
         back.join();
     }
 
-    int listen_fd_ = -1;
+    lr_socket_t listen_fd_ = lr_invalid_socket;
     int port_ = 0;
     std::atomic<bool> stopped_{false};
     std::atomic<int> tunnels_{0};
@@ -724,7 +685,6 @@ private:
     mutable std::string last_auth_;
     std::thread thread_;
 };
-#endif
 
 // ── stderr capture ───────────────────────────────────────────────────────────
 
@@ -1705,7 +1665,6 @@ void group18RetryAfter(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
     proxy.resetStats();
 }
 
-#ifndef _WIN32
 // A relay that counts the connections it is asked to serve.
 //
 // Counting is the only way to see whether the proxy reused a socket: httplib's
@@ -1721,29 +1680,8 @@ public:
     CountingRelay &operator=(const CountingRelay &) = delete;
 
     bool start() {
-        listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (listen_fd_ < 0) {
-            return false;
-        }
-        int reuse = 1;
-        ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        // Unqualified on purpose: Darwin declares htonl/ntohs as function-like
-        // macros whose bodies are parenthesised expressions, and `::htonl(..)`
-        // does not survive that expansion. The sibling HangingRelay above is
-        // written the same way for the same reason.
-        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        address.sin_port = 0; // the kernel picks one
-        if (::bind(listen_fd_, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
-            return false;
-        }
-        socklen_t length = sizeof(address);
-        if (::getsockname(listen_fd_, reinterpret_cast<sockaddr *>(&address), &length) != 0) {
-            return false;
-        }
-        port_ = ntohs(address.sin_port);
-        if (::listen(listen_fd_, 64) != 0) {
+        listen_fd_ = lr_test::listenLoopback(&port_);
+        if (listen_fd_ == lr_invalid_socket) {
             return false;
         }
         running_ = true;
@@ -1755,15 +1693,15 @@ public:
         if (!running_.exchange(false)) {
             return;
         }
-        if (listen_fd_ >= 0) {
-            ::shutdown(listen_fd_, SHUT_RDWR);
-            ::close(listen_fd_);
-            listen_fd_ = -1;
+        if (listen_fd_ != lr_invalid_socket) {
+            lrShutdownBoth(listen_fd_);
+            lrClose(listen_fd_);
+            listen_fd_ = lr_invalid_socket;
         }
         {
             std::scoped_lock lock{fds_mutex_};
-            for (const int fd : open_fds_) {
-                ::shutdown(fd, SHUT_RDWR);
+            for (const lr_socket_t fd : open_fds_) {
+                lrShutdownBoth(fd);
             }
         }
         if (acceptor_.joinable()) {
@@ -1794,8 +1732,8 @@ public:
 private:
     void acceptLoop() {
         while (running_.load()) {
-            const int fd = ::accept(listen_fd_, nullptr, nullptr);
-            if (fd < 0) {
+            const lr_socket_t fd = lrAccept(listen_fd_);
+            if (fd == lr_invalid_socket) {
                 if (!running_.load()) {
                     return;
                 }
@@ -1814,7 +1752,7 @@ private:
     }
 
     // Serves requests on one connection until the peer goes away.
-    void serve(int fd) {
+    void serve(lr_socket_t fd) {
         while (silent_.load() && running_.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
@@ -1832,7 +1770,7 @@ private:
                 break;
             }
         }
-        ::close(fd);
+        lrClose(fd);
         std::scoped_lock lock{fds_mutex_};
         std::erase(open_fds_, fd);
     }
@@ -1841,7 +1779,7 @@ private:
         std::size_t header_end = std::string::npos;
         while (header_end == std::string::npos) {
             char temp[4096];
-            const ssize_t got = ::recv(fd, temp, sizeof(temp), 0);
+            const auto got = lrRecv(fd, temp, sizeof(temp));
             if (got <= 0) {
                 return false;
             }
@@ -1863,7 +1801,7 @@ private:
         const std::size_t header_size = header_end + 4;
         while (buffer.size() - header_size < body_length) {
             char temp[4096];
-            const ssize_t got = ::recv(fd, temp, sizeof(temp), 0);
+            const auto got = lrRecv(fd, temp, sizeof(temp));
             if (got <= 0) {
                 return false;
             }
@@ -1886,8 +1824,7 @@ private:
         const std::string response = head + body;
         std::size_t sent = 0;
         while (sent < response.size()) {
-            const ssize_t wrote =
-                ::send(fd, response.data() + sent, response.size() - sent, MSG_NOSIGNAL);
+            const auto wrote = lrSend(fd, response.data() + sent, response.size() - sent);
             if (wrote <= 0) {
                 return false;
             }
@@ -1896,7 +1833,7 @@ private:
         return true;
     }
 
-    int listen_fd_ = -1;
+    lr_socket_t listen_fd_ = lr_invalid_socket;
     int port_ = 0;
     std::atomic<bool> running_{false};
     std::atomic<int> connections_{0};
@@ -1907,7 +1844,7 @@ private:
     std::mutex workers_mutex_;
     std::vector<std::thread> workers_;
     std::mutex fds_mutex_;
-    std::vector<int> open_fds_;
+    std::vector<lr_socket_t> open_fds_;
 };
 
 // One provider, one route, one counting relay, and `rounds` sequential requests
@@ -1955,7 +1892,6 @@ ReuseRun measureReuse(CountingRelay &relay, bool stream, int rounds) {
     run.most_on_one = relay.mostRequestsOnOneConnection();
     return run;
 }
-#endif // !_WIN32
 
 // Every field a console renders must have been written by the traffic that was
 // supposed to write it. This group exists because four fields were not:
@@ -2337,7 +2273,6 @@ void group19SingleInstance(const literouter::AppConfig &base) {
     }
 }
 
-#ifndef _WIN32
 void group20ConnectionReuse() {
     LR_GROUP("20. a streamed request reuses its relay connection");
 
@@ -2382,9 +2317,6 @@ void group20ConnectionReuse() {
         }
     }
 }
-#endif // !_WIN32
-
-#ifndef _WIN32
 // The deadline bounds the whole request, which `timeout_sec` × `max_attempts`
 // does not: a chain of slow relays used to be able to keep a client waiting for
 // minutes, and none of the individual bounds said otherwise.
@@ -2464,8 +2396,6 @@ void group23RequestDeadline(StubRelay &relay_b) {
     proxy.updateConfig(patient);
     proxy.stop();
 }
-#endif // !_WIN32
-
 
 void group10Restart(literouter::ProxyServer &proxy, const literouter::AppConfig &config) {
     LR_GROUP("10. stop() is clean and a second start()/stop() cycle works");
@@ -2616,7 +2546,6 @@ void group13NeverStarted(StubRelay &relay) {
     LR_CHECK(!proxy.running());
 }
 
-#ifndef _WIN32
 void group12HangingRelay(HangingRelay &hanger, StubRelay &relay_b,
                          literouter::ProxyServer &proxy) {
     LR_GROUP("12. a relay that hangs up before headers fails over");
@@ -2649,8 +2578,6 @@ void group12HangingRelay(HangingRelay &hanger, StubRelay &relay_b,
     LR_CHECK(hanger.connections() > before);
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
 }
-
-#endif
 
 // Cost accounting: the two prices an operator writes down, multiplied by the
 // tokens a relay reports. The interesting assertions are the exact arithmetic
@@ -5358,11 +5285,10 @@ int main() {
     StubRelay relay_b{
         "/beta/v1",
         R"({"id":"stub-beta","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hello from beta"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})"};
-#ifndef _WIN32
+    // A real hanging relay on every platform: the socket vocabulary in
+    // lr_test_socket.h is what removed the Windows substitution that used to
+    // stand here, and with it the reason group 12 was skipped there.
     HangingRelay hanger;
-#else
-    StubRelay hanger{"", "{}"};
-#endif
 
     if (!relay_a.start() || !relay_b.start() || !hanger.start()) {
         std::printf("could not start a stub relay — aborting\n");
@@ -5402,11 +5328,7 @@ int main() {
         group8Breaker(relay_a, relay_b, proxy);
         group9Counters(relay_a, proxy);
         group11CommittedStreamError(relay_a, relay_b, proxy);
-#ifndef _WIN32
-        // Windows has no raw-socket closer in this file, so the two cases that
-        // need one are skipped there.
         group12HangingRelay(hanger, relay_b, proxy);
-#endif
         group14MultiProtocolIngress(relay_a, proxy.boundPort());
         group15WebConsole(relay_a, proxy);
         group16TelemetryFile(relay_a, config);
@@ -5435,12 +5357,8 @@ int main() {
         // Before the shared fixture is stopped: this group starts its own
         // servers, but it reads relay_a's answer through a forward proxy.
         group40UpstreamProxy(relay_a);
-#ifndef _WIN32
         group23RequestDeadline(relay_b);
-#endif
-#ifndef _WIN32
         group20ConnectionReuse();
-#endif
         // Runs last on purpose: it deliberately leaves the proxy stopped.
         group10Restart(proxy, config);
 
