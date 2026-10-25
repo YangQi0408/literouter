@@ -18,7 +18,7 @@ export namespace literouter {
 // Identity
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline constexpr std::string_view kVersion = "0.4.0";
+inline constexpr std::string_view kVersion = "0.5.0";
 inline constexpr std::string_view kUserAgent = "literouter/0.4.0";
 
 // The config schema this build reads and writes. Bumping it is what gives a

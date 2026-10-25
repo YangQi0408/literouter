@@ -5,6 +5,33 @@
 
 ---
 
+## [0.5.0] - 2026-10-25
+
+详细说明见 [docs/release-notes/v0.5.0.md](docs/release-notes/v0.5.0.md)。
+
+### Added
+- **桌面应用**：双击启动 → 网关在同一进程内启动 → 浏览器自动打开 Web 控制台 → 驻留系统托盘。程序没有自己的窗口，控制台就是界面。托盘菜单为 **Show**（打开控制台）与 **Exit**（停止网关并退出）。
+- **macOS `.app` 应用包**：解压拖入「应用程序」即可双击运行，拥有独立 Dock 图标与可单独授权的 Gatekeeper 身份。
+- **Windows 安装程序**：安装到 `Program Files`、生成开始菜单项、可从「应用和功能」卸载。
+- **登录自启（显式 opt-in）**：`literouter-tray --autostart` / `--no-autostart` / `--autostart-status`。只写用户级位置（XDG autostart、`~/Library/LaunchAgents`、Windows 启动文件夹），可手工删除、无需提权，不写系统服务。
+- 网关已在运行时，桌面应用**接管**该实例而非退出：打开它的控制台、驻留托盘，退出时不停止非自己启动的网关。
+
+### Fixed
+- **流式响应受 Nagle 算法拖慢**：服务端与上游两条 socket 均未设置 `TCP_NODELAY`（httplib 默认关闭）。本机回环实测，上游 0.1 ms 应答下缓冲式请求 42 ms → 0.7 ms，流式应答 42.15 ms → 0.90 ms。
+- **TLS 证书路径以 UTF-8 字节传给 OpenSSL**：配置存 UTF-8，而 OpenSSL 的 PEM 加载在 Windows 上按 ANSI 代码页解码，导致非 ASCII 目录下的证书在绑定时失败且错误信息不含路径与原因。新增 `pathFromUtf8` / `pathForCApi` 区分两种转换。
+- **Windows 上 stdout 处于 CRT 文本模式**：`--json` 输出中的 `
+` 会被改写为 `\r\n`，破坏机器可读性。现两个标准流均设为二进制模式。
+
+### Changed
+- **裸 socket 测试分组在 Windows 上启用**：分组 12（悬挂连接）、23（请求超时）、20（连接复用）此前因依赖 POSIX socket 而被跳过，而这三条正是故障转移与连接池路径。新增 `core/tests/lr_test_socket.h` 提供跨平台 socket 词汇。
+- `tray` 成为虚拟工作区成员（因其链接 `core`，而 `core` 使用 `workspace = true` 锁定依赖）。`mcpp build -p core -p cli` 仍只构建无界面部分。
+
+### Notes
+- 配置 schema 未变，无需迁移；已有 `config.json` 行为完全一致。
+- 命令行网关与桌面应用相互独立，可分别安装，共用同一份配置。
+- macOS Intel 仍未发布，`install.sh` 会明确拒绝并提示使用 Rosetta 或自行编译。
+- 托盘菜单仅两项受限于 EUI-NEO 的托盘 API（三个后端均硬编码 Show/分隔线/Exit）。
+
 ## [0.4.0] - 2026-10-23
 
 详细说明见 [docs/release-notes/v0.4.0.md](docs/release-notes/v0.4.0.md)。

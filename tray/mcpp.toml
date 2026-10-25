@@ -15,7 +15,7 @@
 [package]
 namespace   = "literouter"
 name        = "tray"
-version     = "0.4.0"
+version     = "0.5.0"
 description = "literouter — the desktop app: tray icon, embedded gateway, opens the console"
 license     = "Apache-2.0"
 

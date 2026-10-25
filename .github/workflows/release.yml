@@ -177,11 +177,25 @@ jobs:
           mcpp build -p core --release
           mcpp build -p cli --release
 
-      # The desktop app. It links core, so it builds after it; on Linux it also
-      # needs the graphics closure eui-neo pulls, which is why it is a separate
-      # step whose failure is visible on its own.
+      # The desktop app. It links core, so it builds after it; it also needs the
+      # graphics closure eui-neo pulls (GLFW, OpenGL, freetype, libpng, glib).
+      #
+      # `continue-on-error` is deliberate and is about blast radius, not about
+      # expecting failure: eui-neo's Windows and macOS legs have never been
+      # built on these runners. If one of them cannot compile there, the gateway
+      # release — which is what most users download and which does not depend on
+      # the app — must still ship. The packaging steps below already treat a
+      # missing tray binary as "skip the app artifacts", so a failure here costs
+      # that platform its .app or installer and nothing else.
       - name: Build desktop app
+        id: tray
+        continue-on-error: true
         run: mcpp build -p tray --release
+
+      - name: Report desktop app build result
+        if: steps.tray.outcome == 'failure'
+        run: |
+          echo "::warning::the desktop app did not build on this runner; the release will ship the command-line gateway only for ${{ matrix.platform }}"
 
       - name: Install Linux packaging tools
         if: runner.os == 'Linux'
