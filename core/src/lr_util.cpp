@@ -702,6 +702,51 @@ std::string pathToUtf8(const std::filesystem::path &path) {
     return toValidUtf8(raw);
 }
 
+// The inverse of pathToUtf8(), and it exists for one caller: a path that came
+// out of JSON and is about to be handed to a C API.
+//
+// The config file stores UTF-8, so `server.tls_cert_file` is UTF-8 bytes. On
+// POSIX those bytes are the path and this is a copy. On Windows they are not:
+// the wide-character API wants UTF-16, and passing UTF-8 bytes to a narrow
+// `fopen`-style call — which is what OpenSSL's PEM loaders are — decodes them
+// through the ANSI code page instead. A certificate under a directory named in
+// Chinese is the ordinary case where that fails, and it fails at bind time with
+// "cannot initialize HTTPS listener", which names neither the path nor the
+// reason.
+//
+// A path that is not valid UTF-8 is taken at face value on POSIX (that is what
+// a POSIX file name is) and, on Windows, is handed to the ANSI interpretation
+// rather than rejected: the file may genuinely exist under that spelling.
+std::filesystem::path pathFromUtf8(std::string_view text) {
+#if defined(_WIN32)
+    try {
+        const auto *begin = reinterpret_cast<const char8_t *>(text.data());
+        return std::filesystem::path{std::u8string{begin, begin + text.size()}};
+    } catch (const std::exception &) {
+        return std::filesystem::path{std::string{text}};
+    }
+#else
+    return std::filesystem::path{std::string{text}};
+#endif
+}
+
+// What to hand a C API that takes a path as a narrow string.
+//
+// This is deliberately NOT pathToUtf8(): OpenSSL, and every other C library
+// that opens a file by name, calls the narrow-path entry point, which on
+// Windows interprets the bytes through the ANSI code page. `path.string()` is
+// exactly that interpretation, and is what the caller must use. Handing over
+// UTF-8 bytes instead is the bug this pair of functions exists to make hard to
+// write — see the note on set_ca_cert_path's caller in lr_upstream.cpp, which
+// reached the same conclusion first.
+std::string pathForCApi(const std::filesystem::path &path) {
+    try {
+        return path.string();
+    } catch (const std::exception &) {
+        return {};
+    }
+}
+
 std::string humanCount(std::uint64_t value) {
     if (value < 1000) {
         return std::to_string(value);

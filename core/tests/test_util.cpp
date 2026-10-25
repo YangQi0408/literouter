@@ -1,6 +1,8 @@
 // String, formatting and URL helpers from lr_util.cpp (literouter::trim and
 // friends). No sockets, no config: every check here is a pure function call.
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
 
 #include "lr_test_check.h"
 
@@ -466,6 +468,77 @@ void testExtractApiKey() {
     LR_CHECK_EQ(literouter::extractApiKey(Headers{{"accept", "application/json"}}), "");
 }
 
+// The pair that carries a path from JSON to a C API. The regression these
+// describe is Windows-specific and silent: the config stores UTF-8, OpenSSL's
+// PEM loaders take a narrow path and decode it through the ANSI code page, so a
+// certificate under a directory named in Chinese failed at bind time with an
+// error that named neither the path nor the reason.
+//
+// WHAT THIS TEST CAN AND CANNOT SEE, stated because the difference matters:
+// on POSIX `pathFromUtf8` is a copy and `pathForCApi` is `path.string()`, so
+// this group passes on Linux and macOS whether or not the Windows branch is
+// correct. It is a guard against the two functions being *deleted* or wired to
+// each other's opposite, not a proof that the Windows conversion works — only
+// the Windows CI leg can show that, and it does so by running the same group.
+// Measured: replacing pathForCApi's body with pathToUtf8 (the actual bug) leaves
+// this group green on Linux.
+void testPathUtf8RoundTrip() {
+    LR_GROUP("pathFromUtf8 / pathForCApi round-trip a non-ASCII path");
+
+    // A directory name that is not representable in every ANSI code page. The
+    // point is not this particular string but that it survives the trip
+    // unchanged on the platform the test runs on.
+    const std::string utf8 = "/tmp/\u4e2d\u6587\u76ee\u5f55/cert.pem";
+    const std::filesystem::path restored = literouter::pathFromUtf8(utf8);
+
+    // pathToUtf8 is the documented inverse, so the round trip is the assertion:
+    // whatever the platform does internally, the bytes a user wrote in the
+    // config are the bytes a user reads back.
+    LR_CHECK_EQ(literouter::pathToUtf8(restored), utf8);
+
+    // pathForCApi must produce something OpenSSL can actually open, which is
+    // the property the round trip above does not establish on its own. A real
+    // file under a real non-ASCII directory is the only honest way to say that.
+    std::error_code ec;
+    const std::filesystem::path base =
+        std::filesystem::temp_directory_path(ec) /
+        literouter::pathFromUtf8("literouter-tls-\u4e2d\u6587");
+    if (ec) {
+        LR_NOTE("no temp directory available; skipping the on-disk half");
+        return;
+    }
+    std::filesystem::create_directories(base, ec);
+    if (ec) {
+        LR_NOTE("could not create the non-ASCII temp directory; skipping the on-disk half");
+        return;
+    }
+    const std::filesystem::path probe = base / "probe.pem";
+    {
+        std::ofstream out{probe, std::ios::binary | std::ios::trunc};
+        out << "probe\n";
+    }
+
+    // The UTF-8 spelling and the C-API spelling must both name this file. On
+    // POSIX they are the same bytes; on Windows the first is UTF-8 and the
+    // second is the ANSI code page, and only the second opens.
+    const std::string utf8Probe = literouter::pathToUtf8(probe);
+    const std::filesystem::path fromUtf8 = literouter::pathFromUtf8(utf8Probe);
+    LR_CHECK_MSG(std::filesystem::is_regular_file(fromUtf8, ec),
+                 "the path reconstructed from UTF-8 does not name the file that was created");
+
+    const std::string forC = literouter::pathForCApi(fromUtf8);
+    LR_CHECK_MSG(!forC.empty(), "pathForCApi returned nothing for a valid path");
+    // The strongest form: open it the way OpenSSL does, with a narrow fopen.
+    if (std::FILE *handle = std::fopen(forC.c_str(), "rb"); handle != nullptr) {
+        std::fclose(handle);
+    } else {
+        LR_CHECK_MSG(false, "a narrow fopen of pathForCApi's result failed — this is exactly how "
+                            "OpenSSL's PEM loader would fail on Windows");
+    }
+
+    std::filesystem::remove_all(base, ec);
+}
+
 void testJoinPath() {
     LR_GROUP("joinPath");
     LR_CHECK_EQ(literouter::joinPath("", "/chat/completions"), "/chat/completions");
@@ -507,6 +580,7 @@ int main() {
     testHexId();
     testSecureEquals();
     testSplitBaseUrl();
+    testPathUtf8RoundTrip();
     testJoinPath();
     testExtractApiKey();
     return LR_SUMMARY("test_util");

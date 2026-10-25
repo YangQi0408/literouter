@@ -21,7 +21,12 @@
 #    define NOMINMAX
 #  endif
 #  include <atomic>
+#  include <cstdio>
 #  include <windows.h>
+// _setmode / _O_BINARY: the CRT's translation mode, which windows.h does not
+// declare and which this file is the only place in the CLI to touch.
+#  include <fcntl.h>
+#  include <io.h>
 
 namespace lrcli {
 namespace {
@@ -54,6 +59,23 @@ void configureConsoleEncoding() {
     // `--key-stdin` arrives in the same encoding.
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+
+    // The CRT's default translation mode is text, which rewrites every '\n' on
+    // its way to a pipe or a file as "\r\n". That is right for a console and
+    // wrong for every machine-readable thing this program emits: `--json`
+    // output is parsed by `jq`, by CI, and by the Docker healthcheck, and a
+    // stray CR inside a JSON string value — which is where a rewritten newline
+    // lands once the document is pretty-printed — is either invalid JSON or a
+    // silently different value.
+    //
+    // Binary mode on both standard streams is the fix, and it is set once here
+    // rather than at each writer because there are many writers and this is the
+    // one place that already owns the console. Input is included for the same
+    // reason `--key-stdin` needs it: a CRLF from a Windows pipe should be
+    // trimmed by the reader that knows to trim it, not by the CRT behind its
+    // back.
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stdin), _O_BINARY);
 }
 
 void installConsoleStopHandler(std::atomic<bool> *flag) {

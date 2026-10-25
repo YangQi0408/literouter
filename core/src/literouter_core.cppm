@@ -1349,6 +1349,17 @@ std::string toValidUtf8(std::string_view text);
 // expressed. Prefer this over `path.string()` everywhere.
 std::string pathToUtf8(const std::filesystem::path &path);
 
+// The inverse of pathToUtf8(): the path a UTF-8 string from the config file or
+// the admin API denotes. On POSIX this is a copy of the bytes; on Windows it is
+// the UTF-8-to-UTF-16 step that keeps a non-ASCII directory name intact.
+std::filesystem::path pathFromUtf8(std::string_view text);
+
+// What to hand a C API that takes a file name as a narrow string (OpenSSL's PEM
+// loaders are the ones this program uses). Deliberately not pathToUtf8(): those
+// APIs decode through the ANSI code page on Windows, so the right answer there
+// is `path.string()` and nothing else.
+std::string pathForCApi(const std::filesystem::path &path);
+
 // Masks things that look like credentials in text that is about to be kept:
 // the bodies the log stores when server.log_bodies is on, which are prompts as
 // often as not, and people paste keys into prompts.

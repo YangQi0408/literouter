@@ -3931,11 +3931,18 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     if (config.server.tls_cert_file.empty()) {
         impl_->server = std::make_unique<h::Server>();
     } else {
-        impl_->server = std::make_unique<h::SSLServer>([&config](h::tls::ctx_t context) {
+        // The config stores UTF-8; OpenSSL's PEM loaders take a narrow path and
+        // decode it through the ANSI code page on Windows. Going through
+        // pathFromUtf8 -> pathForCApi is what makes a certificate under a
+        // directory with a non-ASCII name load on Windows, and is a no-op on
+        // the other two platforms.
+        const std::string cert_path = pathForCApi(pathFromUtf8(config.server.tls_cert_file));
+        const std::string key_path = pathForCApi(pathFromUtf8(config.server.tls_key_file));
+        impl_->server = std::make_unique<h::SSLServer>([cert_path, key_path](h::tls::ctx_t context) {
             auto *ctx = static_cast<SSL_CTX *>(context);
             SSL_CTX_set_default_passwd_cb(ctx, [](char *, int, int, void *) -> int { return 0; });
-            return SSL_CTX_use_certificate_chain_file(ctx, config.server.tls_cert_file.c_str()) == 1 &&
-                   SSL_CTX_use_PrivateKey_file(ctx, config.server.tls_key_file.c_str(), SSL_FILETYPE_PEM) == 1 &&
+            return SSL_CTX_use_certificate_chain_file(ctx, cert_path.c_str()) == 1 &&
+                   SSL_CTX_use_PrivateKey_file(ctx, key_path.c_str(), SSL_FILETYPE_PEM) == 1 &&
                    SSL_CTX_check_private_key(ctx) == 1;
         });
         if (!impl_->server->is_valid()) {

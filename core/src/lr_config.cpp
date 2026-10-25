@@ -426,12 +426,23 @@ ValidationReport validate(const AppConfig &config) {
                  "tls_cert_file and tls_key_file must both be set, or both empty for HTTP");
     } else if (!tls.tls_cert_file.empty()) {
         bool files_ok = true;
-        for (const auto &entry : {std::pair{"server.tls_cert_file", tls.tls_cert_file},
-                                  std::pair{"server.tls_key_file", tls.tls_key_file}}) {
+        // The config stores UTF-8; both the filesystem probe and OpenSSL want
+        // the platform's own spelling of that path. On Windows the two differ,
+        // and skipping the conversion here would report a certificate under a
+        // non-ASCII directory as unloadable — or, worse, pass the probe and
+        // fail at bind time.
+        const std::filesystem::path cert_path = pathFromUtf8(tls.tls_cert_file);
+        const std::filesystem::path key_path = pathFromUtf8(tls.tls_key_file);
+        // The field name and the resolved path together, so the loop cannot
+        // pair a name with the other field's path.
+        const std::array<std::pair<std::string_view, std::filesystem::path>, 2> tls_files{{
+            {"server.tls_cert_file", cert_path},
+            {"server.tls_key_file", key_path},
+        }};
+        for (const auto &[field, candidate] : tls_files) {
             std::error_code ec;
-            if (!std::filesystem::path{entry.second}.is_absolute() ||
-                !std::filesystem::is_regular_file(entry.second, ec)) {
-                addIssue(report, ValidationIssue::Level::Error, entry.first,
+            if (!candidate.is_absolute() || !std::filesystem::is_regular_file(candidate, ec)) {
+                addIssue(report, ValidationIssue::Level::Error, std::string{field},
                          "TLS file must be an existing regular file with an absolute path");
                 files_ok = false;
             }
@@ -442,7 +453,8 @@ ValidationReport validate(const AppConfig &config) {
             // Unattended startup must never wait for a private-key password.
             if (ctx) SSL_CTX_set_default_passwd_cb(ctx.get(),
                 [](char *, int, int, void *) -> int { return 0; });
-            if (!ctx || SSL_CTX_use_certificate_chain_file(ctx.get(), tls.tls_cert_file.c_str()) != 1) {
+            if (!ctx ||
+                SSL_CTX_use_certificate_chain_file(ctx.get(), pathForCApi(cert_path).c_str()) != 1) {
                 addIssue(report, ValidationIssue::Level::Error, "server.tls_cert_file",
                          "cannot load the PEM certificate chain");
             } else {
@@ -452,7 +464,8 @@ ValidationReport validate(const AppConfig &config) {
                     addIssue(report, ValidationIssue::Level::Error, "server.tls_cert_file",
                              "TLS certificate is expired, not yet valid, or has invalid dates");
                 }
-                if (SSL_CTX_use_PrivateKey_file(ctx.get(), tls.tls_key_file.c_str(), SSL_FILETYPE_PEM) != 1 ||
+                if (SSL_CTX_use_PrivateKey_file(ctx.get(), pathForCApi(key_path).c_str(),
+                                                SSL_FILETYPE_PEM) != 1 ||
                     SSL_CTX_check_private_key(ctx.get()) != 1) {
                     addIssue(report, ValidationIssue::Level::Error, "server.tls_key_file",
                              "cannot load an unencrypted PEM private key matching the certificate");
