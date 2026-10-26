@@ -95,3 +95,16 @@ platform CI matrix must pass and native qualification must cover:
 
 Do not create version tags or edit `CHANGELOG.md` / `docs/release-notes/` merely
 to record routine fixes: those paths can trigger the actual release workflow.
+
+## Packaging-only repair of an existing release
+
+`repair-linux-release.yml` is an explicit operator action. It refuses core,
+CLI, tray, frontend or manifest differences from the existing tag, then rebuilds,
+tests and executes staged programs before replacing only Linux assets/checksums.
+It takes the private loader from ELF `PT_INTERP`, not the system `ldd` trace.
+Do not move an existing version tag. Record replacement time and reason in the
+GitHub release body so previous downloads remain distinguishable by checksum.
+
+If rebuilding also changes the CLI file hash, `refresh-release-image.yml` can
+repackage the current latest release's checksum-verified CLI into GHCR. Verify
+the image's binary hash against the published file after it completes.
