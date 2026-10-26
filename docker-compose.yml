@@ -15,7 +15,7 @@ services:
     # inside the image, which takes about twelve minutes of toolchain download
     # and fails when a fetch crosses xlings' ten-minute deadline.
     #
-    # Pin a version (`:0.4.0`) rather than tracking `:latest` if you want
+    # Pin a version (`:0.5.1`) rather than tracking `:latest` if you want
     # upgrades to be a decision. To build locally anyway, use
     # `docker compose build` (see docs/*/deployment.md).
     image: ghcr.io/yangqi0408/literouter:latest

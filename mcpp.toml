@@ -26,7 +26,7 @@ members = ["core", "cli", "tray"]
 default = "llvm@22.1.8"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 license = "Apache-2.0"
 authors = ["literouter contributors"]
 
