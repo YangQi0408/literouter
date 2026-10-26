@@ -33,6 +33,13 @@ def closure(binary: Path):
             if name.startswith('/') and Path(name).name == 'ld-linux-x86-64.so.2':
                 name = 'ld-linux-x86-64.so.2'
             result[name] = Path(source).resolve(strict=True)
+    # ldd is a system-loader trace, and can report its OWN loader even for a
+    # program built against another glibc. The ELF PT_INTERP is authoritative.
+    interpreter = Path(run('patchelf', '--print-interpreter', str(binary)).strip()).resolve(strict=True)
+    result[interpreter.name] = interpreter
+    libc = result.get('libc.so.6')
+    if libc is None or not interpreter.is_relative_to(libc.parent.parent):
+        raise RuntimeError('tray loader and libc are not from the same runtime payload')
     return result
 
 
@@ -104,6 +111,10 @@ exec "$runtime/ld-linux-x86-64.so.2" --library-path "$runtime" \\
   --argv0 "$app_dir/literouter-tray" "$runtime/literouter-tray.bin" "$@"
 ''')
     launcher.chmod(0o755)
+    # --list alone does not perform every relocation. Execute the actual entry
+    # point so mismatched GLIBC_PRIVATE loader symbols cannot pass packaging.
+    subprocess.run([str(launcher), '--help'], check=True, timeout=15,
+                   env=os.environ | {'LD_LIBRARY_PATH': ''}, capture_output=True)
     root = Path(__file__).resolve().parents[1]
     assets = output / 'assets'
     assets.mkdir(exist_ok=True)

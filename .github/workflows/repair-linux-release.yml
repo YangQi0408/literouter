@@ -1,0 +1,77 @@
+name: repair-linux-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Existing release tag whose Linux packaging needs repair'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-linux-release
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate existing version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release view "$VERSION"
+          # Packaging-only repairs must not silently ship changed core sources.
+          git fetch origin "refs/tags/$VERSION:refs/tags/$VERSION"
+          git diff --exit-code "$VERSION" HEAD -- core cli tray web mcpp.toml mcpp.lock
+      - name: Install mcpp
+        run: |
+          curl -fsSL https://github.com/mcpp-community/mcpp/releases/latest/download/install.sh | MCPP_NO_PATH=1 bash
+          echo "$HOME/.mcpp/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.mcpp/registry
+            ~/.mcpp/build-cache
+          key: mcpp-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mcpp.toml', '**/mcpp.toml', '**/mcpp.lock') }}
+          restore-keys: mcpp-${{ runner.os }}-${{ runner.arch }}-
+      - name: Build and test exact release programs
+        run: |
+          mcpp build --workspace --release
+          mcpp test -p core --profile release
+          mcpp test -p cli --profile release
+          python3 -m unittest discover -s scripts/tests -v
+      - name: Stage and execute Linux package
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq patchelf
+          package="literouter-${VERSION}-linux-x86_64"
+          python3 scripts/stage_linux_release.py \
+            --cli "$(python3 scripts/find_program.py)" \
+            --tray "$(python3 scripts/find_program.py --member tray --name literouter-tray)" \
+            --output "staging/$package"
+          python3 scripts/check_cli_smoke.py --binary "staging/$package/literouter"
+          mkdir -p dist-release
+          python3 scripts/stage_runtime_sources.py --output "dist-release/literouter-${VERSION}-linux-runtime-sources.tar.xz"
+          python3 scripts/stage_licenses.py --output "staging/$package/licenses" \
+            --runtime-sources "dist-release/literouter-${VERSION}-linux-runtime-sources.tar.xz"
+          cp README.md README_en.md LICENSE NOTICE THIRD_PARTY_NOTICES.md "staging/$package/"
+          cp scripts/install.sh scripts/install-macos.sh scripts/install-windows.ps1 "staging/$package/"
+          cp "staging/$package/literouter" "dist-release/literouter-${VERSION}-linux-x86_64"
+          cp "staging/$package/literouter" dist-release/literouter-linux-x86_64
+          (cd staging && tar -czf "../dist-release/$package.tar.gz" "$package")
+          (cd dist-release && for file in *; do sha256sum "$file" > "$file.sha256"; done)
+      - name: Upload repaired Linux assets only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: gh release upload "$VERSION" dist-release/* --clobber

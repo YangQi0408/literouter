@@ -28,6 +28,22 @@ def module(name):
 
 
 class ReleaseTools(unittest.TestCase):
+    def test_loader_comes_from_elf_interpreter_not_system_ldd(self):
+        helper = module('stage_linux_release')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'lib').mkdir()
+            (root / 'lib64').mkdir()
+            (root / 'lib/libc.so.6').write_text('fixture')
+            loader = root / 'lib64/ld-linux-x86-64.so.2'
+            loader.write_text('fixture')
+            def commands(*args):
+                if args[0] == 'ldd':
+                    return 'libc.so.6 => ' + (root / 'lib/libc.so.6').as_posix() + ' (0x0)\n/lib64/ld-linux-x86-64.so.2 (0x0)'
+                return str(loader)
+            with patch.object(helper, 'run', commands):
+                self.assertEqual(helper.closure(root / 'program')['ld-linux-x86-64.so.2'], loader)
+
     def test_runner_staging_is_not_a_private_runtime_dependency(self):
         helper = module('stage_linux_release')
         stage = Path('/home/runner/work/project/staging/package')
