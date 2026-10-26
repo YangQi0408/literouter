@@ -53,7 +53,7 @@
 
 Linux 发布包的 `literouter-tray` 是启动器，使用 `lib/tray/` 下配套的加载器与共享库；请保留整个解压目录，不要只拷贝一个 tray 文件。需有 StatusNotifierWatcher（KDE，或 GNOME AppIndicator 扩展/支持托盘的面板）。CLI 仍是独立可执行文件，要求 glibc 2.38+。macOS 签名与公证是两件事，项目不把 ad-hoc/Developer ID 签名宣称为已公证。
 
-以上打包改进描述当前源码的构建规则，**不会更新已经发布的 v0.5.0 文件**。公开发布前仍需三平台 CI 和原生桌面验证；验证步骤与平台边界见[构建和打包手册](scripts/README.md)。
+`v0.5.1` 修复桌面打包与运行边界，发布前[三平台 CI 已通过](https://github.com/YangQi0408/literouter/actions/runs/40286684160)，不会覆盖旧 v0.5.0 文件或自动升级当前服务。原生桌面体验仍依赖目标环境；升级说明见 [v0.5.1](docs/release-notes/v0.5.1.md)，验证步骤见[构建和打包手册](scripts/README.md)。
 
 托盘菜单只有两项（受底层托盘库限制）：
 

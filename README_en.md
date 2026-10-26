@@ -53,7 +53,7 @@ On launch it starts the gateway **in the same process** (or adopts an existing i
 
 On Linux, `literouter-tray` is a launcher using the matching loader and shared libraries under `lib/tray/`; keep the entire extracted directory. A StatusNotifierWatcher is required (KDE, GNOME AppIndicator, or a tray-enabled panel). The standalone CLI requires glibc 2.38+. macOS code signing is not notarization; ad-hoc or Developer ID signing alone is not advertised as notarized.
 
-These packaging improvements describe the current source build; they **do not update existing v0.5.0 release assets**. Public distribution still requires the platform CI matrix and native desktop qualification. See the [build and packaging guide](scripts/README.md) for validation steps and platform limits.
+`v0.5.1` repairs desktop packaging and runtime boundaries; the [pre-release platform CI matrix passed](https://github.com/YangQi0408/literouter/actions/runs/40286684160). It does not replace historical v0.5.0 assets or auto-upgrade a running service. Native desktop behavior still depends on the target environment. See [v0.5.1 upgrade notes](docs/release-notes/v0.5.1.md) and the [packaging guide](scripts/README.md).
 
 The tray menu has two entries (a limit of the underlying tray library):
 
