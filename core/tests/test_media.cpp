@@ -1,6 +1,6 @@
 // Real sockets and binary MIME uploads exercise the same routing and header
 // gate used in production, including the boundary between retry and commitment.
-#include <httplib.h>
+#include "../src/lr_http.h"
 #include "lr_test_check.h"
 
 import literouter.core;

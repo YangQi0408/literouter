@@ -6,7 +6,7 @@
 // a signature is right — the relay is the only other party that can tell, and
 // it is not in this process. A hard-coded expected value is what turns that
 // into a test that can fail.
-#include <httplib.h>
+#include "../src/lr_http.h"
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 

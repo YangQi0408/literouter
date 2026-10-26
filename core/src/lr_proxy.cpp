@@ -13,7 +13,7 @@
 // rather than a plain call.
 module;
 
-#include <httplib.h>
+#include "lr_http.h"
 #include <openssl/pem.h>
 #include <openssl/err.h>
 

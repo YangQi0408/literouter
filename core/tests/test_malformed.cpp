@@ -13,7 +13,7 @@
 // The relay behaviours below are all things a real, broken or hostile relay can
 // do on the wire. Each one is asserted against two things: what the CLIENT
 // receives, and whether the PROCESS is still serving afterwards.
-#include <httplib.h>
+#include "../src/lr_http.h"
 
 #include <algorithm>
 #include <atomic>

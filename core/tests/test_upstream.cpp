@@ -1,6 +1,7 @@
 // Outbound credential boundaries, exercised only against ephemeral loopback servers.
-#include <httplib.h>
+#include "../src/lr_http.h"
 #include "lr_test_check.h"
+#include "lr_test_socket.h"
 
 import literouter.core;
 
@@ -23,6 +24,40 @@ public:
 }
 
 int main() {
+    LR_GROUP("transport polling observes local shutdown without the full read timeout");
+    {
+        int port = 0;
+        const auto listener = lr_test::listenLoopback(&port);
+        const auto client = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = htons(static_cast<unsigned short>(port));
+        const bool connected = listener != lr_invalid_socket && client != lr_invalid_socket &&
+            ::connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0;
+        const auto peer = connected
+            ? lrAccept(listener) : lr_invalid_socket;
+        if (peer != lr_invalid_socket) {
+            std::atomic<bool> waiting{false};
+            double elapsed = 0;
+            std::thread reader{[&] {
+                waiting = true;
+                const auto before = std::chrono::steady_clock::now();
+                httplib::detail::select_read(client, 5, 0);
+                elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
+            }};
+            while (!waiting.load()) std::this_thread::yield();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            lrShutdownBoth(client);
+            reader.join();
+            LR_CHECK_MSG(elapsed < 2, std::format("local shutdown needed {}s to wake transport polling", elapsed));
+        } else {
+            LR_CHECK_MSG(false, "loopback polling fixture could not connect");
+        }
+        if (peer != lr_invalid_socket) lrClose(peer);
+        if (client != lr_invalid_socket) lrClose(client);
+        if (listener != lr_invalid_socket) lrClose(listener);
+    }
     lr_test::ProxyEnvironment proxyEnv;
     const lr_test::EnvGuard stateEnv{"LITEROUTER_STATE_DIR"};
     const auto state = std::filesystem::temp_directory_path() /

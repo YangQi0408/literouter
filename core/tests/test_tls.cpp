@@ -4,7 +4,7 @@
 // "upstream certificate rejected" for an endpoint curl reaches fine. The
 // invariant that keeps that from coming back is "resolveCaBundle() is either
 // empty or a file that exists".
-#include <httplib.h>
+#include "../src/lr_http.h"
 #include <openssl/x509v3.h>
 
 #include "lr_test_check.h"

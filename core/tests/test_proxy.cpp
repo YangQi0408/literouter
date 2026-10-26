@@ -4,7 +4,7 @@
 // Nothing here sleeps-and-hopes: every wait is a poll with a deadline, every
 // client has a timeout, and every server this test starts is stopped and joined
 // before main returns.
-#include <httplib.h>
+#include "../src/lr_http.h"
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
 
@@ -2381,7 +2381,9 @@ void group23RequestDeadline(StubRelay &relay_b) {
                              chatRequest(kRouteModel, /*stream=*/true));
     const double elapsed = literouter::nowUnix() - before;
 
-    LR_CHECK_EQ(hit.status, 504);
+    LR_CHECK_MSG(hit.status == 504,
+                 std::format("expected deadline 504, got {} after {}s: {}", hit.status,
+                             elapsed, hit.transport_error));
     LR_CHECK_MSG(elapsed >= 2.0 && elapsed < 8.0,
                  std::format("the request took {}s against a 3s deadline", elapsed));
 
