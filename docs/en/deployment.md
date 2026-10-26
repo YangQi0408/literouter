@@ -497,7 +497,10 @@ This safely disables and removes the systemd service and binary while preserving
 
 ## 6. Runtime Footprint
 
-`literouter`'s footprint is small. A cheap always-on box or a small cloud instance carries it comfortably: there is no database and no separate worker process, and resident memory sits in the single-digit megabytes, so it can run side by side with an editor, a browser and a local model client on the same machine.
+The CLI needs no database or separate worker process. The historical 0.4.0 CLI
+mock results below are not a footprint or throughput guarantee for the current
+desktop app. Runtime libraries, payload size, concurrency and body logging change
+resource usage; measure your own workload.
 
 The numbers below are **measured**, on a 12-logical-core / 13.8 GB Linux x86-64 machine running the `0.4.0` release build. The harness was a local mock upstream (no real inference time; ~0.1 ms per answer), a keep-alive client, and `/proc/<pid>/status` sampled every 200 ms.
 
@@ -516,7 +519,7 @@ The numbers below are **measured**, on a 12-logical-core / 13.8 GB Linux x86-64 
 
 **What to take from this:**
 
-- **Memory barely tracks concurrency.** Going from 1 to 128 concurrent clients moved RSS from 10.2 MB to 12.2 MB. The proxy does not buffer payloads: each body is pumped through as it arrives, so concurrency does not translate into memory.
+- **Small-payload test memory moved little.** RSS went from 10.2 MB to 12.2 MB, but request and non-streaming response bodies are buffered; large payloads and concurrency can substantially increase memory.
 - **Throughput saturates around 8 concurrent** (~5,000 req/s); more pressure only lengthens the queue. This is the ceiling of loopback against a mock upstream — a real relay's own latency becomes the bottleneck long before this.
 - **It does not grow while it runs.** 60 seconds at 16 concurrent (about 80,000 requests) held RSS flat at 161.5 MB (the baseline was elevated because an 8 MB-body run preceded it), with a least-squares trend of about **+0.3 MB/minute** — allocator noise, not a leak. The telemetry ring is capped hard at `server.log_capacity` (measured at 200 and 400: the entry count matched exactly).
 - A real LLM call takes seconds, so the numbers above leave several orders of magnitude of headroom.

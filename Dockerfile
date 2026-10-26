@@ -133,6 +133,7 @@ RUN apt-get update \
  && chown -R literouter:literouter /etc/literouter /var/lib/literouter
 
 COPY --from=binary /out/literouter /usr/local/bin/literouter
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/licenses/literouter/
 
 # Config and state are separate mounts on purpose. The config holds keys and is
 # meant to be edited and backed up; the state directory holds the telemetry file,

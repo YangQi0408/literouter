@@ -43,6 +43,7 @@ done
 [ -n "$BINARY" ] || { echo "error: --binary is required" >&2; exit 2; }
 [ -n "$VERSION" ] || { echo "error: --version is required" >&2; exit 2; }
 [ -f "$BINARY" ] || { echo "error: $BINARY does not exist" >&2; exit 1; }
+[[ "${VERSION#v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'error: invalid version' >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -53,7 +54,7 @@ ISCC=""
 for candidate in \
     "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
     "/c/Program Files/Inno Setup 6/ISCC.exe" \
-    "$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe"
+    "${LOCALAPPDATA:-}/Programs/Inno Setup 6/ISCC.exe"
 do
     if [ -f "$candidate" ]; then ISCC="$candidate"; break; fi
 done
@@ -76,16 +77,21 @@ echo "using $ISCC"
 # the documentation have to be reachable from there. A staging copy keeps the
 # repository root free of build outputs and makes the relative paths obvious.
 STAGE="$REPO_ROOT/scripts/.installer-stage"
-rm -rf "$STAGE"
+test ! -e "$STAGE" || { echo 'error: installer stage already exists' >&2; exit 1; }
 mkdir -p "$STAGE"
 cp "$BINARY" "$STAGE/literouter.exe"
+trap 'rm -rf "$STAGE"' EXIT
 if [ -n "$APP_BINARY" ]; then
     [ -f "$APP_BINARY" ] || { echo "error: $APP_BINARY does not exist" >&2; exit 1; }
     cp "$APP_BINARY" "$STAGE/literouter-tray.exe"
+    mkdir -p "$STAGE/assets"
+    cp "$REPO_ROOT/tray/assets/literouter-tray.png" "$STAGE/assets/"
+    cp "$REPO_ROOT/tray/assets/literouter-tray.ico" "$STAGE/assets/"
 fi
 for doc in README.md README_en.md LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
     [ -f "$REPO_ROOT/$doc" ] && cp "$REPO_ROOT/$doc" "$STAGE/"
 done
+python3 "$SCRIPT_DIR/stage_licenses.py" --output "$STAGE/licenses"
 
 # A copy of the .iss next to the staged files, so both its `Source:` paths and
 # its `OutputDir` resolve without the caller having to reason about where ISCC
@@ -99,7 +105,7 @@ sed -i 's|"\.\.\\|"|g' "$STAGE/installer.iss"
 sed -i 's|^OutputDir=\.\.\\dist-release|OutputDir=dist-release|' "$STAGE/installer.iss"
 
 mkdir -p "$STAGE/dist-release"
-iscc_args=(//Q //DAppVersion="$VERSION")
+iscc_args=(//Q //DAppVersion="${VERSION#v}" //DReleaseTag="$VERSION")
 if [ -n "$APP_BINARY" ]; then
     iscc_args+=(//DSourceApp="literouter-tray.exe")
 fi

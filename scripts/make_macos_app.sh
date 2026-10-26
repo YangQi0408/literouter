@@ -8,11 +8,8 @@
 # is the only form macOS lets you double-click, and the only form `open -a` and
 # LaunchServices can address by name.
 #
-# This script does not sign anything. Signing needs a Developer ID certificate
-# and `codesign --deep` on a machine that has it; doing that here would produce
-# a bundle that claims to be signed when the signature means nothing. The
-# workflow passes --sign when it has the identity, and the bundle is otherwise
-# left ad-hoc signed by the linker, which is what an unsigned binary already is.
+# Signing is optional and never claims notarization. The complete bundle is
+# ad-hoc signed without an identity, or Developer-ID signed when --sign is given.
 #
 # Usage:
 #   make_macos_app.sh --binary PATH --version VERSION --output DIR
@@ -23,6 +20,7 @@ BINARY=""
 VERSION=""
 OUTPUT=""
 SIGN_IDENTITY=""
+NO_SIGN=0
 
 usage() {
     cat <<'EOF'
@@ -31,7 +29,8 @@ Build a macOS .app bundle around the literouter binary.
   --binary PATH     the built literouter executable (required)
   --version VERSION version string for CFBundleShortVersionString (required)
   --output DIR      directory to write literouter.app into (required)
-  --sign IDENTITY   codesign identity; omit for an unsigned bundle
+  --sign IDENTITY   codesign identity; omit for ad-hoc signing on macOS
+  --no-sign         skip signing (packaging fixtures or explicit manual signing)
   -h, --help        show this message
 EOF
 }
@@ -42,6 +41,7 @@ while [ $# -gt 0 ]; do
         --version) VERSION="${2:?--version needs a value}"; shift 2 ;;
         --output)  OUTPUT="${2:?--output needs a directory}"; shift 2 ;;
         --sign)    SIGN_IDENTITY="${2:?--sign needs an identity}"; shift 2 ;;
+        --no-sign) NO_SIGN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -51,6 +51,10 @@ done
 [ -n "$VERSION" ] || { echo "error: --version is required" >&2; exit 2; }
 [ -n "$OUTPUT" ] || { echo "error: --output is required" >&2; exit 2; }
 [ -f "$BINARY" ] || { echo "error: $BINARY does not exist" >&2; exit 1; }
+NUMERIC_VERSION="${VERSION#v}"
+[[ "$NUMERIC_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'error: invalid version' >&2; exit 2; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 APP="$OUTPUT/literouter.app"
 CONTENTS="$APP/Contents"
@@ -61,6 +65,21 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES"
 
 install -m 0755 "$BINARY" "$MACOS/literouter"
+mkdir -p "$MACOS/assets"
+install -m 0644 "$REPO_ROOT/tray/assets/literouter-tray.png" "$MACOS/assets/literouter-tray.png"
+for doc in LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
+    install -m 0644 "$REPO_ROOT/$doc" "$RESOURCES/$doc"
+done
+python3 "$SCRIPT_DIR/stage_licenses.py" --output "$RESOURCES/licenses"
+# Keep the bundle's OS claim no lower than LLVM's actual baseline. A caller can
+# raise the deployment target, but never declare 11.0 for a 14.0 Mach-O image.
+MINIMUM="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+python3 - "$MINIMUM" <<'PY'
+import re, sys
+value = sys.argv[1]
+if not re.fullmatch(r'[0-9]+(?:\.[0-9]+){1,2}', value) or tuple(map(int, value.split('.'))) < (14, 0):
+    raise SystemExit('macOS deployment target must be 14.0 or newer')
+PY
 
 # CFBundleIdentifier is what LaunchServices keys the bundle on, so it has to be
 # stable across versions or the system treats every release as a new app and
@@ -74,17 +93,13 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>CFBundleName</key>              <string>literouter</string>
     <key>CFBundleDisplayName</key>       <string>literouter</string>
     <key>CFBundleIdentifier</key>        <string>io.github.yangqi0408.literouter</string>
-    <key>CFBundleVersion</key>           <string>${VERSION}</string>
-    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key>           <string>${NUMERIC_VERSION}</string>
+    <key>CFBundleShortVersionString</key><string>${NUMERIC_VERSION}</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
     <key>CFBundleExecutable</key>        <string>literouter</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>LSMinimumSystemVersion</key>    <string>11.0</string>
-    <!-- The program is a foreground gateway that prints a startup block and
-         then serves until interrupted, so it is NOT an LSUIElement agent: it
-         owns a Terminal window when started that way, which is what the CLI
-         already documents. Naming the category is what gives the Dock icon a
-         sane grouping. -->
+    <key>LSMinimumSystemVersion</key>    <string>${MINIMUM}</string>
+    <key>LSUIElement</key>              <true/>
     <key>LSApplicationCategoryType</key> <string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key>   <true/>
 </dict>
@@ -95,7 +110,9 @@ PLIST
 # fields long — cheaper to write than to explain its absence.
 printf 'APPL????' > "$CONTENTS/PkgInfo"
 
-if [ -n "$SIGN_IDENTITY" ]; then
+if [ "$NO_SIGN" -eq 1 ]; then
+    echo "signing explicitly skipped"
+elif [ -n "$SIGN_IDENTITY" ]; then
     echo "signing with: $SIGN_IDENTITY"
     # --options runtime is the hardened runtime, required for notarization.
     # --timestamp asks Apple's server for a trusted timestamp, which is what
@@ -104,7 +121,10 @@ if [ -n "$SIGN_IDENTITY" ]; then
         --sign "$SIGN_IDENTITY" "$APP"
     codesign --verify --strict --verbose=2 "$APP"
 else
-    echo "no signing identity given; leaving the bundle ad-hoc signed"
+    if [ "$(uname -s)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
+        codesign --force --deep --sign - "$APP"
+    fi
+    echo "no Developer ID given; bundle is not notarized"
 fi
 
 echo "built $APP"

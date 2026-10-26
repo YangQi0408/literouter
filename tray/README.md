@@ -70,6 +70,12 @@ mcpp build            # from the repository root
 
 The binary lands in `target/<triple>/<hash>/bin/tray/literouter-tray`.
 
+Linux release archives use a launcher with a matching private GNU loader/libc
+and GLib/X11 libraries under `lib/tray/`. Keep that directory beside the launcher;
+autostart records the launcher path, not the private loader. Corresponding runtime
+source and license texts are published alongside the binary archive.
+macOS bundles require macOS 14+; code signing alone does not imply notarization.
+
 ### Runtime requirements (Linux)
 
 The tray uses freedesktop **StatusNotifierItem** over D-Bus, which needs a
@@ -115,7 +121,9 @@ would look like it did nothing at all.
 The detection asks the running instance rather than probing the port: `GET
 /__literouter/status` on the configured address, and the instance's own
 `base_url` is what the console URL is built from — which is the only way
-`port: 0` (kernel-assigned) can work.
+`port: 0` (kernel-assigned) can work. Port-zero discovery verifies a PID record
+for the exact config path in the state directory; multiple matching live
+instances are refused. HTTPS and IPv6 use scheme-aware addresses.
 
 ---
 

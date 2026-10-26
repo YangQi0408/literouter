@@ -106,10 +106,13 @@ jobs:
       - name: Build tray
         run: mcpp build -p tray
 
+      - name: Test packaging helpers
+        run: python3 -m unittest discover -s scripts/tests -v
+
       - name: Verify config docs match the build (Linux)
         if: runner.os == 'Linux'
         run: |
-          bin="$(find target -type f \( -name literouter -o -name 'literouter.exe' \) -path '*/bin/*' -exec ls -t {} + 2>/dev/null | head -1)"
+          bin="$(python3 scripts/find_program.py)"
           tmp="$(mktemp -d)"
           LITEROUTER_CONFIG="$tmp/seed.json" "$bin" config init --force
           printf '{"providers":[{}],"routes":[{"targets":[{"provider":"p"}]}]}' > "$tmp/minimal.json"
@@ -154,7 +157,7 @@ jobs:
       - name: CLI shutdown is graceful (Linux)
         if: runner.os == 'Linux'
         run: |
-          bin="$(find target -type f \( -name literouter -o -name 'literouter.exe' \) -path '*/bin/*' -exec ls -t {} + 2>/dev/null | head -1)"
+          bin="$(python3 scripts/find_program.py)"
           tmp="$(mktemp -d)"
           port=18793
 
@@ -219,11 +222,16 @@ jobs:
       - name: Test cli
         run: mcpp test -p cli
 
+      - name: CLI first-run and dynamic-port regressions
+        timeout-minutes: 3
+        run: python3 scripts/check_cli_smoke.py --binary "$(python3 scripts/find_program.py)"
+
       - name: CLI smoke test
+        timeout-minutes: 5
         run: |
           mcpp run -p cli -- --version
 
-          bin="$(find target -type f -name 'literouter*' -path '*/bin/*' -exec ls -t {} + 2>/dev/null | head -1)"
+          bin="$(python3 scripts/find_program.py)"
           tmp="$(mktemp -d)"
 
           # Every command below is pinned to $tmp. An unpinned `config init
@@ -271,14 +279,13 @@ jobs:
       # build failure and not a test failure either. Asserting a few known
       # translations here is what makes the fallback visible in CI.
       - name: CLI smoke test (Chinese)
+        timeout-minutes: 5
         env:
           LITEROUTER_LANG: zh
         run: |
           mcpp run -p cli -- --version
 
-          # `literouter*`, because the Windows artifact is literouter.exe and
-          # the other Linux-only steps can assume the bare name.
-          bin="$(find target -type f -name 'literouter*' -path '*/bin/*' -exec ls -t {} + 2>/dev/null | head -1)"
+          bin="$(python3 scripts/find_program.py)"
           tmp="$(mktemp -d)"
 
           # Pinned to $tmp for the same reason as the English step: this must

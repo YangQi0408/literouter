@@ -10,10 +10,11 @@ the `mcpp.lock` files, with the license terms that have to travel with the binar
 | ✔ | linked into that member's binary |
 | · | not part of that member |
 
-Every component is linked statically. This table is short because `literouter`
-has exactly two members (`core` and `cli`) and the web console below; the GUI
-member that once pulled in GLFW / FreeType / libpng / yyjson / the X.Org stack
-has been removed, and so have its entries.
+The workspace has three members: `core`, `cli`, and `tray`. The tray links core
+and EUI-NEO; on Linux it also loads shared GLib/X11 libraries and one matching
+GNU loader/libc pair. Those shared files remain replaceable under `lib/tray/`;
+their licenses are not changed to Apache-2.0 by being distributed with this
+application. Core/CLI dependencies below are linked statically unless noted.
 
 ## Components
 
@@ -27,30 +28,74 @@ has been removed, and so have its entries.
 
 ### Web Console Frontend Components (Embedded)
 
-The built-in web console is compiled into `literouter.core` via C++23 `#embed` and therefore bundled into the `cli` binary.
+The built-in web console is compiled into `literouter.core` via `#embed` and
+therefore bundled into both the CLI and tray. Versions below are the resolved
+versions in `web/package-lock.json`, not the lower bounds of package.json.
 
 | Component | Version | License (SPDX) | core | cli |
 |---|---|---|:---:|:---:|
-| `react` / `react-dom` | 19.2.0 | MIT | ✔ | ✔ |
-| `@radix-ui/react-dialog` | 1.1.15 | MIT | ✔ | ✔ |
-| `@radix-ui/react-label` | 2.1.8 | MIT | ✔ | ✔ |
-| `@radix-ui/react-select` | 2.2.6 | MIT | ✔ | ✔ |
-| `@radix-ui/react-separator` | 1.1.8 | MIT | ✔ | ✔ |
-| `@radix-ui/react-slot` | 1.2.4 | MIT | ✔ | ✔ |
-| `@radix-ui/react-switch` | 1.2.6 | MIT | ✔ | ✔ |
-| `@radix-ui/react-tooltip` | 1.2.8 | MIT | ✔ | ✔ |
+| `react` / `react-dom` | 19.3.0 | MIT | ✔ | ✔ |
+| `@radix-ui/react-dialog` | 1.1.23 | MIT | ✔ | ✔ |
+| `@radix-ui/react-label` | 2.1.15 | MIT | ✔ | ✔ |
+| `@radix-ui/react-select` | 2.3.7 | MIT | ✔ | ✔ |
+| `@radix-ui/react-separator` | 1.1.15 | MIT | ✔ | ✔ |
+| `@radix-ui/react-slot` | 1.3.3 | MIT | ✔ | ✔ |
+| `@radix-ui/react-switch` | 1.3.7 | MIT | ✔ | ✔ |
+| `@radix-ui/react-tooltip` | 1.2.16 | MIT | ✔ | ✔ |
 | `lucide-react` | 0.545.0 | ISC | ✔ | ✔ |
 | `clsx` | 2.1.1 | MIT | ✔ | ✔ |
-| `tailwind-merge` | 3.3.1 | MIT | ✔ | ✔ |
+| `tailwind-merge` | 3.7.0 | MIT | ✔ | ✔ |
 | `class-variance-authority` | 0.7.1 | Apache-2.0 | ✔ | ✔ |
-| `sonner` | 2.0.7 | MIT | ✔ | ✔ |
+| `sonner` | 2.0.8 | MIT | ✔ | ✔ |
 | `shadcn/ui` (components) | source copy | MIT | ✔ | ✔ |
 
 Development-only tooling (build time, not embedded in binary):
-- `vite` 7.1.9 (MIT)
-- `tailwindcss` 4.1.14 (MIT)
+- `vite` 7.3.7 (MIT)
+- `vitest` 5.0.5 (MIT)
+- `tailwindcss` 4.3.3 (MIT)
 - `tw-animate-css` 1.4.0 (MIT)
 - `typescript` 5.9.3 (Apache-2.0)
+
+### Desktop and Linux Runtime Components
+
+| Component | Version | License | Distribution |
+|---|---|---|---|
+| EUI-NEO | 0.6.0 | Apache-2.0 | tray |
+| GLFW | 3.4 | Zlib | tray |
+| FreeType | 2.13.3 | FTL (chosen from FTL/GPL alternatives) | tray |
+| libpng | 1.6.43 | libpng-2.0 | tray |
+| yyjson | 0.12.0 | MIT | tray |
+| tray | 8dd1358 | MIT | tray, Windows backend |
+| glad / Khronos OpenGL headers | 651a425 / 2026.05.31 | MIT and Khronos permissive notices | tray |
+| stb_image / NanoSVG | vendored in EUI-NEO 0.6.0 | MIT (chosen alternative) / Zlib | tray |
+| miniaudio | 0.11.21, vendored in EUI-NEO 0.6.0 | MIT-0 (chosen alternative) | tray audio dependency |
+| GLib / GObject / GIO / GModule | 2.88.3 | LGPL-2.1-or-later | Linux tray shared runtime |
+| GNU libc / loader / libm | upstream 2.44, xlings 2.44.3 revision 2 | LGPL-2.1-or-later, with per-file notices | Linux tray shared runtime |
+| libmount / libblkid (util-linux) | 2.40.2 | LGPL-2.1-or-later / BSD variants | Linux tray shared runtime |
+| libselinux | 3.11 | public domain and LGPL notices in upstream source | Linux tray shared runtime |
+| libffi | 3.4.4 | MIT | Linux tray shared runtime |
+| PCRE2 | 10.42 | BSD-3-Clause | Linux tray shared runtime |
+| shared zlib | 1.3.1 | Zlib | Linux GIO runtime; distinct from static 1.3.2 |
+| X11 / Xext / Xcursor / Xfixes / Xi / Xinerama / Xrandr / Xrender / Xau / Xdmcp / XCB / xorgproto | see `RUNTIME-LIBRARIES.json` and build records | MIT/X11 and accompanying permissive notices | Linux tray shared runtime |
+
+EUI-NEO copyright: sudoevolve and contributors. GLFW copyright: Marcus Geelnard
+and Camilla Löwy. yyjson copyright: YaoYuan. tray copyright: Serge Zaitsev.
+**Portions of this software are copyright © The FreeType Project
+(www.freetype.org). All rights reserved.**
+
+`scripts/stage_runtime_sources.py` publishes a corresponding-source archive
+alongside each Linux binary release, named
+`literouter-<tag>-linux-runtime-sources.tar.xz`. It includes GNU/GLib/util-linux/
+libselinux upstream source, the xlings modifications and build/relocation scripts.
+`licenses/` in the binary package contains the full applicable texts and upstream
+copyright notices. Binary relocation is performed on staged copies only.
+Modification and reverse engineering for debugging library modifications are
+permitted; ABI-compatible shared library replacements may be installed in
+`lib/tray/`, or the application rebuilt from its Apache-2.0 source.
+
+The source archive's `SOURCES.json` records exact source digests and payload
+revisions. Repackagers must distribute the corresponding source and licenses
+with equivalent access, and must update these records if the runtime changes.
 
 ## License texts
 

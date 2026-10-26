@@ -8,6 +8,7 @@
 #include "tray_autostart.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -32,8 +33,10 @@
 
 namespace lrtray {
 namespace {
+std::filesystem::path g_executable;
 
 std::filesystem::path executablePath() {
+    if (!g_executable.empty()) return g_executable;
 #if defined(_WIN32)
     wchar_t buffer[MAX_PATH * 4] = {0};
     const DWORD length = ::GetModuleFileNameW(nullptr, buffer, MAX_PATH * 4);
@@ -113,7 +116,27 @@ std::string readFile(const std::filesystem::path &path) {
     return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
 }
 
+std::string xmlEscape(const std::string &text) {
+    std::string escaped;
+    for (const char c : text) {
+        if (c == '&') escaped += "&amp;";
+        else if (c == '<') escaped += "&lt;";
+        else if (c == '>') escaped += "&gt;";
+        else if (c == '"') escaped += "&quot;";
+        else escaped += c;
+    }
+    return escaped;
+}
+
 } // namespace
+
+void setExecutablePath(const std::filesystem::path &path) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(path, ec))
+        g_executable = std::filesystem::absolute(path, ec);
+}
+
+std::filesystem::path appExecutablePath() { return executablePath(); }
 
 // ── Linux: a freedesktop autostart entry ─────────────────────────────────────
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -232,7 +255,12 @@ AutostartStatus enableAutostart() {
     // Name the bundle when there is one: `open -a` on the inner binary would
     // start a copy that LaunchServices does not associate with the app.
     const std::filesystem::path bundle = bundlePathFromExecutable(executable);
-    const std::string target = bundle.empty() ? executable.string() : bundle.string();
+    const std::string target = xmlEscape(bundle.empty() ? executable.string() : bundle.string());
+    const std::string arguments = bundle.empty()
+        ? "        <string>" + target + "</string>\n"
+        : "        <string>/usr/bin/open</string>\n"
+          "        <string>-a</string>\n"
+          "        <string>" + target + "</string>\n";
     const std::string contents =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
@@ -242,7 +270,7 @@ AutostartStatus enableAutostart() {
         "    <key>Label</key><string>" + launchAgentLabel() + "</string>\n"
         "    <key>ProgramArguments</key>\n"
         "    <array>\n"
-        "        <string>" + target + "</string>\n"
+        + arguments +
         "    </array>\n"
         "    <key>RunAtLoad</key><true/>\n"
         "    <key>KeepAlive</key><false/>\n"
@@ -325,6 +353,14 @@ AutostartStatus enableAutostart() {
     if (self.empty()) {
         return {AutostartState::Unsupported, path, "cannot determine this executable's path"};
     }
+    const HRESULT initialized = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) {
+        return {AutostartState::Unsupported, path, "cannot initialize the shell link apartment"};
+    }
+    struct Apartment {
+        bool owns;
+        ~Apartment() { if (owns) ::CoUninitialize(); }
+    } apartment{SUCCEEDED(initialized)};
     IShellLinkW *link = nullptr;
     if (FAILED(::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_IShellLinkW, reinterpret_cast<void **>(&link)))) {

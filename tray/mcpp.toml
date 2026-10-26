@@ -32,6 +32,12 @@ eui-neo = "0.6.0"
 [targets.literouter-tray]
 kind = "bin"
 main = "src/main.cpp"
+windows_subsystem = "windows"
+windows_entry = "main"
+windows_code_page = "utf-8"
+
+[resources]
+icon = "assets/literouter-tray.ico"
 
 [build]
 bmi_schedule = "on"
@@ -48,3 +54,8 @@ ldflags = ["-lshell32", "-lole32", "-luser32"]
 # autostart path needs nothing beyond the C++ standard library.
 [macosx]
 ldflags = ["-framework", "Cocoa", "-lobjc"]
+
+# X.Org's header anchor is reached by several shared X11 libraries. One shared
+# image avoids exporting a static copy from the application at runtime.
+[target.'cfg(os = "linux")'.dependencies.compat]
+xorgproto = { version = "2025.1", linkage = "shared" }

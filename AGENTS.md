@@ -8,7 +8,7 @@
 
 `literouter` 是一个基于 C++23 和 `mcpp` 构建的本地 AI 中转站聚合器（API Relay Aggregator）。它对外提供单一的本地 OpenAI 兼容端点（`http://127.0.0.1:8787/v1`），对内将请求分发至多个中转站，支持模型重命名、优先级故障转移、熔断、SSE 流式透传以及遥测统计。
 
-工程采用 `mcpp` 虚拟工作区（Virtual Workspace），划分为两个子成员（Members）加一个随二进制内嵌的前端：
+工程采用 `mcpp` 虚拟工作区（Virtual Workspace），划分为三个子成员（core、cli、tray）加一个随二进制内嵌的前端：
 
 ```text
 literouter/
@@ -30,6 +30,7 @@ literouter/
 ├── cli/                        # 命令行前端：literouter 可执行文件 (CLI11)
 │   ├── src/                    # cli_main.cpp 及各类 cli_cmd_*.cpp
 │   └── tests/                  # CLI 侧的纯函数单测（同 core/tests 的形态）
+├── tray/                       # 桌面托盘应用，显式目标 src/main.cpp（已有合法入口）
 └── web/                        # 内置 Web 控制台（React 19 + TypeScript + Vite + Tailwind + shadcn/ui）
     ├── src/                    # 前端源码（views/, components/, store.tsx 等）
     │   └── lib/*.test.ts       # 纯函数单测（vitest），与源码同目录
@@ -69,7 +70,7 @@ literouter/
 | `/v1beta/models/{model}:generateContent`（及 `streamGenerateContent`） | `gemini` |
 | `/v1/responses` | `openai_responses` |
 
-**出站协议**来自 `ProviderConfig::protocol`。两者一致时走 `same_protocol` 分支——**零 JSON 解析、原样直通**；不一致时才经 `adaptXToChat` / `adaptChatToX` 双向转换，流式交给有状态的 `StreamProtocolAdapter`（同协议时它同样只做透传）。
+**出站协议**来自 `ProviderConfig::protocol`。报文同形时走 `same_protocol` 分支，不做协议转换、优先保留原始字节；路由/校验仍解析请求、流式使用有界队列，不是全链路零解析/拷贝。不同时才经双向适配器转换。
 
 > ⚠️ Gemini 把模型名嵌在 URL path 而非请求体里。直通分支下做模型重命名时，Gemini 必须改 path，其余协议改 body。
 >
@@ -86,9 +87,10 @@ literouter/
 - **不得直接向外暴露任何第三方库类型**（包括 `httplib::*` 和 `nlohmann::json`）。所有第三方类型必须停留在 `core/src/*.cpp` 实现单元中。
 - 未经明确的用户需求或架构升级指令，不要随意修改或删除公共函数签名。
 
-### 规则 2：严禁创建 `src/main.cpp`
+### 规则 2：CLI 严禁创建 `src/main.cpp`
 - 在 `cli` 的 `mcpp.toml` 中，已显式声明了 `[targets.*]` 目标文件（即 `cli_main.cpp`）。
 - **千万不要在该目录下创建或重命名出 `src/main.cpp`**！`mcpp` 构建系统会自动推断 `src/main.cpp` 为另一个隐式二进制目标，从而引发符号重复和构建崩溃。
+- `tray/src/main.cpp` 是 tray 清单显式声明的既有合法入口，不属于此禁令；不要误删。
 
 ### 规则 3：头文件包含与模块导入顺序
 - 在所有消费 `literouter.core` 的编译单元中，必须遵循固定顺序：
@@ -130,7 +132,7 @@ literouter/
 
 ### 3.1 构建命令
 ```bash
-# 全局全量构建 (core + cli)
+# 全局全量构建 (core + cli + tray)
 mcpp build --workspace
 
 # 独立构建某个成员
@@ -143,7 +145,7 @@ mcpp build -p cli
 `mcpp` 把各成员 `tests/**/*.cpp` 中每个文件编译成一个独立二进制，以退出码判定成败，因此没有外部测试框架。
 
 ```bash
-# 运行 core 全部 13 个测试套件（必须全部 PASS）
+# 运行 core 全部测试套件（必须全部 PASS）
 mcpp test -p core
 
 # 只列出套件名，不构建不运行
@@ -162,6 +164,7 @@ mcpp test -p cli
 当前套件：
 
 - `core/tests/`：`test_media`、`test_config`、`test_i18n`、`test_json_api`、`test_malformed`、`test_protocol`、`test_proxy`、`test_router`、`test_secrets`、`test_tls`、`test_util`、`test_auth`、`test_gates`；
+- 新增的 `test_upstream` / `test_management` 覆盖重定向凭据边界、无效地址、动态端口、完整状态读取和 inline 协议探测，必须一起运行。
 - `cli/tests/`：`test_ui`。
 
 `cli/tests/` 的用例只覆盖**不需要服务端**的部分——表格与 `KeyValue` 渲染、ANSI 剥离、东亚宽度计算、`baseUrlOf` / `describeApiKey` / `tr()` 这类纯函数。断言宏复用 `core/tests/lr_test_check.h`（`cli/mcpp.toml` 的 `include_dirs` 把 `../core/tests` 加了进来），不另存一份。
@@ -403,7 +406,7 @@ ci: unify multi-platform CI into single workflow
 
 任何 Agent 在声称任务完成或提交代码前，必须对照以下清单进行自查：
 
-- [ ] `mcpp test -p core` 执行无误，13 组测试套件全部通过（0 failures）；
+- [ ] `mcpp test -p core` 执行无误，全部测试套件通过（0 failures）；
 - [ ] 涉及 `cli/src/cli_ui.cpp`、`cli/src/cli_core.cpp` 或 `cli/tests/` 的，`mcpp test -p cli` 全部通过；
 - [ ] 涉及 `web/src/lib` 或 `store.tsx` 的，`npm --prefix web test` 全部通过；
 - [ ] `mcpp build --workspace` 执行无误，全工作区无 warning、无 error；
@@ -413,7 +416,7 @@ ci: unify multi-platform CI into single workflow
 - [ ] 涉及新增用户可见字符串的，C++ 与 Web 两侧字典均已补齐（规则 8）；
 - [ ] 涉及前端改动的，`web/dist/` 已重新构建并与 `web/src/` 一同提交（CI 会 diff 校验）；
 - [ ] 未擅自改动 `CHANGELOG.md` 或 `docs/release-notes/`（规则 7）；
-- [ ] 未在任何 member 中遗留 `src/main.cpp` 或临时测试垃圾文件；
+- [ ] 未在 CLI 中新增隐式 `src/main.cpp`，未遗留临时测试垃圾文件（tray 的既有显式入口保留）；
 - [ ] 提交信息符合第 7 节的 Conventional Commits 规范；
 - [ ] 保持代码风格整洁，保留所有既有注释和文档。
 

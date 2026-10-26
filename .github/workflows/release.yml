@@ -172,6 +172,9 @@ jobs:
           npm ci --prefix web
           npm run build --prefix web
 
+      - name: Test web console
+        run: npm test --prefix web
+
       - name: Build release binaries
         run: |
           mcpp build -p core --release
@@ -180,28 +183,35 @@ jobs:
       # The desktop app. It links core, so it builds after it; it also needs the
       # graphics closure eui-neo pulls (GLFW, OpenGL, freetype, libpng, glib).
       #
-      # `continue-on-error` is deliberate and is about blast radius, not about
-      # expecting failure: eui-neo's Windows and macOS legs have never been
-      # built on these runners. If one of them cannot compile there, the gateway
-      # release — which is what most users download and which does not depend on
-      # the app — must still ship. The packaging steps below already treat a
-      # missing tray binary as "skip the app artifacts", so a failure here costs
-      # that platform its .app or installer and nothing else.
+      # Desktop artifacts are advertised on every release platform; their build
+      # is therefore a release requirement, not an optional green-workflow skip.
       - name: Build desktop app
         id: tray
-        continue-on-error: true
         run: mcpp build -p tray --release
 
-      - name: Report desktop app build result
-        if: steps.tray.outcome == 'failure'
+      - name: Test packaging helpers
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Test release programs
         run: |
-          echo "::warning::the desktop app did not build on this runner; the release will ship the command-line gateway only for ${{ matrix.platform }}"
+          mcpp test -p core --profile release
+          mcpp test -p cli --profile release
+          python3 scripts/check_cli_smoke.py --binary "$(python3 scripts/find_program.py)"
 
       - name: Install Linux packaging tools
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq patchelf
+
+      - name: Stage corresponding GNU and GLib runtime source
+        if: runner.os == 'Linux'
+        env:
+          VERSION: ${{ needs.check-release.outputs.version }}
+        run: |
+          mkdir -p dist-release
+          python3 scripts/stage_runtime_sources.py \
+            --output "dist-release/literouter-${VERSION}-linux-runtime-sources.tar.xz"
 
       - name: Package release assets
         env:
@@ -215,29 +225,28 @@ jobs:
           mkdir -p "$staging" dist-release
 
           if [ "$RUNNER_OS" = "Windows" ]; then
-            binary="$(find target -type f -name literouter.exe -path '*/bin/cli/*' | head -n 1)"
+            binary="$(python3 scripts/find_program.py)"
             cp "$binary" "$staging/literouter.exe"
             cp "$binary" "dist-release/$package.exe"
             cp "$binary" "dist-release/literouter-windows-x86_64.exe"
-            app="$(find target -type f -name literouter-tray.exe -path '*/bin/tray/*' | head -n 1)"
-            if [ -n "$app" ]; then
-              cp "$app" "$staging/literouter-tray.exe"
-            fi
+            app="$(python3 scripts/find_program.py --member tray --name literouter-tray)"
+            cp "$app" "$staging/literouter-tray.exe"
           else
-            binary="$(find target -type f -name literouter -path '*/bin/cli/*' | head -n 1)"
+            binary="$(python3 scripts/find_program.py)"
+            app="$(python3 scripts/find_program.py --member tray --name literouter-tray)"
             if [ "$RUNNER_OS" = "Linux" ]; then
-              python3 scripts/patch_elf_interp.py "$binary"
-              patchelf --set-rpath '$ORIGIN' "$binary" 2>/dev/null || true
+              python3 scripts/stage_linux_release.py --cli "$binary" --tray "$app" --output "$staging"
+              binary="$staging/literouter"
+            else
+              cp "$binary" "$staging/literouter"
+              cp "$app" "$staging/literouter-tray"
             fi
-            cp "$binary" "$staging/literouter"
             chmod 0755 "$staging/literouter"
             # The desktop app travels with the archive: it is the form most
             # users want, and keeping it beside the CLI binary means one
-            # download covers both. Its absence is not fatal — the headless
-            # front end does not need it — so a build that skipped it still
-            # produces a usable archive.
-            app="$(find target -type f -name literouter-tray -path '*/bin/tray/*' | head -n 1)"
-            if [ -n "$app" ]; then
+            # download covers both. The required desktop build above prevents
+            # advertising an app while silently publishing only the CLI.
+            if [ "$RUNNER_OS" != "Linux" ]; then
               cp "$app" "$staging/literouter-tray"
               chmod 0755 "$staging/literouter-tray"
             fi
@@ -245,9 +254,17 @@ jobs:
             cp "$binary" "dist-release/literouter-$PLATFORM"
           fi
 
+          mkdir -p "$staging/assets"
+          cp tray/assets/literouter-tray.png tray/assets/literouter-tray.ico "$staging/assets/"
+
           cp README.md README_en.md LICENSE "$staging/"
           cp scripts/install.sh scripts/install-macos.sh scripts/install-windows.ps1 "$staging/"
           cp NOTICE THIRD_PARTY_NOTICES.md "$staging/" 2>/dev/null || true
+          license_args=(--output "$staging/licenses")
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            license_args+=(--runtime-sources "dist-release/literouter-${VERSION}-linux-runtime-sources.tar.xz")
+          fi
+          python3 scripts/stage_licenses.py "${license_args[@]}"
           if [ "$ARCHIVE_TYPE" = "zip" ]; then
             (cd staging && 7z a -tzip "../dist-release/$package.zip" "$package")
           else
@@ -266,7 +283,8 @@ jobs:
         if: runner.os == 'macOS'
         env:
           VERSION: ${{ needs.check-release.outputs.version }}
-          # Optional: a Developer ID lets the bundle be signed and notarized.
+          # Optional: a Developer ID signs the bundle. Notarization is a
+          # separate operator-managed step, never implied by codesign alone.
           # Without it the script says so and leaves the bundle ad-hoc signed,
           # which still runs once the user clears the quarantine flag.
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
@@ -275,11 +293,7 @@ jobs:
           # The bundle wraps the desktop app, not the CLI: double-clicking a
           # bundle is what the .app exists for, and the CLI has no window to
           # show. The CLI still travels in the tarball beside it.
-          binary="$(find target -type f -name literouter-tray -path '*/bin/tray/*' | head -n 1)"
-          if [ -z "$binary" ]; then
-            echo "the desktop app was not built; skipping the .app bundle" >&2
-            exit 0
-          fi
+          binary="$(python3 scripts/find_program.py --member tray --name literouter-tray)"
           args=(--binary "$binary" --version "$VERSION" --output dist-release)
           if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
             args+=(--sign "$MACOS_SIGN_IDENTITY")
@@ -307,8 +321,9 @@ jobs:
           VERSION: ${{ needs.check-release.outputs.version }}
         run: |
           set -euo pipefail
-          binary="$(find target -type f -name literouter.exe -path '*/bin/*' | head -n 1)"
-          bash scripts/make_windows_installer.sh --binary "$binary" --version "$VERSION"
+          binary="$(python3 scripts/find_program.py)"
+          app="$(python3 scripts/find_program.py --member tray --name literouter-tray)"
+          bash scripts/make_windows_installer.sh --binary "$binary" --app "$app" --version "$VERSION"
           # Only the installer is new here; the .exe and .zip checksums were
           # written by the packaging step above, and rewriting them would be a
           # second, redundant pass over the same files.

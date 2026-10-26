@@ -17,8 +17,14 @@
 #pragma once
 
 #include <string>
+#include <filesystem>
 
 namespace lrtray {
+
+// The packaged Linux launcher supplies argv[0] even when a private ELF loader
+// is /proc/self/exe. Keep autostart and resources pointing at the launcher.
+void setExecutablePath(const std::filesystem::path &path);
+std::filesystem::path appExecutablePath();
 
 enum class AutostartState {
     // An entry exists and points at this executable.

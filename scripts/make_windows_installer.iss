@@ -25,6 +25,9 @@
 #ifndef SourceBinary
   #define SourceBinary "literouter.exe"
 #endif
+#ifndef ReleaseTag
+  #define ReleaseTag AppVersion
+#endif
 
 #define AppName        "literouter"
 ; The desktop app is the primary install target; the CLI ships beside it as the
@@ -52,12 +55,11 @@ DefaultGroupName={#AppName}
 ; claiming otherwise would put the binary in a 32-bit Program Files.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Per-machine by default, which is where a service-shaped tool belongs. The
-; override lets a user without admin rights install for themselves.
+; Per-user by default; explicitly requesting all users selects the system scope.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\dist-release
-OutputBaseFilename=literouter-{#AppVersion}-windows-x86_64-setup
+OutputBaseFilename=literouter-{#ReleaseTag}-windows-x86_64-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -89,20 +91,22 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; autostart moved to the desktop app's own --autostart flag, and a checkbox no
 ; [Code] section reads is a switch that does nothing — worse than not offering
 ; it.
-Name: "addtopath"; Description: "Add literouter to the system PATH (so `literouter` works in any terminal)"; GroupDescription: "Optional:"; Flags: unchecked
+Name: "addtopath"; Description: "Add literouter to PATH / 添加到 PATH"; GroupDescription: "Optional / 可选:"; Flags: unchecked
 
 [Files]
 Source: "{#SourceBinary}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
-; Present when the release build produced it. `skipifsourcedoesntexist` keeps a
-; CLI-only build installable instead of failing the whole installer.
+; Optional for a manually assembled CLI-only installer; required by the release
+; workflow. When passed, a missing app fails packaging rather than being hidden.
 #if SourceApp != ""
 Source: "{#SourceApp}"; DestDir: "{app}"; DestName: "literouter-tray.exe"; Flags: ignoreversion
+Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs
 #endif
 Source: "..\README.md";      DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "..\README_en.md";   DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE";        DestDir: "{app}"; Flags: ignoreversion
 Source: "..\NOTICE";         DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 ; The app first, because that is what most users want to click.
@@ -121,16 +125,28 @@ Name: "{group}\Uninstall literouter";          Filename: "{uninstallexe}"
 Filename: "{app}\README.md"; Description: "Open the README"; Flags: postinstall shellexec nowait skipifsilent
 
 [UninstallDelete]
-; Only what the installer itself created. The config (%APPDATA%\literouter) and
-; the state (%LOCALAPPDATA%\literouter) are the user's data and are named in
-; the uninstall message instead of being deleted.
-Type: filesandordirs; Name: "{app}"
+; Inno removes files recorded by [Files] itself. Never recursively delete the
+; application directory: untracked files there may also belong to the user.
+; This marker is created only when this installation actually adds PATH.
+Type: files; Name: "{app}\.literouter-path-added"
 
 [Code]
 // PATH is edited through the registry, not through `setx`, because setx
 // truncates at 1024 characters and would silently mangle a long PATH.
 const
   EnvironmentKey = 'System\CurrentControlSet\Control\Session Manager\Environment';
+
+function EnvironmentRoot: Integer;
+begin
+  if IsAdminInstallMode then Result := HKEY_LOCAL_MACHINE
+  else Result := HKEY_CURRENT_USER;
+end;
+
+function EnvironmentPath: string;
+begin
+  if IsAdminInstallMode then Result := EnvironmentKey
+  else Result := 'Environment';
+end;
 
 function PathContains(const Path, Dir: string): Boolean;
 var
@@ -144,13 +160,19 @@ procedure AddToPath(Dir: string);
 var
   Current: string;
 begin
-  if not RegQueryStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Current) then
+  if not RegQueryStringValue(EnvironmentRoot, EnvironmentPath, 'Path', Current) then
     Current := '';
   if PathContains(Current, Dir) then
     exit;
   if (Current <> '') and (Current[Length(Current)] <> ';') then
     Current := Current + ';';
-  RegWriteExpandStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Current + Dir);
+  if RegWriteExpandStringValue(EnvironmentRoot, EnvironmentPath, 'Path', Current + Dir) then
+  begin
+    if not SaveStringToFile(ExpandConstant('{app}\.literouter-path-added'), Dir, False) then
+      MsgBox('Could not record PATH ownership. Uninstall will preserve this PATH entry.', mbInformation, MB_OK);
+  end
+  else
+    MsgBox('Could not update PATH. Add the installation directory manually.', mbError, MB_OK);
 end;
 
 procedure RemoveFromPath(Dir: string);
@@ -158,7 +180,7 @@ var
   Current, Updated: string;
   At: Integer;
 begin
-  if not RegQueryStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Current) then
+  if not RegQueryStringValue(EnvironmentRoot, EnvironmentPath, 'Path', Current) then
     exit;
   At := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Current) + ';');
   if At = 0 then
@@ -170,7 +192,7 @@ begin
   // trimming one stray separator is cheaper than splitting and rejoining.
   if (Updated <> '') and (Updated[1] = ';') then
     Delete(Updated, 1, 1);
-  RegWriteExpandStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Updated);
+  RegWriteExpandStringValue(EnvironmentRoot, EnvironmentPath, 'Path', Updated);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -180,30 +202,13 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
   begin
-    // A running gateway holds its own binary open, and Windows refuses to
-    // delete a mapped executable. There is no `literouter shutdown`
-    // subcommand, so the graceful path is the admin endpoint the console's own
-    // button uses — POST /__literouter/shutdown — and the blunt one is
-    // taskkill for the case where the gateway is wedged or was started with a
-    // config the endpoint does not answer on.
-    //
-    // Both are best-effort: a failure means nothing was running, which is the
-    // ordinary case for someone uninstalling a tool they stopped using.
-    Exec(ExpandConstant('{sys}\curl.exe'), '-s -m 3 -X POST ' +
-         'http://127.0.0.1:8787/__literouter/shutdown', '', SW_HIDE,
-         ewWaitUntilTerminated, ResultCode);
-    Sleep(1500);
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExeName}', '',
-         SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // The desktop app runs the gateway in its own process, so stopping only the
-    // CLI binary would leave the port bound and the app's exe locked.
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM literouter-tray.exe', '',
-         SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    RemoveFromPath(ExpandConstant('{app}'));
+    // Inno Setup's Restart Manager owns files of THIS install. Never POST to a
+    // guessed port or taskkill by image name: another installation can be the
+    // operator's active gateway and is not this uninstaller's to stop.
+    if FileExists(ExpandConstant('{app}\.literouter-path-added')) then
+      RemoveFromPath(ExpandConstant('{app}'));
   end;
 end;

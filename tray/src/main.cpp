@@ -44,6 +44,9 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#if defined(__linux__)
+#include <dlfcn.h>
+#endif
 
 #include "eui_neo.h"
 #include "eui/platform.h"
@@ -66,6 +69,7 @@ namespace {
 struct Options {
     enum class Action { Run, EnableAutostart, DisableAutostart, ReportAutostart } action =
         Action::Run;
+    bool help = false;
 };
 
 Options parseArgs(int argc, char **argv) {
@@ -78,6 +82,10 @@ Options parseArgs(int argc, char **argv) {
             options.action = Options::Action::DisableAutostart;
         } else if (arg == "--autostart-status") {
             options.action = Options::Action::ReportAutostart;
+        } else if (arg == "--help" || arg == "-h") {
+            options.help = true;
+        } else {
+            throw std::runtime_error("unknown desktop argument: " + std::string{arg});
         }
     }
     return options;
@@ -102,14 +110,30 @@ extern "C" void handleSignal(int) { g_quit = 1; }
 // Reading it back from the server rather than from the config is what makes
 // `port: 0` (kernel-assigned) work.
 std::string consoleUrl(const literouter::ProxyServer &server) {
-    const int port = server.boundPort();
-    if (port <= 0) {
+    const auto snapshot = server.snapshot();
+    if (snapshot.port <= 0) {
         return {};
     }
-    return std::format("http://127.0.0.1:{}/ui/", port);
+    auto listener = server.config().server;
+    listener.host = snapshot.host;
+    listener.port = snapshot.port;
+    if (literouter::startsWith(snapshot.base_url, "https://")) listener.tls_cert_file = "active-https";
+    else listener.tls_cert_file.clear();
+    const auto base = literouter::runningServerBaseUrl(listener, {});
+    return base ? *base + "/ui/" : std::string{};
 }
 
 std::string iconPath() {
+#if defined(_WIN32)
+    // The Win32 tray backend calls ExtractIconEx, which expects the executable's
+    // embedded icon resource rather than a standalone PNG/ICO file.
+    return literouter::pathToUtf8(lrtray::appExecutablePath());
+#endif
+    const auto besideExecutable = lrtray::appExecutablePath().parent_path() / "assets" /
+        "literouter-tray.png";
+    std::error_code error;
+    if (std::filesystem::is_regular_file(besideExecutable, error))
+        return literouter::pathToUtf8(besideExecutable);
     // resolveResourcePath() looks next to the executable first, which is where
     // an installed bundle keeps it. The fallbacks cover a run straight out of
     // the build tree.
@@ -128,6 +152,11 @@ std::string iconPath() {
 }
 
 int run(const Options &options) {
+    if (options.help) {
+        std::printf("%s\n", std::string{literouter::i18n::tr(
+            "literouter-tray [--autostart|--no-autostart|--autostart-status|--help]")}.c_str());
+        return 0;
+    }
     // The autostart actions are decided before the gateway is started: asking
     // "is autostart on?" should not bind a port, and it should work on a machine
     // where the port is already taken by another instance.
@@ -159,20 +188,65 @@ int run(const Options &options) {
         // `literouter-tray --autostart` a no-op from their point of view.
     }
 
+#if defined(__linux__)
+    // The backend's initializeTray() succeeds without a watcher and waits
+    // indefinitely. Check first, before starting a windowless gateway. Resolve
+    // GIO dynamically from the same process dependency, without publishing
+    // third-party types through core or shelling out to the user's desktop.
+    void *gio = ::dlopen("libgio-2.0.so.0", RTLD_NOW | RTLD_LOCAL);
+    using Bus = void *(*)(int, void *, void **);
+    using Call = void *(*)(void *, const char *, const char *, const char *, const char *,
+                          void *, const void *, int, int, void *, void **);
+    const auto bus = gio ? reinterpret_cast<Bus>(::dlsym(gio, "g_bus_get_sync")) : nullptr;
+    const auto call = gio ? reinterpret_cast<Call>(::dlsym(gio, "g_dbus_connection_call_sync")) : nullptr;
+    void *connection = bus ? bus(2, nullptr, nullptr) : nullptr; // G_BUS_TYPE_SESSION
+    void *reply = connection && call ? call(connection, "org.kde.StatusNotifierWatcher",
+        "/StatusNotifierWatcher", "org.freedesktop.DBus.Peer", "Ping", nullptr, nullptr,
+        1, 1000, nullptr, nullptr) : nullptr; // no auto-start of another program
+    const bool watcher = reply != nullptr;
+    if (reply) {
+        const auto unref = reinterpret_cast<void (*)(void *)>(::dlsym(gio, "g_variant_unref"));
+        if (unref) unref(reply);
+    }
+    if (connection) {
+        const auto unref = reinterpret_cast<void (*)(void *)>(::dlsym(gio, "g_object_unref"));
+        if (unref) unref(connection);
+    }
+    if (gio) ::dlclose(gio);
+    if (!watcher) {
+        std::fprintf(stderr, "literouter: %s\n", std::string{literouter::i18n::tr(
+            "no StatusNotifierWatcher is running; enable a tray panel or use the CLI gateway")}.c_str());
+        return 1;
+    }
+#endif
+
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
 
-    // loadOrSeed: a first run writes the seed config and keeps going, which is
+    // A first run writes the seed config and keeps going, which is
     // what "double-click the app" has to mean. A config that exists but cannot
     // be parsed is a different case and is reported rather than replaced — the
     // user may have hand-edited it.
-    const auto store = literouter::ConfigStore::loadOrSeed(literouter::defaultConfigPath());
+    auto store = literouter::ConfigStore::load(literouter::defaultConfigPath());
     if (!store) {
         std::fprintf(stderr, "literouter: %s\n", store.error().c_str());
         return 1;
     }
 
     literouter::AppConfig config = store->config();
+    const auto validation = literouter::validate(config);
+    if (!validation.ok()) {
+        std::fprintf(stderr, "literouter: %s\n", validation.summary().c_str());
+        return 1;
+    }
+    if (!store->existsOnDisk()) {
+        const auto saved = store->save();
+        if (!saved) {
+            std::fprintf(stderr, "literouter: %s\n", saved.error().c_str());
+            return 1;
+        }
+        store->setExistsOnDisk(true);
+    }
 
     // ── Adopt an instance that is already serving, instead of losing to it ──
     //
@@ -190,10 +264,14 @@ int run(const Options &options) {
     bool ownsGateway = true;
     std::string url;
 
-    const std::string probeUrl = std::format("http://{}:{}", config.server.host,
-                                             config.server.port);
+    const auto resolved = literouter::runningServerBaseUrl(config.server, store->path());
+    if (!resolved && resolved.error() != "no running instance found for this config's dynamic port") {
+        std::fprintf(stderr, "literouter: %s\n", std::string{literouter::i18n::tr(resolved.error())}.c_str());
+        return 1; // ambiguity must not start a third instance on another random port
+    }
+    const std::string probeUrl = resolved ? *resolved : std::string{};
     const literouter::AdminStatus existing =
-        literouter::fetchStatus(probeUrl, config.server.api_key);
+        resolved ? literouter::fetchStatus(probeUrl, config.server.api_key) : literouter::AdminStatus{};
     if (existing.reachable && existing.snapshot.running) {
         ownsGateway = false;
         // The snapshot's own base_url, not the probe URL: when the config says
@@ -209,12 +287,10 @@ int run(const Options &options) {
     if (ownsGateway) {
         server.setConfigPath(literouter::pathToUtf8(literouter::defaultConfigPath()));
         if (const auto started = server.start(config); !started) {
-            // Not "open it yourself" — this program cannot say that to anyone.
-            // Report on stderr for the case where it WAS started from a terminal,
-            // and still bring up the tray so the user has the icon and Show works
-            // against whatever is there.
+            // There is no live console to open. Report the error to a terminal
+            // caller and exit, rather than keeping a dead tray/browser URL.
             std::fprintf(stderr, "literouter: %s\n", started.error().c_str());
-            url = probeUrl + "/ui/";
+            return 1; // no dead tray or browser URL when the listener could not start
         } else {
             url = consoleUrl(server);
         }
@@ -286,6 +362,7 @@ int run(const Options &options) {
 
 int main(int argc, char **argv) {
     try {
+        lrtray::setExecutablePath(literouter::pathFromUtf8(argv[0]));
         return run(parseArgs(argc, argv));
     } catch (const std::exception &error) {
         std::fprintf(stderr, "literouter: %s\n", error.what());
