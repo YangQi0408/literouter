@@ -78,6 +78,10 @@ inline int lrSetNonBlocking(lr_socket_t socket) {
     u_long mode = 1;
     return ::ioctlsocket(socket, FIONBIO, &mode);
 }
+inline int lrSetBlocking(lr_socket_t socket) {
+    u_long mode = 0;
+    return ::ioctlsocket(socket, FIONBIO, &mode);
+}
 
 inline int lrClose(lr_socket_t socket) {
     return ::closesocket(socket);
@@ -159,6 +163,9 @@ constexpr lr_socket_t lr_invalid_socket = -1;
 inline int lrSetNonBlocking(lr_socket_t socket) {
     return ::fcntl(socket, F_SETFL, ::fcntl(socket, F_GETFL, 0) | O_NONBLOCK);
 }
+inline int lrSetBlocking(lr_socket_t socket) {
+    return ::fcntl(socket, F_SETFL, ::fcntl(socket, F_GETFL, 0) & ~O_NONBLOCK);
+}
 
 inline int lrClose(lr_socket_t socket) { return ::close(socket); }
 
@@ -194,7 +201,17 @@ inline int lrSetLingerReset(lr_socket_t socket) {
 }
 
 inline long long lrSend(lr_socket_t socket, const char *data, std::size_t length) {
+#if defined(__APPLE__)
+    const int one = 1;
+    ::setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+    return ::send(socket, data, length, 0);
+#elif defined(MSG_NOSIGNAL)
     return ::send(socket, data, length, MSG_NOSIGNAL);
+#else
+    // On systems without a per-send suppression flag the test process may
+    // supply its own SIGPIPE handler; Windows and Darwin have separate branches.
+    return ::send(socket, data, length, 0);
+#endif
 }
 
 inline long long lrRecv(lr_socket_t socket, char *data, std::size_t length) {

@@ -2,7 +2,7 @@
 
 Every endpoint also supports HTTPS on the same listener: configure `server.tls_cert_file` and `server.tls_key_file`, restart, and use `https://` in the URLs below. Management clients verify the chain and hostname; private CAs use `LITEROUTER_CA_BUNDLE`. See [configuration](configuration.md#https-listener).
 
-This document covers `literouter`'s inbound client endpoints, supported upstream provider protocols, automatic cross-protocol translation, zero-overhead passthrough mechanism, and administrative management APIs.
+This document covers client endpoints, upstream protocols, conversion and matching-wire passthrough, and management APIs. Routing/validation still parses JSON and streaming uses bounded queues; this is not a zero-overhead promise.
 
 ---
 
@@ -20,7 +20,7 @@ This document covers `literouter`'s inbound client endpoints, supported upstream
 - [Upstream Provider Protocols](#upstream-provider-protocols)
   - [Supported Protocols](#supported-protocols)
   - [Automatic Path Deduction](#automatic-path-deduction)
-- [Cross-Protocol Adapters & Zero-Overhead Passthrough](#cross-protocol-adapters--zero-overhead-passthrough)
+- [Cross-Protocol Adapters & Wire Passthrough](#cross-protocol-adapters--wire-passthrough)
   - [Same-Protocol Fast Path](#same-protocol-fast-path)
   - [Cross-Protocol Bidirectional Translation](#cross-protocol-bidirectional-translation)
 - [Admin API (`/__literouter`)](#admin-api-__literouter)
@@ -165,7 +165,7 @@ Configure `providers[].protocol` to specify how to talk to each upstream service
    - This protocol is **stateful**: the items a response returns (`msg_…`, `rs_…`, tool calls) and the encrypted reasoning chain `encrypted_content` are stored and encrypted by the server that created them. When the upstream balances across several Azure OpenAI resources without session stickiness, the next turn of a conversation that lands on a different resource is refused with 400 (`The requested item was created under a different Azure OpenAI resource` / `The encrypted content for item rs_… could not be verified`).
    - The remedy is `providers[].strip_responses_state: true`: before forwarding, it removes every input item's `id`, any `encrypted*` field on an item, and the top-level `previous_response_id`, so each request becomes a stateless shape any resource in the pool accepts. Message text, `call_id` and tool arguments pass through unchanged, and the rest of the same-protocol fast path still holds (a request that actually had fields removed is re-serialised once, and the request log records how many). The cost is that the model no longer continues a hidden reasoning chain across turns and reasons again each turn. The option is off by default, and a relay whose wire shape is not Responses gets a validation warning for it. Ported from [codex-strip-proxy](https://github.com/AnnaofArendelle/codex-strip-proxy) by AnnaofArendelle.
 5. **`azure`** (Azure OpenAI):
-   - The body is **exactly OpenAI's**, so it takes the same-protocol fast path with zero parsing. Only the path and the credential differ: the model name is a **deployment** in the path, an `api-version` query is mandatory, and the key goes in an `api-key` header (Azure rejects a bearer).
+   - The body matches OpenAI's shape, avoiding protocol conversion. Paths/auth differ: a deployment name, mandatory api-version query and api-key header.
    - Path: `/openai/deployments/{model}/chat/completions?api-version={api_version}`; an empty `api_version` uses `2024-10-21`.
    - `base_url` is the resource root, e.g. `https://my-resource.openai.azure.com`.
 6. **`vertex`** (Vertex AI):
@@ -201,14 +201,19 @@ When `chat_path` is left empty in provider configuration, `literouter` resolves 
 
 ---
 
-## Cross-Protocol Adapters & Zero-Overhead Passthrough
+## Cross-Protocol Adapters & Wire Passthrough
 
 ### Same-Protocol Fast Path
 
 When the **client request protocol** matches the **upstream provider protocol** (e.g. OpenAI Chat Completions in and `openai` provider out):
 
-- **Zero JSON DOM Overhead**: The payload streams directly without constructing an internal JSON tree (unless model renaming is required);
-- **Zero Copy SSE Forwarding**: Upstream SSE data blocks are streamed directly into the client socket with zero intermediate allocation, reaching theoretical network limits.
+- **Matching-wire passthrough**: Routing/validation parses JSON, but without conversion the original wire bytes are preferred; model aliases or state stripping can rewrite the body.
+- **Bounded streaming relay**: Data goes through a bounded string queue rather than waiting for the whole answer. Buffering/copies still exist.
+
+All automatic upstream redirects, including same-origin ones, are refused to
+avoid credential/prompt replay and downgrade. Buffered/streamed requests can
+fail over before commitment; probes report the redirect status and reason.
+Configure the final Base URL.
 
 > The one exception is `strip_responses_state`: a relay that has it on needs the request body rewritten before forwarding (see `openai_responses` above), which costs one JSON parse and one serialisation for that request. With the option off — or with nothing to strip — the client's original bytes are what goes upstream.
 
@@ -230,7 +235,7 @@ Large prompts are sent immediately without automatically enabling `Expect: 100-c
 
 > **Upstream connection reuse**: both legs draw their connections from a per-worker-thread pool (one per relay, keyed by the root, the two timeouts and the CA bundle), so consecutive requests do not pay for a TCP and TLS handshake over and over — the streamed leg used to build a fresh connection per attempt, which put the handshake cost on the leg carrying nearly all the traffic. A transfer that ends cleanly leaves its connection in the pool; an aborted or transport-failed transfer retires it, so the next request is only ever handed a clean socket. httplib probes a socket before reusing it (including a TLS peer-closed check), so a relay dropping an idle connection costs one reconnect rather than a failed request.
 
-> **Token counts in streams**: to account for usage, every chunk that passes is substring-matched — and a chunk that ends on an event boundary without mentioning `usage` is not copied and not parsed at all (the fast path). Only a chunk that mentions `usage` / `usageMetadata` is parsed as JSON (for OpenAI that is usually the final chunk alone), and only an event split across two reads enters the bounded carry buffer. So both the "zero JSON overhead" and the "zero intermediate allocation" above still hold in substance. Counts merge by taking the **largest** seen: Anthropic reports input and output separately in `message_start` and `message_delta`, Gemini reports cumulatively on every chunk, and OpenAI reports once at the tail — but only when the client asked for `stream_options.include_usage`, which `literouter` deliberately does not inject on the client's behalf. A stream that never reports usage counts as zero; nothing is estimated.
+> **Token counts in streams**: the observer skips complete events without usage and parses events likely to report counts. Split events use bounded carry storage. Counts take the largest reported value; Anthropic splits input/output, Gemini reports cumulatively, and OpenAI needs the client to request stream_options.include_usage. The forwarding queue still copies strings, so this does not imply end-to-end zero copying. Missing usage counts as zero, never a guess.
 
 ### Cross-Protocol Bidirectional Translation
 
@@ -328,7 +333,8 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
       "latency_ms_last": 310.5,
       "latency_ms_avg": 345.2,
       "latency_ms_p95": 0.0,
-      "last_used_unix": 1758003600.5
+      "last_used_unix": 1758003600.5,
+      "cost_usd": 0.075
     }
   ],
   "model_stats": [
@@ -371,7 +377,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 - **Request**: `GET /__literouter/logs?since=<id>&limit=<n>`
 - **Parameters**:
   - `since`: Retrieve logs strictly newer than sequence ID `id`;
-  - `limit`: Maximum number of entries (default 100).
+  - `limit`: Maximum number of entries (default 500, capped at 2000).
 
   Each entry keeps the ingress and egress context of the request. `method` / `path` / `ingress_protocol` describe what the client actually called; `client_ip` / `user_agent` identify the source; `model` is the logical name the client requested, while `upstream_model` is the name actually sent after route renaming and `upstream_protocol` is the selected relay's protocol. `request_bytes` and `bytes` are the upstream request size and client response size respectively. `prompt_tokens` / `completion_tokens` / `cost_usd` come from usage the upstream reported and the locally configured prices; they are 0 for media or protocols that report no usage. `cache_status` is present only when the local response cache participated, as `hit` or `miss`.
 
@@ -394,7 +400,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 ### 3. Hot Reload Configuration
 
 - **Request**: `POST /__literouter/reload`
-- **Response**: `{"ok": true, "message": "reloaded successfully"}`
+- **Response**: `{"ok": true, "summary": "no issues", "issues": []}`. Validation errors return 422 with the report and leave the active configuration intact.
 
 ### 4. Reset Telemetry & Circuit Breakers
 
@@ -411,7 +417,7 @@ Neither the admin API nor the web console sends CORS headers; only the client-fa
 
 - **Request**: `POST /__literouter/probe`
 - **Body** (either form):
-  - `{"provider": "<id>"}` — probes a **configured** relay; the secret is resolved server-side (`resolveSecret`) and never travels over the wire;
+  - `{"provider": "<id>"}` — uses the complete saved config; the stored key is not returned to the browser, but is sent to the selected upstream in its protocol's auth header;
   - a provider object (`base_url`, `api_key`, `protocol`, `headers`, `timeout_sec`) — probes an unsaved entry, which is what a form wants.
 - **Action**: Runs a live connectivity probe and fetches available model names from upstream.
 
@@ -484,4 +490,4 @@ While `literouter serve` runs, the same port carries a modern web console built 
 - **Auth**: The shell holds no data, so it loads without a key. Console data requires `server.api_key`. The first authenticated visit opens a key prompt and the key stays in that browser's localStorage.
 - **Packaging**: Frontend build artifacts (under `web/dist/`) are compiled into the binary with C++23 `#embed`, so a server needs nothing but `literouter`. Where `#embed` is unavailable (an ISO-strict GCC, for instance), set `LITEROUTER_WEB_DIR` to a directory holding the same four files (e.g. `web/dist`).
 - **Capabilities**: Live metric tiles (requests, success rate, token rates), relay health matrix with one-click probing, route candidate ordering and editing, full visual configuration editing and safe round-trip persistence, copy-ready Continue / Cursor snippets, incremental request log streaming (filter by level, kind, or keyword, pause/clear), dark/light theme toggle, and English/Chinese i18n.
-- **Security**: Same-origin only, admin endpoints never advertise CORS headers; secrets are used solely for browser-to-localhost requests and literal keys never leave the server.
+- **Security**: Management data is same-origin and stored dedicated credentials are redacted. Model traffic and its necessary upstream auth headers still go to the user-selected provider; this is not a claim that every key stays off the network.

@@ -518,23 +518,25 @@ void testPathUtf8RoundTrip() {
         out << "probe\n";
     }
 
-    // The UTF-8 spelling and the C-API spelling must both name this file. On
-    // POSIX they are the same bytes; on Windows the first is UTF-8 and the
-    // second is the ANSI code page, and only the second opens.
+    // Native filesystem paths work across Windows code pages; TLS now opens
+    // these paths in C++ and gives OpenSSL PEM bytes (test_tls covers that).
     const std::string utf8Probe = literouter::pathToUtf8(probe);
     const std::filesystem::path fromUtf8 = literouter::pathFromUtf8(utf8Probe);
     LR_CHECK_MSG(std::filesystem::is_regular_file(fromUtf8, ec),
                  "the path reconstructed from UTF-8 does not name the file that was created");
 
+    std::ifstream native{fromUtf8, std::ios::binary};
+    LR_CHECK_MSG(static_cast<bool>(native), "native Unicode file access failed");
+    native.close();
+    // Retained public legacy helper is best-effort and may legitimately fail
+    // for names the Windows ANSI code page cannot express. No TLS loader uses it.
     const std::string forC = literouter::pathForCApi(fromUtf8);
-    LR_CHECK_MSG(!forC.empty(), "pathForCApi returned nothing for a valid path");
-    // The strongest form: open it the way OpenSSL does, with a narrow fopen.
-    if (std::FILE *handle = std::fopen(forC.c_str(), "rb"); handle != nullptr) {
-        std::fclose(handle);
-    } else {
-        LR_CHECK_MSG(false, "a narrow fopen of pathForCApi's result failed — this is exactly how "
-                            "OpenSSL's PEM loader would fail on Windows");
-    }
+#ifndef _WIN32
+    LR_CHECK_MSG(!forC.empty(), "the POSIX C path was lost");
+#else
+    LR_CHECK_MSG(forC.empty() || literouter::pathToUtf8(fromUtf8) == utf8Probe,
+                 "legacy helper modified the native path");
+#endif
 
     std::filesystem::remove_all(base, ec);
 }

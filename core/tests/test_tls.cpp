@@ -417,7 +417,7 @@ class TlsFixture {
 public:
     explicit TlsFixture(bool expired = false, bool wrong_host = false) {
         directory_ = std::filesystem::temp_directory_path() /
-                     ("literouter-listener-tls-" + literouter::hexId(6));
+                     literouter::pathFromUtf8("literouter-listener-tls-\u4e2d\u6587-" + literouter::hexId(6));
         std::filesystem::create_directories(directory_);
         ca_path = directory_ / "ca.pem";
         cert_path = directory_ / "chain.pem";
@@ -429,10 +429,16 @@ public:
         auto cert = newCert(key.get(), ca.get(), ca_key.get(), false, expired, wrong_host);
         if (!ca || !cert) return;
         valid = writeCert(ca_path, ca.get()) && writeCert(cert_path, cert.get());
-        const std::unique_ptr<BIO, decltype(&BIO_free)> output{
-            BIO_new_file(key_path.string().c_str(), "w"), BIO_free};
+        const std::unique_ptr<BIO, decltype(&BIO_free)> output{BIO_new(BIO_s_mem()), BIO_free};
         valid = valid && output && PEM_write_bio_PrivateKey(output.get(), key.get(), nullptr,
                                                            nullptr, 0, nullptr, nullptr) == 1;
+        if (valid) {
+            char *bytes = nullptr;
+            const auto size = BIO_get_mem_data(output.get(), &bytes);
+            std::ofstream file{key_path, std::ios::binary};
+            file.write(bytes, size);
+            valid = static_cast<bool>(file);
+        }
     }
     ~TlsFixture() {
         std::error_code ec;
@@ -443,8 +449,8 @@ public:
         config.server.port = 0;
         config.server.persist_telemetry = false;
         config.server.api_key = "tls-test-admin-key";
-        config.server.tls_cert_file = cert_path.string();
-        config.server.tls_key_file = key_path.string();
+        config.server.tls_cert_file = literouter::pathToUtf8(cert_path);
+        config.server.tls_key_file = literouter::pathToUtf8(key_path);
         return config;
     }
     bool valid = false;
@@ -494,9 +500,13 @@ private:
         return cert;
     }
     static bool writeCert(const std::filesystem::path &path, X509 *cert) {
-        const std::unique_ptr<BIO, decltype(&BIO_free)> output{
-            BIO_new_file(path.string().c_str(), "w"), BIO_free};
-        return output && PEM_write_bio_X509(output.get(), cert) == 1;
+        const std::unique_ptr<BIO, decltype(&BIO_free)> output{BIO_new(BIO_s_mem()), BIO_free};
+        if (!output || PEM_write_bio_X509(output.get(), cert) != 1) return false;
+        char *bytes = nullptr;
+        const auto size = BIO_get_mem_data(output.get(), &bytes);
+        std::ofstream file{path, std::ios::binary};
+        file.write(bytes, size);
+        return static_cast<bool>(file);
     }
 };
 
@@ -506,20 +516,24 @@ void testHttpsListener() {
     LR_CHECK(fixture.valid);
     if (!fixture.valid) return;
     lr_test::EnvGuard state_dir{"LITEROUTER_STATE_DIR"};
-    state_dir.assign((fixture.ca_path.parent_path() / "state").string());
+    state_dir.assign(literouter::pathToUtf8(fixture.ca_path.parent_path() / "state"));
     CaEnvironment environment;
     environment.clearAll();
-    environment.literouter().assign(fixture.ca_path.string());
+    environment.literouter().assign(literouter::pathToUtf8(fixture.ca_path));
     auto config = fixture.config();
     LR_CHECK(literouter::validate(config).ok());
     literouter::ProxyServer proxy;
+    const auto configPath = fixture.ca_path.parent_path() / "gateway.json";
+    proxy.setConfigPath(literouter::pathToUtf8(configPath));
     const auto started = proxy.start(config);
     LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
     if (!started) return;
     const auto base = std::format("https://127.0.0.1:{}", proxy.boundPort());
     LR_CHECK_EQ(proxy.snapshot().base_url, base);
     httplib::Client client{base};
-    client.set_ca_cert_path(fixture.ca_path.string());
+    std::ifstream caInput{fixture.ca_path, std::ios::binary};
+    const std::string caPem{std::istreambuf_iterator<char>{caInput}, std::istreambuf_iterator<char>{}};
+    client.set_ca_cert_store(httplib::tls::create_ca_store(caPem.data(), caPem.size()));
     client.enable_server_certificate_verification(true);
     client.set_connection_timeout(2);
     client.set_read_timeout(2);
@@ -532,6 +546,11 @@ void testHttpsListener() {
     const auto status = literouter::fetchStatus(base, config.server.api_key);
     LR_CHECK_MSG(status.reachable, status.error);
     LR_CHECK_EQ(status.snapshot.base_url, base);
+    // Dynamic discovery must retain HTTPS and verify this exact config path.
+    const auto dynamic = literouter::runningServerBaseUrl(config.server, configPath);
+    LR_CHECK_MSG(dynamic && dynamic->starts_with("https://") &&
+                 literouter::fetchStatus(*dynamic, config.server.api_key).reachable,
+                 dynamic ? *dynamic : dynamic.error());
     const auto logs = literouter::fetchLogs(base, 0, 10, config.server.api_key);
     LR_CHECK_MSG(logs.reachable, logs.error);
     const auto reset = literouter::adminPost(base, "/reset-stats", "", config.server.api_key);
@@ -565,7 +584,7 @@ void testHttpsListener() {
     plain_config.server.tls_key_file.clear();
     LR_CHECK(!other.start(plain_config));
 
-    environment.literouter().assign(fixture.ca_path.string());
+    environment.literouter().assign(literouter::pathToUtf8(fixture.ca_path));
     // Editing to HTTP must save successfully but leave the active socket and
     // status HTTPS until stop/start. This exercises the real Web save path.
     plain_config.server.host = "localhost";
@@ -594,7 +613,7 @@ void testInvalidListenerCredentials() {
     LR_CHECK(good.valid && expired.valid && wrong_host.valid);
     if (!good.valid || !expired.valid || !wrong_host.valid) return;
     lr_test::EnvGuard state_dir{"LITEROUTER_STATE_DIR"};
-    state_dir.assign((good.ca_path.parent_path() / "state").string());
+    state_dir.assign(literouter::pathToUtf8(good.ca_path.parent_path() / "state"));
     auto bad = good.config();
     literouter::ProxyServer proxy;
     bad.server.tls_key_file.clear();
@@ -603,20 +622,33 @@ void testInvalidListenerCredentials() {
     bad = good.config();
     bad.server.tls_cert_file = "relative.pem";
     LR_CHECK(!proxy.start(bad));
-    bad.server.tls_cert_file = good.cert_path.string() + ".missing";
+    bad.server.tls_cert_file = literouter::pathToUtf8(good.cert_path) + ".missing";
     LR_CHECK(!proxy.start(bad));
     const TempFile malformed;
     bad.server.tls_cert_file = malformed.path().string();
     LR_CHECK(!proxy.start(bad));
     bad = good.config();
-    bad.server.tls_key_file = wrong_host.key_path.string();
+    bad.server.tls_key_file = literouter::pathToUtf8(wrong_host.key_path);
     LR_CHECK(!proxy.start(bad));
     LR_CHECK(!proxy.start(expired.config()));
+
+    {
+        const auto brokenChain = good.cert_path.parent_path() / "broken-chain.pem";
+        std::ifstream source{good.cert_path, std::ios::binary};
+        const std::string leaf{std::istreambuf_iterator<char>{source}, std::istreambuf_iterator<char>{}};
+        std::ofstream staged{brokenChain, std::ios::binary};
+        staged << leaf << "\n-----BEGIN CERTIFICATE-----\nnot-base64\n-----END CERTIFICATE-----\n";
+        staged.close();
+        auto broken = good.config();
+        broken.server.tls_cert_file = literouter::pathToUtf8(brokenChain);
+        LR_CHECK_MSG(!literouter::validate(broken).ok() && !proxy.start(broken),
+                     "a malformed intermediate certificate was accepted as EOF");
+    }
 
     // A valid chain is insufficient when SAN does not cover the URL hostname.
     CaEnvironment environment;
     environment.clearAll();
-    environment.literouter().assign(wrong_host.ca_path.string());
+    environment.literouter().assign(literouter::pathToUtf8(wrong_host.ca_path));
     const auto started = proxy.start(wrong_host.config());
     LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
     if (started) {

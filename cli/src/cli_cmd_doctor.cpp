@@ -303,7 +303,8 @@ void runDoctor(Context &ctx) {
     // 6. is something already listening on the configured host:port?
     {
         Step step{.number = 6, .title = std::string(literouter::i18n::tr("listener"))};
-        const std::string url = baseUrlOf(config);
+        const auto resolved = literouter::runningServerBaseUrl(config.server, path);
+        const std::string url = resolved ? *resolved : baseUrlOf(config);
         const literouter::AdminStatus status = literouter::fetchStatus(url, config.server.api_key);
         if (status.reachable) {
             step.status = StepStatus::Pass;
@@ -320,8 +321,9 @@ void runDoctor(Context &ctx) {
                 literouter::pathToUtf8(path), config.server.port));
         } else {
             step.status = StepStatus::Pass;
-            step.detail = std::format("nothing is listening at {} ({}) — the port is free", url,
-                                      status.error);
+            step.detail = config.server.port == 0
+                ? std::string{literouter::i18n::tr("no dynamic instance found; serve will allocate a port")}
+                : std::format("nothing is listening at {} ({}) — the port is free", url, status.error);
         }
         steps.push_back(std::move(step));
     }

@@ -3,6 +3,8 @@
 module;
 
 #include <openssl/ssl.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
 
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -25,6 +27,8 @@ module;
 module literouter.core;
 
 import std;
+
+#include "lr_tls.h"
 
 namespace literouter {
 
@@ -454,7 +458,7 @@ ValidationReport validate(const AppConfig &config) {
             if (ctx) SSL_CTX_set_default_passwd_cb(ctx.get(),
                 [](char *, int, int, void *) -> int { return 0; });
             if (!ctx ||
-                SSL_CTX_use_certificate_chain_file(ctx.get(), pathForCApi(cert_path).c_str()) != 1) {
+                !detail::loadCertificateChain(ctx.get(), cert_path)) {
                 addIssue(report, ValidationIssue::Level::Error, "server.tls_cert_file",
                          "cannot load the PEM certificate chain");
             } else {
@@ -464,9 +468,7 @@ ValidationReport validate(const AppConfig &config) {
                     addIssue(report, ValidationIssue::Level::Error, "server.tls_cert_file",
                              "TLS certificate is expired, not yet valid, or has invalid dates");
                 }
-                if (SSL_CTX_use_PrivateKey_file(ctx.get(), pathForCApi(key_path).c_str(),
-                                                SSL_FILETYPE_PEM) != 1 ||
-                    SSL_CTX_check_private_key(ctx.get()) != 1) {
+                if (!detail::loadPrivateKey(ctx.get(), key_path)) {
                     addIssue(report, ValidationIssue::Level::Error, "server.tls_key_file",
                              "cannot load an unencrypted PEM private key matching the certificate");
                 }
@@ -601,6 +603,12 @@ ValidationReport validate(const AppConfig &config) {
         } else if (!looksLikeUrl(entry.base_url)) {
             addIssue(report, ValidationIssue::Level::Error, where + ".base_url",
                      "base_url must start with http:// or https://");
+        } else {
+            std::string root, prefix, scheme;
+            if (!splitBaseUrl(entry.base_url, root, prefix, scheme)) {
+                addIssue(report, ValidationIssue::Level::Error, where + ".base_url",
+                         "base_url must have a valid host and port, without embedded credentials");
+            }
         }
 
         if (isSecretReference(entry.api_key)) {
@@ -653,7 +661,7 @@ ValidationReport validate(const AppConfig &config) {
                              "an access token");
                 } else {
                     std::error_code ec;
-                    if (!std::filesystem::is_regular_file(entry.credentials_file, ec)) {
+                    if (!std::filesystem::is_regular_file(pathFromUtf8(entry.credentials_file), ec)) {
                         addIssue(report, ValidationIssue::Level::Error,
                                  where + ".credentials_file",
                                  "credentials_file is not a readable regular file");

@@ -5,11 +5,16 @@
 module;
 
 #include <httplib.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
 
 module literouter.core;
 
 import std;
 import nlohmann.json;
+
+#include "lr_tls.h"
+#include "lr_http_tls.h"
 
 namespace literouter {
 
@@ -220,7 +225,12 @@ void reportProxyWarningOnce(const std::string &warning) {
 
 void configure(h::Client &client, const ProviderConfig &provider) {
     reportProxyWarningOnce(resolveUpstreamProxy().warning);
-    client.set_follow_location(true);
+    // A relay URL is an explicit credential boundary. Even a same-host HTTP
+    // redirect can downgrade TLS or select another account; httplib strips only
+    // generic Authorization/Cookie on cross-origin redirects, not API-key or
+    // operator-defined credentials. Require the operator to configure the final
+    // URL instead of replaying prompts and credentials to a Location target.
+    client.set_follow_location(false);
     // Blocking mode: the proxy's own worker thread is the concurrency unit, so
     // httplib should not peel off a second one per request.
     client.set_connection_timeout(provider.connect_timeout_sec, 0);
@@ -256,12 +266,11 @@ void configure(h::Client &client, const ProviderConfig &provider) {
     // store is a decision rather than a default; LITEROUTER_CA_BUNDLE covers it,
     // and resolveCaBundle() covers the far more common case of mcpp's
     // source-built OpenSSL not knowing where this machine keeps its roots.
-    if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
-        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
-        // which opens the file through the C library's narrow-path call — the
-        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
-        client.set_ca_cert_path(bundle.string());
+    std::string root, prefix, scheme;
+    if (splitBaseUrl(provider.base_url, root, prefix, scheme) && scheme == "https") {
+        if (const auto bundle = resolveCaBundle(); !bundle.empty()) detail::applyCaBundle(client, bundle);
         client.enable_server_certificate_verification(true);
+        client.enable_server_hostname_verification(true);
     }
 }
 
@@ -296,7 +305,7 @@ constexpr std::size_t kMaxPooledConnectionsPerThread = 8;
 // every upstream request. Resolved once per process; if the user changes
 // LITEROUTER_CA_BUNDLE they restart the proxy anyway.
 const std::string& cachedCaBundlePath() {
-    static const std::string path = resolveCaBundle().string();
+    static const std::string path = pathToUtf8(resolveCaBundle());
     return path;
 }
 
@@ -318,7 +327,8 @@ std::string poolKey(std::string_view root, const ProviderConfig &provider) {
         // that is then reused — and a map key is a long-lived string that has no
         // business holding a credential. Host, port and username are what
         // distinguish one proxy endpoint from another.
-        proxy_part = std::format("{}://{}@{}", proxy.scheme, proxy.username, proxy.host);
+        proxy_part = std::format("{}://{}@{}:{}", proxy.scheme, proxy.username, proxy.host,
+                                 proxy.port);
         for (const auto &pattern : resolveNoProxyList()) {
             proxy_part += ',';
             proxy_part += pattern;
@@ -343,6 +353,7 @@ std::shared_ptr<h::Client> acquireClientHandle(std::string_view root,
         g_connection_pool.clear();
     }
     auto client = std::make_shared<h::Client>(std::string{root});
+    if (!client->is_valid()) return client;
     configure(*client, provider);
     return g_connection_pool.emplace(key, std::move(client)).first->second;
 }
@@ -415,6 +426,7 @@ UpstreamResult upstreamPostRaw(const ProviderConfig &provider, std::string_view 
     if (!content_type.empty()) header_set.put("Content-Type", std::string{content_type});
     const auto headers = header_set.toHttplib();
     const auto attempt = [&](h::Client &client) {
+        if (!client.is_valid()) return h::Result{nullptr, h::Error::Connection};
         // HeaderSet already selected the content type. Post's MIME argument
         // appends another header instead of replacing it, so leave it empty.
         return client.Post(target, headers, std::string{body}, "");
@@ -449,6 +461,11 @@ UpstreamResult upstreamPostRaw(const ProviderConfig &provider, std::string_view 
         return out;
     }
 
+    if (result->status >= 300 && result->status < 400 && result->has_header("Location")) {
+        out.error = "upstream redirects are disabled; configure the final base_url";
+        if (pooled) evictClient(key);
+        return out;
+    }
     out.ok = true;
     out.status = result->status;
     out.body = result->body;
@@ -572,6 +589,10 @@ ProviderProbe probeProvider(const ProviderConfig &provider, int timeout_sec) {
     }
 
     h::Client client{root};
+    if (!client.is_valid()) {
+        probe.detail = "cannot initialize upstream client";
+        return probe;
+    }
     configure(client, provider);
     client.set_keep_alive(false); // a one-shot probe should not leave a socket behind
     client.set_read_timeout(timeout_sec, 0);
@@ -594,6 +615,11 @@ ProviderProbe probeProvider(const ProviderConfig &provider, int timeout_sec) {
 
     probe.reachable = true;
     probe.status = result->status;
+
+    if (result->status >= 300 && result->status < 400 && result->has_header("Location")) {
+        probe.detail = "upstream redirects are disabled; configure the final base_url";
+        return probe;
+    }
 
     if (result->status >= 200 && result->status < 300) {
         // `data[].id` is the OpenAI shape; a relay that answers with a bare

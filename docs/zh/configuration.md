@@ -16,7 +16,7 @@
   - [路由规则配置 (`routes`)](#路由规则配置-routes)
 - [密钥安全解析机制](#密钥安全解析机制)
   - [支持的语法格式](#支持的语法格式)
-  - [绝对不可逆（零泄露）原则](#绝对不可逆零泄露原则)
+  - [密钥引用保留与安全边界](#密钥引用保留与安全边界)
 - [配置校验引擎 (Validation)](#配置校验引擎-validation)
 - [配置热重载 (Hot Reload)](#配置热重载-hot-reload)
 
@@ -221,7 +221,7 @@ literouter 支持为每个中转站设置全局默认单价，同时也支持**�
 - 候选链排序策略如果配置为 `cheapest`，会自动根据请求模型的实际单价之和对可用链路排序，动态优选最划算链路。
 - 候选链排序策略如果配置为 `round_robin`，会依照各中转站的 `weight` 平滑分配首选流量；权重相同即平均分担，`3:1` 即长期约按三比一分配。故障转移候选仍排在首选站之后。
 
-因此它既能精细反映每种模型的真实花费，也适合回答"哪家更贵、今天花了多少"这类相对问题。
+因此它可按模型展示已知费用估算，适合比较价目表下的相对开销，但不能替代上游账单。
 
 ### 本地应答缓存
 
@@ -243,7 +243,7 @@ literouter 支持为每个中转站设置全局默认单价，同时也支持**�
 
 ### OpenTelemetry 导出
 
-设置 `server.otlp_endpoint`（如 `http://127.0.0.1:4318`）后，literouter 每 30 秒向 `{endpoint}/v1/metrics` 推送一次 **OTLP/HTTP JSON**：`literouter.requests` 等计数器按 CUMULATIVE + monotonic 上报，逐中转站与逐客户端指标带 `relay=` / `client=` 属性。适合没有 Prometheus 抓取端的部署；导出失败只记一条日志，不会持续刷屏。
+设置 `server.otlp_endpoint`（如 `http://127.0.0.1:4318`）后，每 30 秒推送 OTLP/HTTP JSON；计数器为 CUMULATIVE + monotonic，逐中转站指标带 `relay=` 属性。单用户网关没有逐客户端账户维度；导出失败只记一条日志。
 
 ### 遥测持久化
 
@@ -265,7 +265,7 @@ literouter 支持为每个中转站设置全局默认单价，同时也支持**�
 |---|---|---|---|
 | `id` | `string` | 必填 | 唯一标识符（英文字母、数字、下划线、减号），用于路由与指标统计绑定。 |
 | `name` | `string` | `id` | 控制台与日志中展示的友好名称。 |
-| `protocol` | `string` | `"openai"` | 上游通信协议：`openai`（默认）、`anthropic`、`gemini`、`openai_responses`、`azure`、`vertex`、`bedrock`、`ollama`。代理按**报文形态**而不是协议名判断是否需要转换，因此 `azure` 与 OpenAI 同形（零解析直通），`vertex` 与 Gemini 同形。 |
+| `protocol` | `string` | `"openai"` | 上游通信协议：`openai`（默认）、`anthropic`、`gemini`、`openai_responses`、`azure`、`vertex`、`bedrock`、`ollama`。代理按**报文形态**判断是否转换：`azure` 与 OpenAI 同形、`vertex` 与 Gemini 同形；路由/校验仍解析请求。 |
 | `api_version` | `string` | `""` | `azure`：`api-version` 查询参数（留空用 `2024-10-21`）；`vertex`：路径中的 API 版本段（留空用 `v1`）。 |
 | `region` | `string` | `""` | `bedrock`：AWS 区域（**必填**，SigV4 无法推断）；`vertex`：位置（留空用 `us-central1`）。 |
 | `project` | `string` | `""` | `vertex`：项目 ID（**必填**）。 |
@@ -287,7 +287,7 @@ literouter 支持为每个中转站设置全局默认单价，同时也支持**�
 | `timeout_sec` | `uint32` | `120` | HTTP 响应超时（秒），超过此时间请求自动终止并尝试下一个候选。 |
 | `connect_timeout_sec` | `uint32` | `15` | TCP / TLS 握手连接超时（秒）。 |
 | `supports_stream` | `bool` | `true` | 该中转站是否支持 Server-Sent Events (SSE) 流式传输。 |
-| `models` | `string[]`| `[]` | 声明该站点支持的模型列表。自动透传与一键探测时使用。 |
+| `models` | `string[]`| `[]` | 模型目录，供自动透传与探测使用；不会隐式追加为模型回退链。需要换模型时明确写入 `routes[].targets`。 |
 | `headers` | `object` | `{}` | 自定义请求头字典（键值对），每个发往该站点的请求都会自动附带。 |
 | `chat_path` | `string` | 依协议（`openai`, `anthropic`, `gemini`, `openai_responses`, `azure`, `vertex`, `bedrock`, `ollama`） | 自定义对话补全端点路径。留空时依据 `protocol` 自动推导为标准路径（例如 `anthropic` → `/v1/messages`，`vertex` → `/v1/projects/…/publishers/google/models/{model}:generateContent`，`bedrock` → `/model/{model}/converse`）。 |
 | `embeddings_path`| `string` | `"/embeddings"`| 自定义向量嵌入端点路径。 |
@@ -320,13 +320,15 @@ literouter 支持为每个中转站设置全局默认单价，同时也支持**�
 5. ""                     // 留空，不发送 Authorization 头（适用于本地/内网免鉴权网关）
 ```
 
-### 绝对不可逆（零泄露）原则
+### 密钥引用保留与安全边界
 
-在安全实现上，`literouter` 始终坚守**密钥零泄露保障**：
+`literouter` 保留密钥引用并对管理配置脱敏，但不承诺所有配置、日志和自定义头绝无秘密：
 
 1. **按需展开**：配置载入内存时保留原始占位符字符串。密钥**仅在实际发起网络请求瞬间**由内部模块调用 `resolveSecret()` 解析为明文并写入 HTTP 请求头。
-2. **绝对禁止回写明文**：无论是通过 `/ui` 控制台保存配置，还是通过 CLI `literouter config save`，`ConfigStore` 序列化时**始终保留原始的环境变量占位符**，杜绝将敏感明文意外沉淀到磁盘配置文件中。
+2. **引用不解引用保存**：`/ui` 保存、CLI 编辑与 `config export` 保留原始 `${VAR}` 引用，不写入展开后的值；用户主动输入的明文密钥仍会按原样保存。
 3. **保存权限加固**：每次保存都会把文件收紧到仅当前用户可访问——POSIX 上是 `0600`；Windows 上则把 DACL 替换为仅含当前用户一条 ACE（配置里可能有明文密钥，而它并不只可能放在 `%APPDATA%`）。
+
+上游自动重定向被拒绝，避免向 `Location` 目标重放凭据与提示词；请配置最终 Base URL。正文脱敏只识别已知模式，未知自定义头及自由文本仍需用户谨慎处理。
 
 ---
 
@@ -362,11 +364,11 @@ mcpp run -p cli -- doctor
 当外部编辑器修改了 `config.json` 后，无需重启进程即可生效：
 
 ```bash
-# 方式 1：CLI 发送重载命令
-mcpp run -p cli -- config reload
-
-# 方式 2：调用管理端点
+# 方式 1：调用管理端点（配置访问密钥时增加 Authorization 头）
 curl -X POST http://127.0.0.1:8787/__literouter/reload
 
-# 方式 3：在 Web 控制台的“设置”面板中点击【从磁盘重载】按钮
+# 方式 2：在 Web 控制台的服务控制中点击【重载配置】
+# 方式 3：显式开启 server.reload_on_change
 ```
+
+手动或自动重载时，语义校验失败会保留上一份活动配置；接口返回 422，不会半应用坏配置。首次实际启动会创建缺失的模板，`serve --check` / `--print-config` 不创建文件。配置端口为 0 时，CLI 与桌面应用通过状态目录中匹配配置路径的已验证实例记录发现端口；存在多个匹配实例时拒绝猜测。

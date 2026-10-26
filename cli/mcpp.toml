@@ -6,6 +6,7 @@ description = "literouter — the command-line front end"
 [targets.literouter]
 kind = "bin"
 main = "src/cli_main.cpp"
+windows_code_page = "utf-8"
 
 [dependencies.literouter]
 core = { path = "../core" }

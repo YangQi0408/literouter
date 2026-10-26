@@ -19,7 +19,7 @@ export namespace literouter {
 // ─────────────────────────────────────────────────────────────────────────────
 
 inline constexpr std::string_view kVersion = "0.5.0";
-inline constexpr std::string_view kUserAgent = "literouter/0.4.0";
+inline constexpr std::string_view kUserAgent = "literouter/0.5.0";
 
 // The config schema this build reads and writes. Bumping it is what gives a
 // breaking rename somewhere to live: `migrateConfigJson` walks an older document
@@ -286,6 +286,11 @@ struct ServerConfig {
 
 // Scheme-aware listener URL, with IPv6 brackets; path may be empty.
 std::string serverBaseUrl(const ServerConfig &server, std::string_view path = {});
+// Management destination, mapping wildcard bind addresses to loopback. For
+// port 0, discover and verify the unique live PID record for this config path.
+// A stale/missing/ambiguous record is an error, never an address on port zero.
+std::expected<std::string, std::string> runningServerBaseUrl(
+    const ServerConfig &server, const std::filesystem::path &config_path);
 
 struct AppConfig {
     int schema = kConfigSchema;
@@ -1354,10 +1359,9 @@ std::string pathToUtf8(const std::filesystem::path &path);
 // the UTF-8-to-UTF-16 step that keeps a non-ASCII directory name intact.
 std::filesystem::path pathFromUtf8(std::string_view text);
 
-// What to hand a C API that takes a file name as a narrow string (OpenSSL's PEM
-// loaders are the ones this program uses). Deliberately not pathToUtf8(): those
-// APIs decode through the ANSI code page on Windows, so the right answer there
-// is `path.string()` and nothing else.
+// Legacy best-effort narrow filename conversion. It can return empty for a
+// Windows name outside the ANSI code page; TLS loaders do not use this helper,
+// opening native filesystem paths and passing PEM bytes to OpenSSL instead.
 std::string pathForCApi(const std::filesystem::path &path);
 
 // Masks things that look like credentials in text that is about to be kept:

@@ -41,11 +41,11 @@ std::optional<std::string> envValue(std::string_view name) {
 
 std::filesystem::path userHome() {
     if (const char *home = std::getenv("HOME"); home != nullptr && *home != '\0') {
-        return std::filesystem::path{home};
+        return pathFromUtf8(home);
     }
 #ifdef _WIN32
     if (const char *profile = std::getenv("USERPROFILE"); profile != nullptr && *profile != '\0') {
-        return std::filesystem::path{profile};
+        return pathFromUtf8(profile);
     }
 #endif
     // The error_code overload, because the throwing one is not usable here. It
@@ -68,7 +68,7 @@ std::filesystem::path userHome() {
 
 std::filesystem::path defaultConfigDir() {
     if (const char *xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && *xdg != '\0') {
-        return std::filesystem::path{xdg} / "literouter";
+        return pathFromUtf8(xdg) / "literouter";
     }
 #ifdef _WIN32
     // On Windows, if a config already exists in %USERPROFILE%\.config\literouter,
@@ -80,7 +80,7 @@ std::filesystem::path defaultConfigDir() {
     }
     // Otherwise, standard Windows configuration directory is %APPDATA%\literouter
     if (const char *appdata = std::getenv("APPDATA"); appdata != nullptr && *appdata != '\0') {
-        return std::filesystem::path{appdata} / "literouter";
+        return pathFromUtf8(appdata) / "literouter";
     }
 #endif
     return userHome() / ".config" / "literouter";
@@ -88,22 +88,22 @@ std::filesystem::path defaultConfigDir() {
 
 std::filesystem::path defaultConfigPath() {
     if (const char *env = std::getenv("LITEROUTER_CONFIG"); env != nullptr && *env != '\0') {
-        return std::filesystem::path{env};
+        return pathFromUtf8(env);
     }
     return defaultConfigDir() / "config.json";
 }
 
 std::filesystem::path defaultStateDir() {
     if (const char *env = std::getenv("LITEROUTER_STATE_DIR"); env != nullptr && *env != '\0') {
-        return std::filesystem::path{env};
+        return pathFromUtf8(env);
     }
     if (const char *xdg = std::getenv("XDG_STATE_HOME"); xdg != nullptr && *xdg != '\0') {
-        return std::filesystem::path{xdg} / "literouter";
+        return pathFromUtf8(xdg) / "literouter";
     }
 #ifdef _WIN32
     // On Windows, standard local application state directory is %LOCALAPPDATA%\literouter
     if (const char *local = std::getenv("LOCALAPPDATA"); local != nullptr && *local != '\0') {
-        return std::filesystem::path{local} / "literouter";
+        return pathFromUtf8(local) / "literouter";
     }
 #endif
     return userHome() / ".local" / "state" / "literouter";
@@ -124,8 +124,9 @@ std::filesystem::path resolveCaBundle() {
             return {};
         }
         std::error_code ec;
-        if (std::filesystem::is_regular_file(value, ec)) {
-            return std::filesystem::path{value};
+        const auto path = pathFromUtf8(value);
+        if (std::filesystem::is_regular_file(path, ec)) {
+            return path;
         }
         return {};
     };
@@ -496,6 +497,35 @@ bool splitBaseUrl(std::string_view base_url, std::string &root, std::string &pre
     if (authority.empty()) {
         return false;
     }
+    // Client construction can leave its internal implementation null for a
+    // malformed authority (notably port 0). Validate before any socket/client
+    // setters, and reject userinfo so credentials cannot hide in a base URL.
+    if (authority.find_first_of("@?#\\ \t\r\n") != std::string_view::npos) return false;
+    std::string_view host = authority;
+    std::string_view port;
+    if (authority.front() == '[') {
+        const auto end = authority.find(']');
+        if (end == std::string_view::npos || end == 1) return false;
+        host = authority.substr(1, end - 1);
+        const auto tail = authority.substr(end + 1);
+        if (!tail.empty()) {
+            if (tail.front() != ':') return false;
+            port = tail.substr(1);
+            if (port.empty()) return false;
+        }
+    } else if (const auto colon = authority.find(':'); colon != std::string_view::npos) {
+        if (authority.find(':', colon + 1) != std::string_view::npos) return false;
+        host = authority.substr(0, colon);
+        port = authority.substr(colon + 1);
+        if (port.empty()) return false;
+    }
+    if (host.empty()) return false;
+    if (!port.empty()) {
+        int number = 0;
+        const auto [end, error] = std::from_chars(port.data(), port.data() + port.size(), number);
+        if (error != std::errc{} || end != port.data() + port.size() || number < 1 || number > 65535)
+            return false;
+    }
 
     root = std::format("{}://{}", scheme, authority);
     prefix = std::string{path};
@@ -702,17 +732,13 @@ std::string pathToUtf8(const std::filesystem::path &path) {
     return toValidUtf8(raw);
 }
 
-// The inverse of pathToUtf8(), and it exists for one caller: a path that came
-// out of JSON and is about to be handed to a C API.
+// The inverse of pathToUtf8(): configuration and API text denote native paths.
 //
 // The config file stores UTF-8, so `server.tls_cert_file` is UTF-8 bytes. On
 // POSIX those bytes are the path and this is a copy. On Windows they are not:
 // the wide-character API wants UTF-16, and passing UTF-8 bytes to a narrow
-// `fopen`-style call — which is what OpenSSL's PEM loaders are — decodes them
-// through the ANSI code page instead. A certificate under a directory named in
-// Chinese is the ordinary case where that fails, and it fails at bind time with
-// "cannot initialize HTTPS listener", which names neither the path nor the
-// reason.
+// `fopen`-style call decodes them through the ANSI code page instead. TLS now
+// opens a native filesystem path in C++ and gives OpenSSL in-memory PEM bytes.
 //
 // A path that is not valid UTF-8 is taken at face value on POSIX (that is what
 // a POSIX file name is) and, on Windows, is handed to the ANSI interpretation
@@ -730,15 +756,8 @@ std::filesystem::path pathFromUtf8(std::string_view text) {
 #endif
 }
 
-// What to hand a C API that takes a path as a narrow string.
-//
-// This is deliberately NOT pathToUtf8(): OpenSSL, and every other C library
-// that opens a file by name, calls the narrow-path entry point, which on
-// Windows interprets the bytes through the ANSI code page. `path.string()` is
-// exactly that interpretation, and is what the caller must use. Handing over
-// UTF-8 bytes instead is the bug this pair of functions exists to make hard to
-// write — see the note on set_ca_cert_path's caller in lr_upstream.cpp, which
-// reached the same conclusion first.
+// Retained legacy narrow-path helper. No TLS loader relies on it: not every
+// Windows native path can be represented in the caller's ANSI code page.
 std::string pathForCApi(const std::filesystem::path &path) {
     try {
         return path.string();

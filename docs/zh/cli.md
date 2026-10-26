@@ -99,9 +99,7 @@ literouter status [OPTIONS]
 ```
 
 ### 选项
-- `--json`：输出完整的原始 JSON 快照；
-- `--live`：动态实时刷新看板（类似 top / htop）；
-- `--interval <ms>`：动态刷新的间隔时间（毫秒，默认 1000）。
+- `--json`：输出完整状态快照，并附 `reachable` / `url` 管理字段。动态看板请使用 Web 控制台；CLI 没有 `--live` / `--interval`。
 
 **控制台展示信息**：
 - 运行时间 (Uptime)、活动请求数 (Active Requests)；

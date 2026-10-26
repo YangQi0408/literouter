@@ -9,7 +9,7 @@ namespace lrcli {
 
 std::filesystem::path configPathFor(const Context &ctx) {
     if (!ctx.configPath.empty()) {
-        return std::filesystem::path{ctx.configPath};
+        return literouter::pathFromUtf8(ctx.configPath);
     }
     return literouter::defaultConfigPath();
 }
@@ -33,6 +33,13 @@ std::optional<literouter::ConfigStore> loadStore(const Context &ctx) {
 
 std::string baseUrlOf(const literouter::AppConfig &config) {
     return literouter::serverBaseUrl(config.server);
+}
+
+std::string adminBaseUrlOf(const literouter::ConfigStore &store) {
+    const auto url = literouter::runningServerBaseUrl(store.config().server, store.path());
+    // The client reports an invalid address cleanly if no dynamic instance is
+    // found; never guess a different config's port or send its credential there.
+    return url ? *url : baseUrlOf(store.config());
 }
 
 std::string clientBaseUrlOf(const literouter::AppConfig &config) {

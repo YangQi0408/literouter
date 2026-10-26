@@ -76,26 +76,15 @@ std::vector<Candidate> Router::candidatesFor(std::string_view model) const {
         out.push_back(std::move(candidate));
     };
 
-    const auto pushTarget = [&](const ProviderConfig &provider, std::string target_model,
-                                std::size_t ordinal) {
-        const std::string primary = target_model.empty() ? std::string{model} : target_model;
-        push(provider, primary, ordinal);
-        // A route target names the preferred model. The provider's advertised
-        // models form an ordered same-relay fallback chain behind it.
-        for (const auto &fallback : provider.models) {
-            if (fallback != primary) {
-                push(provider, fallback, ordinal);
-            }
-        }
-    };
-
     if (const auto *route = config_.route(model); route != nullptr && route->enabled) {
         for (const auto &target : route->targets) {
             const auto *provider = config_.provider(target.provider);
             if (provider == nullptr || !provider->enabled) {
                 continue;
             }
-            pushTarget(*provider, target.model, out.size());
+            // `models` is discovery, not consent to substitute another model.
+            // Same-relay model fallbacks remain possible as explicit targets.
+            push(*provider, target.model, out.size());
         }
     }
 

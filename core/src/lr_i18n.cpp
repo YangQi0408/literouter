@@ -19,6 +19,19 @@ namespace literouter::i18n {
 namespace {
 
 const std::unordered_map<std::string_view, const char*> kZhTranslations = {
+    {"upstream redirects are disabled; configure the final base_url", "禁止上游重定向；请配置最终 base_url"},
+    {"dynamic port discovery needs a config path", "动态端口发现需要配置文件路径"},
+    {"multiple running instances use this config; use a fixed port", "多个运行实例使用此配置；请指定固定端口"},
+    {"no running instance found for this config's dynamic port", "未找到使用此配置动态端口的运行实例"},
+    {"created the initial configuration", "已创建初始配置"},
+    {"base_url must have a valid host and port, without embedded credentials", "base_url 必须包含有效主机和端口，且不能嵌入凭据"},
+    {"config reload refused; keeping the active config", "拒绝重载配置；继续使用当前配置"},
+    {"config changed on disk but failed validation; keeping the active config", "磁盘配置变化但校验失败；继续使用当前配置"},
+    {"literouter-tray [--autostart|--no-autostart|--autostart-status|--help]", "literouter-tray [--autostart|--no-autostart|--autostart-status|--help]"},
+    {"no StatusNotifierWatcher is running; enable a tray panel or use the CLI gateway", "未运行 StatusNotifierWatcher；请启用托盘面板或使用命令行网关"},
+    {"cannot allocate TLS certificate store", "无法分配 TLS 证书存储"},
+    {"no dynamic instance found; serve will allocate a port", "未找到动态端口实例；启动时将分配端口"},
+    {"cannot initialize upstream client", "无法初始化上游客户端"},
     {"expected a 32-bit integer", "应为 32 位整数"},
     {"prices must be finite numbers", "价格必须是有限数值"},
     {"HTTPS proxy transport is not supported; use an http:// proxy URL (HTTPS upstreams still use CONNECT)", "不支持到代理服务器的 HTTPS 连接；请使用 http:// 代理地址（HTTPS 上游仍通过 CONNECT 隧道访问）"},

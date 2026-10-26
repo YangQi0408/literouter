@@ -73,6 +73,10 @@ If a route is defined in the configuration, e.g.:
 1. Candidates are tried **strictly in the order declared in `targets`**. This is authoritative human configuration and will not be reordered.
 2. **Physical Model Mapping**: If `model` is specified on a target (e.g. `gpt-4o-2024-08-06`), the request payload model name is rewritten before dispatch. If omitted, the client's logical model name (`gpt-4o`) is forwarded.
 
+`providers[].models` is only an advertised directory, never an implicit fallback
+chain. Author two consecutive targets for the same provider with different models
+when replacement is explicitly acceptable; unlisted replacements are never used.
+
 ### Phase 2: Global Pass-through
 
 When a model is unlisted in `routes` and `pass_through_unknown: true`:

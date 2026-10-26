@@ -117,7 +117,7 @@ void runLogs(Context &ctx, const LogsOptions &opts) {
         ctx.exitCode = kExitConfig;
         return;
     }
-    const std::string url = baseUrlOf(storeOpt->config());
+    const std::string url = adminBaseUrlOf(*storeOpt);
     const std::string apiKey = storeOpt->config().server.api_key;
 
     if (!opts.follow) {

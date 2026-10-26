@@ -212,7 +212,7 @@ std::mutex g_vertex_mutex;
 std::map<std::string, VertexToken, std::less<>> g_vertex_tokens;
 
 std::string readFile(const std::string &path, std::string &error) {
-    std::ifstream input{path, std::ios::binary};
+    std::ifstream input{pathFromUtf8(path), std::ios::binary};
     if (!input) {
         error = std::format("cannot read {}", path);
         return {};

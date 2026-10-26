@@ -158,9 +158,9 @@ void testPassThroughDisabled() {
     // route reaches a relay.
     LR_CHECK(router.candidatesFor("public-model").empty());
     LR_CHECK(idsOf(router.candidatesFor("routed")) ==
-             (std::vector<std::string>{"a", "a"}));
+             (std::vector<std::string>{"a"}));
     LR_CHECK(modelsOf(router.candidatesFor("routed")) ==
-             (std::vector<std::string>{"routed", "public-model"}));
+             (std::vector<std::string>{"routed"}));
 
     config.server.pass_through_unknown = true;
     router.setConfig(config);
@@ -188,7 +188,7 @@ void testRouteWinsOverPassThrough() {
 }
 
 void testSameProviderModelFallbacks() {
-    LR_GROUP("candidatesFor: same-provider model fallbacks and model breakers");
+    LR_GROUP("candidatesFor: only explicitly authored model fallbacks are eligible");
     AppConfig config;
     config.server.circuit_failure_threshold = 1;
     config.server.circuit_cooldown_sec = 30;
@@ -203,6 +203,11 @@ void testSameProviderModelFallbacks() {
     Router router;
     router.setConfig(config);
     auto candidates = router.candidatesFor("logical");
+    LR_CHECK_MSG(modelsOf(candidates) == (std::vector<std::string>{"primary"}),
+                 "the model directory implicitly added a replacement model");
+    config.routes[0].targets.push_back(RouteTarget{.provider = "relay", .model = "backup"});
+    router.setConfig(config);
+    candidates = router.candidatesFor("logical");
     LR_CHECK(modelsOf(candidates) ==
              (std::vector<std::string>{"primary", "backup"}));
     LR_CHECK(!candidates[0].skipped && !candidates[1].skipped);

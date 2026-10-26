@@ -101,7 +101,7 @@ void runStatus(Context &ctx) {
         return;
     }
     const literouter::AppConfig &config = storeOpt->config();
-    const std::string url = baseUrlOf(config);
+    const std::string url = adminBaseUrlOf(*storeOpt);
 
     const literouter::AdminStatus status = literouter::fetchStatus(url, config.server.api_key);
 

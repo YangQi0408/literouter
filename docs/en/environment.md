@@ -43,6 +43,8 @@ Directory for telemetry and listener records.
 - **Contents**:
   - **`telemetry-<port>.json`**: with `server.persist_telemetry` on, the global counters, per-relay and per-model stats, the recent request log and the last 24 hourly buckets are written here (mode `0600`, temp file plus atomic rename) and read back on the next start. With the switch off, no such file is created. The port in the name is the one the instance actually bound, so each instance owns its history instead of replacing another's. See [Configuration & Secrets](configuration.md);
   - **`literouter-<port>.pid`**: records the listener PID, port, start time and config path, and is removed on stop. Listener sockets prevent sharing the same address and port; the PID file identifies the owner when startup conflicts.
+    New records include the active `base_url`. For configured port 0, management
+    clients verify a matching config-path record and refuse multiple live matches.
 - **Example**:
   ```bash
   export LITEROUTER_STATE_DIR="/var/lib/literouter"

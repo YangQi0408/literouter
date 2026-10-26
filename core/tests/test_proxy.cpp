@@ -15,13 +15,12 @@
 #include <thread>
 
 #include "lr_test_check.h"
-
-import nlohmann.json;
-import literouter.core;
-
 // Socket vocabulary for the raw-socket stubs below. Portable to all three
 // platforms; see the header for why these stubs cannot use httplib.
 #include "lr_test_socket.h"
+
+import nlohmann.json;
+import literouter.core;
 
 namespace {
 
@@ -426,6 +425,7 @@ private:
                 continue;
             }
             connections_.fetch_add(1);
+            lrSetBlocking(client); // Darwin may inherit non-blocking accept flags
             lrSetRecvTimeout(client, 2);
             char buffer[2048];
             // Let the request arrive first, so the client fails on the read
@@ -485,6 +485,8 @@ public:
             lrClose(listen_fd_);
             listen_fd_ = lr_invalid_socket;
         }
+        // Every worker holds `this`; join them before destroying the proxy.
+        for (auto &worker : workers_) if (worker.joinable()) worker.join();
     }
 
     int tunnels() const { return tunnels_.load(); }
@@ -506,7 +508,9 @@ private:
             if (client == lr_invalid_socket) {
                 continue;
             }
-            std::thread([this, client] { serve(client); }).detach();
+            lrSetBlocking(client);
+            lrSetRecvTimeout(client, 2);
+            workers_.emplace_back([this, client] { serve(client); });
         }
     }
 
@@ -543,7 +547,8 @@ private:
 
         if (head.starts_with("CONNECT ")) {
             const auto line_end = head.find("\r\n");
-            const std::string target = head.substr(8, line_end - 8);
+            const std::string line = head.substr(8, line_end - 8);
+            const std::string target = line.substr(0, line.find(' '));
             const auto colon = target.rfind(':');
             if (colon == std::string::npos) {
                 lrClose(client);
@@ -616,7 +621,7 @@ private:
             std::scoped_lock lock{mutex_};
             ++tunnels_;
         }
-        const int upstream = ::socket(AF_INET, SOCK_STREAM, 0);
+        const lr_socket_t upstream = ::socket(AF_INET, SOCK_STREAM, 0);
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_port = htons(static_cast<std::uint16_t>(port));
@@ -684,6 +689,7 @@ private:
     mutable std::mutex mutex_;
     mutable std::string last_auth_;
     std::thread thread_;
+    std::vector<std::thread> workers_;
 };
 
 // ── stderr capture ───────────────────────────────────────────────────────────
@@ -1022,7 +1028,7 @@ void group1PlainRequest(StubRelay &relay_a, StubRelay &relay_b, int port) {
 }
 
 void group2RateLimited(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServer &proxy) {
-    LR_GROUP("2. a 429 falls through the first relay's models, then to the second relay");
+    LR_GROUP("2. a 429 follows the authored chain without implicitly replacing the model");
     const int port = proxy.boundPort();
     proxy.resetStats();
     relay_a.setMode(StubRelay::Mode::RateLimit);
@@ -1033,10 +1039,8 @@ void group2RateLimited(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
     const Hit hit = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
     LR_CHECK_EQ(hit.status, 200);
     LR_CHECK_MSG(hit.body == relay_b.normalBody(), "the answer came from the wrong relay");
-    // alpha has one advertised fallback model behind the route target, so a
-    // 429 from the preferred model is followed by one attempt on that model
-    // before the chain reaches beta.
-    LR_CHECK_EQ(relay_a.chatRequests(), 2);
+    // The advertised models are discovery only; the explicit backup is next.
+    LR_CHECK_EQ(relay_a.chatRequests(), 1);
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
 
     const literouter::Snapshot snapshot = proxy.snapshot();
@@ -1056,7 +1060,7 @@ void group2RateLimited(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
         LR_CHECK_EQ(beta->successes, static_cast<std::uint64_t>(1));
     }
     const auto *alphaStat = statOf(snapshot, "alpha");
-    LR_CHECK(alphaStat != nullptr && alphaStat->requests == 2 && alphaStat->failures == 2);
+    LR_CHECK(alphaStat != nullptr && alphaStat->requests == 1 && alphaStat->failures == 1);
 }
 
 void group3BadRequest(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServer &proxy) {
@@ -1113,10 +1117,8 @@ void group3bCapacityBadRequest(StubRelay &relay_a, StubRelay &relay_b,
                  std::format("a capacity 400 must fail over, got HTTP {}", hit.status));
     LR_CHECK_MSG(hit.body == relay_b.normalBody(),
                  "the answer must come from the second relay");
-    // Two hops on alpha, exactly as in group 2: the route target's own model,
-    // then the model alpha advertises. Both hit the capacity 400, and only then
-    // does the chain reach beta.
-    LR_CHECK_EQ(relay_a.chatRequests(), 2);
+    // Only the route's alpha model is tried before the explicit beta target.
+    LR_CHECK_EQ(relay_a.chatRequests(), 1);
     LR_CHECK_MSG(relay_b.chatRequests() == 1, "the second relay was never tried");
 
     const literouter::Snapshot snapshot = proxy.snapshot();
@@ -1125,8 +1127,8 @@ void group3bCapacityBadRequest(StubRelay &relay_a, StubRelay &relay_b,
     const auto *alpha = statOf(snapshot, "alpha");
     LR_CHECK(alpha != nullptr);
     if (alpha != nullptr) {
-        LR_CHECK_EQ(alpha->requests, static_cast<std::uint64_t>(2));
-        LR_CHECK_EQ(alpha->failures, static_cast<std::uint64_t>(2));
+        LR_CHECK_EQ(alpha->requests, static_cast<std::uint64_t>(1));
+        LR_CHECK_EQ(alpha->failures, static_cast<std::uint64_t>(1));
         LR_CHECK_EQ(alpha->successes, static_cast<std::uint64_t>(0));
     }
     const auto *alphaHealth = healthOf(snapshot, "alpha");
@@ -1160,7 +1162,7 @@ void group3bCapacityBadRequest(StubRelay &relay_a, StubRelay &relay_b,
                              streamed.status));
     LR_CHECK_MSG(streamed.body == join(relay_b.sseChunks()),
                  "the stream must come from the second relay");
-    LR_CHECK_EQ(relay_a.chatRequests(), 2);
+    LR_CHECK_EQ(relay_a.chatRequests(), 1);
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
 }
 
@@ -1216,7 +1218,7 @@ void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxySe
     const Hit failedOver = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel, true));
     LR_CHECK_EQ(failedOver.status, 200);
     LR_CHECK_EQ(failedOver.body, join(relay_b.sseChunks()));
-    LR_CHECK_EQ(relay_a.chatRequests(), 2);
+    LR_CHECK_EQ(relay_a.chatRequests(), 1);
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
     const literouter::Snapshot snapshot = proxy.snapshot();
     const auto *beta = statOf(snapshot, "beta");
@@ -1430,7 +1432,7 @@ void group8Breaker(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServ
         LR_CHECK_MSG(hit.status == 200 && hit.body == relay_b.normalBody(),
                      "every request should still be answered by the second relay");
     }
-    LR_CHECK_EQ(relay_a.chatRequests(), 6);
+    LR_CHECK_EQ(relay_a.chatRequests(), 3);
     LR_CHECK_EQ(relay_b.chatRequests(), 3);
 
     const literouter::Snapshot tripped = proxy.snapshot();
@@ -1439,8 +1441,8 @@ void group8Breaker(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServ
     LR_CHECK(alpha != nullptr && alpha->consecutive_failures >= 3);
     LR_CHECK(tripped.breakers_open >= 1);
     const auto *alphaStat = statOf(tripped, "alpha");
-    LR_CHECK(alphaStat != nullptr && alphaStat->requests == 6);
-    LR_CHECK(alphaStat != nullptr && alphaStat->failures == 6);
+    LR_CHECK(alphaStat != nullptr && alphaStat->requests == 3);
+    LR_CHECK(alphaStat != nullptr && alphaStat->failures == 3);
 
     // The fourth request never reaches the open relay.
     relay_a.resetCounters();
@@ -1451,7 +1453,7 @@ void group8Breaker(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServ
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
     const literouter::Snapshot after = proxy.snapshot();
     const auto *afterStat = statOf(after, "alpha");
-    LR_CHECK(afterStat != nullptr && afterStat->requests == 6);
+    LR_CHECK(afterStat != nullptr && afterStat->requests == 3);
 }
 
 void group9Counters(StubRelay &relay_a, literouter::ProxyServer &proxy) {
@@ -1587,11 +1589,13 @@ void group17LatencyPercentile(StubRelay &relay_a, literouter::ProxyServer &proxy
     // resetStats() drops the window along with the totals, so the numbers below
     // can only be made of what this group serves.
     proxy.resetStats();
-    const auto *cleared = statOf(proxy.snapshot(), "alpha");
+    const auto clearedSnapshot = proxy.snapshot();
+    const auto *cleared = statOf(clearedSnapshot, "alpha");
     LR_CHECK(cleared != nullptr && cleared->latency_ms_p95 == 0.0);
 
     LR_CHECK_EQ(postJson(port, "/v1/chat/completions", chatRequest(kRouteModel)).status, 200);
-    const auto *one = statOf(proxy.snapshot(), "alpha");
+    const auto oneSnapshot = proxy.snapshot();
+    const auto *one = statOf(oneSnapshot, "alpha");
     LR_CHECK(one != nullptr);
     if (one != nullptr) {
         // One sample: the percentile is that sample, exactly. It used to be a
@@ -1639,7 +1643,7 @@ void group18RetryAfter(StubRelay &relay_a, StubRelay &relay_b, literouter::Proxy
     // a 429 into a refusal.
     const Hit hit = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
     LR_CHECK_EQ(hit.status, 200);
-    LR_CHECK_EQ(relay_a.chatRequests(), 2);
+    LR_CHECK_EQ(relay_a.chatRequests(), 1);
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
 
     // One 429 was enough: the relay said "back in 600 seconds", so the breaker
@@ -1696,16 +1700,19 @@ public:
         if (listen_fd_ != lr_invalid_socket) {
             lrShutdownBoth(listen_fd_);
             lrClose(listen_fd_);
-            listen_fd_ = lr_invalid_socket;
         }
+        // The acceptor still reads listen_fd_ while close wakes accept(). Do
+        // not mutate the member until it has exited, or miss a last accepted
+        // connection when shutting down the workers.
+        if (acceptor_.joinable()) {
+            acceptor_.join();
+        }
+        listen_fd_ = lr_invalid_socket;
         {
             std::scoped_lock lock{fds_mutex_};
             for (const lr_socket_t fd : open_fds_) {
                 lrShutdownBoth(fd);
             }
-        }
-        if (acceptor_.joinable()) {
-            acceptor_.join();
         }
         std::vector<std::thread> workers;
         {
@@ -1739,8 +1746,7 @@ private:
                 }
                 continue;
             }
-            timeval timeout{2, 0}; // an idle keep-alive socket must not pin a thread
-            ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            lrSetRecvTimeout(fd, 2); // Winsock takes milliseconds, POSIX a timeval
             ++connections_;
             {
                 std::scoped_lock lock{fds_mutex_};
@@ -1770,12 +1776,14 @@ private:
                 break;
             }
         }
-        lrClose(fd);
         std::scoped_lock lock{fds_mutex_};
+        // Remove and close under the same lock used by stop(), so a recycled
+        // descriptor cannot be mistaken for a connection still owned here.
         std::erase(open_fds_, fd);
+        lrClose(fd);
     }
 
-    static bool readRequest(int fd, std::string &buffer) {
+    static bool readRequest(lr_socket_t fd, std::string &buffer) {
         std::size_t header_end = std::string::npos;
         while (header_end == std::string::npos) {
             char temp[4096];
@@ -1813,7 +1821,7 @@ private:
     // Content-Length rather than chunked, with keep-alive: httplib's client reads
     // exactly that many bytes and hands the socket back to the pool rejoined,
     // which is the behaviour under test.
-    static bool writeResponse(int fd) {
+    static bool writeResponse(lr_socket_t fd) {
         const std::string body =
             "data: {\"id\":\"counted\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
             "data: [DONE]\n\n";
@@ -2920,7 +2928,7 @@ void group28RoutingPolicy(StubRelay &relay_a, StubRelay &relay_b) {
         proxy.stop();
     }
 
-    // A single relay with its own model fallback chain still has multiple
+    // A single relay with an explicitly authored model fallback still has multiple
     // candidates. Grouping by relay must not make the candidate list disappear
     // when there is nobody to rotate against.
     {
@@ -2940,7 +2948,8 @@ void group28RoutingPolicy(StubRelay &relay_a, StubRelay &relay_b) {
         config.providers = {first};
         literouter::RouteConfig route;
         route.model = kRouteModel;
-        route.targets = {literouter::RouteTarget{.provider = "first", .model = {}}};
+        route.targets = {literouter::RouteTarget{.provider = "first", .model = {}},
+                         literouter::RouteTarget{.provider = "first", .model = "fallback-model"}};
         config.routes = {route};
 
         literouter::ProxyServer proxy;
@@ -3539,6 +3548,23 @@ void group27ConfigHotReload(StubRelay &relay_a) {
         }
     }
     LR_CHECK_MSG(saw_reload, "no log entry says the config was reloaded");
+
+    // Readable but invalid edits must leave the active routing model intact.
+    auto invalid = edited;
+    invalid.routes[0].targets[0].provider = "does-not-exist";
+    LR_CHECK_MSG(writeFile(path, literouter::toJsonString(invalid)), "failed to stage invalid edit");
+    const auto refused = postJson(proxy.boundPort(), "/__literouter/reload", "{}");
+    LR_CHECK_MSG(refused.status == 422 && proxy.config().routes[0].targets[0].provider == "alpha",
+                 "manual reload applied invalid configuration: " + refused.body);
+    bool watcherRefused = false;
+    for (int attempt = 0; attempt < 200 && !watcherRefused; ++attempt) {
+        for (const auto &entry : proxy.logsSince(0, 200)) {
+            if (entry.message.find("failed validation; keeping") != std::string::npos) watcherRefused = true;
+        }
+        if (!watcherRefused) std::this_thread::sleep_for(25ms);
+    }
+    LR_CHECK_MSG(watcherRefused && proxy.config().routes[0].targets[0].provider == "alpha",
+                 "the watcher did not refuse an invalid edit");
 
     // A server that is not watching must not pick the change up: this is opt-in
     // because a config that moves under a running proxy is a surprise otherwise.
@@ -4167,6 +4193,10 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
     config.server.port = 0;
     // The fixture ships with persistence off; this is the group that wants it.
     config.server.persist_telemetry = true;
+    config.providers[0].price_in_per_million = 2;
+    config.providers[0].price_out_per_million = 4;
+    config.server.traffic_bucket_sec = 60;
+    config.server.traffic_bucket_count = 10;
     relay_a.setMode(StubRelay::Mode::Normal);
 
     std::error_code ec;
@@ -4188,6 +4218,7 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
         const Hit hit = postJson(port, "/v1/chat/completions", chatRequest(kRouteModel));
         LR_CHECK_EQ(hit.status, 200);
         LR_CHECK_EQ(first.snapshot().total_requests, static_cast<std::uint64_t>(1));
+        LR_CHECK_MSG(first.snapshot().cost_usd > 0, "the priced fixture recorded no cost");
         first.stop();
     }
 
@@ -4256,6 +4287,23 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
         const literouter::Snapshot restored = second.snapshot();
         LR_CHECK_EQ(restored.total_requests, static_cast<std::uint64_t>(1));
         LR_CHECK_EQ(restored.total_success, static_cast<std::uint64_t>(1));
+        constexpr double expectedCost = (11.0 * 2 + 7.0 * 4) / 1'000'000;
+        LR_CHECK_MSG(std::abs(restored.cost_usd - expectedCost) < 1e-12,
+                     std::format("restored cost={} expected={}", restored.cost_usd, expectedCost));
+        const auto *priced = statOf(restored, "alpha");
+        LR_CHECK_MSG(priced && std::abs(priced->cost_usd - expectedCost) < 1e-12,
+                     "the provider cost was not restored");
+        const auto remote = literouter::fetchStatus(restored.base_url);
+        LR_CHECK_MSG(remote.reachable && remote.snapshot.cost_usd == restored.cost_usd &&
+                     remote.snapshot.model_stats.size() == restored.model_stats.size() &&
+                     remote.snapshot.traffic_bucket_sec == 60 && remote.snapshot.traffic_bucket_count == 10,
+                     "management client lost cost, model or bucket configuration");
+        if (remote.reachable) {
+            LR_CHECK_MSG(remote.snapshot.providers.front().cost_usd == restored.providers.front().cost_usd,
+                         "management client lost provider cost");
+            LR_CHECK_MSG(!remote.snapshot.hourly.empty() && remote.snapshot.hourly.back().bucket_sec == 60,
+                         "management client changed the recorded bucket width");
+        }
         LR_CHECK_EQ(restored.model_stats.size(), static_cast<std::size_t>(1));
         if (!restored.model_stats.empty()) {
             LR_CHECK_EQ(restored.model_stats.front().model, std::string{kRouteModel});
@@ -4287,6 +4335,25 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
         // Uptime is per-run even when the counters are not.
         LR_CHECK(restored.uptime_sec >= 0.0);
         second.stop();
+    }
+
+    // Older telemetry lacked a global cost field; preserve its known total
+    // by adding the recorded provider costs, without recomputing today's prices.
+    {
+        std::ifstream input{state_file, std::ios::binary};
+        const std::string text{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+        auto old = json::parse(text);
+        old["counters"].erase("cost_usd");
+        input.close();
+        LR_CHECK_MSG(writeFile(state_file, old.dump()), "could not stage old telemetry");
+        literouter::ProxyServer compatibility;
+        const auto started = compatibility.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (started) {
+            LR_CHECK_MSG(std::abs(compatibility.snapshot().cost_usd - (11.0 * 2 + 7.0 * 4) / 1'000'000) < 1e-12,
+                         "old-file total cost fallback lost provider prices");
+            compatibility.stop();
+        }
     }
 
     // 3. Turning it off is what makes a run leave nothing behind — and that run
@@ -4338,6 +4405,18 @@ void group16TelemetryFile(StubRelay &relay_a, const literouter::AppConfig &base)
         LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
         if (started) {
             LR_CHECK_EQ(tolerant.snapshot().total_requests, static_cast<std::uint64_t>(0));
+            tolerant.stop();
+        }
+    }
+    for (const auto *damaged : {R"({"version":"one"})",
+                                R"({"version":1,"hourly":[{"bucket_sec":"bad"}]})"}) {
+        LR_CHECK_MSG(writeFile(state_file, damaged), "could not stage damaged telemetry");
+        literouter::ProxyServer tolerant;
+        const auto started = tolerant.start(config);
+        LR_CHECK_MSG(started.has_value(), started ? "" : started.error());
+        if (started) {
+            LR_CHECK_MSG(tolerant.snapshot().total_requests == 0,
+                         "damaged telemetry partially changed counters");
             tolerant.stop();
         }
     }

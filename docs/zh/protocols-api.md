@@ -2,7 +2,7 @@
 
 所有接口也可由同一监听端口提供 HTTPS：配置 `server.tls_cert_file` 与 `server.tls_key_file`，重启后将下文 URL 的 `http://` 改为 `https://`。管理客户端仍校验证书链和主机名，私有 CA 使用 `LITEROUTER_CA_BUNDLE`；详见[配置文档](configuration.md#https-监听)。
 
-本文档全面介绍 `literouter` 对外提供的客户端兼容端点、支持的上游协议类型、跨协议自动转换与零开销直通机制，以及内部管理 API。
+本文介绍客户端端点、上游协议、跨协议转换与同形报文透传，以及管理 API。路由/校验仍会解析 JSON，流式转发使用有界队列，不承诺零开销。
 
 ---
 
@@ -20,8 +20,8 @@
 - [上游提供商协议 (Upstream Protocols)](#上游提供商协议-upstream-protocols)
   - [支持的协议类型](#支持的协议类型)
   - [端点路径自动推导规则](#端点路径自动推导规则)
-- [跨协议适配与零开销直通 (Zero-overhead Passthrough)](#跨协议适配与零开销直通-zero-overhead-passthrough)
-  - [同协议零开销直通 (Fast Path)](#同协议零开销直通-fast-path)
+- [跨协议适配与同形报文透传](#跨协议适配与同形报文透传)
+  - [同形报文透传 (Fast Path)](#同形报文透传-fast-path)
   - [跨协议双向转换 (Cross-Protocol Translation)](#跨协议双向转换-cross-protocol-translation)
 - [内部管理端点 (Admin API)](#内部管理端点-admin-api)
 - [内置 Web 控制台 (Web Console)](#内置-web-控制台-web-console)
@@ -164,9 +164,9 @@ curl http://127.0.0.1:8787/v1/images/generations \
    - 适用于支持 OpenAI 新一代 Responses 协议的上游端点。
    - 默认鉴权：`Authorization: Bearer <api_key>`；路径 `/v1/responses`。
    - 该协议是**有状态**的：应答里的 item（`msg_…` / `rs_…` / 工具调用）与加密思维链 `encrypted_content` 由创建它的服务端存储与加密。若上游是在多个 Azure OpenAI 资源间轮转、且不做会话粘性的中转站，会话的下一轮落到别的资源上会被拒为 400（`The requested item was created under a different Azure OpenAI resource` / `The encrypted content for item rs_… could not be verified`）。
-   - 对策是 `providers[].strip_responses_state: true`：转发前剥离 `input` 中每个 item 的 `id`、item 上任何 `encrypted*` 字段以及顶层 `previous_response_id`，让每个请求都变成任何资源都能接受的无状态形态。消息正文、`call_id` 与工具参数照常透传，同协议直通的其他零拷贝性质不变（有字段被剥离时该次请求会重新序列化一次，请求日志记录剥离数量）。代价是模型不再跨轮接续隐藏思维链，每轮重新推理。该选项默认关闭，且在非 Responses 报文形态的中转站上会得到一条校验告警。实现移植自 [codex-strip-proxy](https://github.com/AnnaofArendelle/codex-strip-proxy)（作者 AnnaofArendelle）。
+   - 对策是 `providers[].strip_responses_state: true`：转发前剥离 `input` 中每个 item 的 `id`、item 上任何 `encrypted*` 字段以及顶层 `previous_response_id`，让每个请求变成无状态形态。消息正文、`call_id` 与工具参数照常透传；有剥离字段时重新序列化，请求日志记录数量。代价是模型不再跨轮接续隐藏思维链，每轮重新推理。该选项默认关闭，非 Responses 形态会产生校验告警。实现移植自 [codex-strip-proxy](https://github.com/AnnaofArendelle/codex-strip-proxy)（作者 AnnaofArendelle）。
 5. **`azure`**（Azure OpenAI）：
-   - 报文与 `openai` **完全同形**，因此同协议直通、零解析；差别只在路径与鉴权：模型名是路径里的 **deployment**，必须带 `api-version` 查询参数，密钥走 `api-key` 请求头（Azure 拒绝 bearer）。
+   - 报文与 `openai` 同形，避免协议转换；路径、鉴权不同：模型是 deployment，带 api-version，密钥走 api-key。
    - 路径：`/openai/deployments/{model}/chat/completions?api-version={api_version}`，`api_version` 留空时用 `2024-10-21`。
    - `base_url` 填资源根地址（如 `https://my-resource.openai.azure.com`）。
 6. **`vertex`**（Vertex AI）：
@@ -202,14 +202,16 @@ curl http://127.0.0.1:8787/v1/images/generations \
 
 ---
 
-## 跨协议适配与零开销直通 (Zero-overhead Passthrough)
+## 跨协议适配与同形报文透传
 
-### 同协议零开销直通 (Fast Path)
+### 同形报文透传 (Fast Path)
 
 当**客户端请求的协议**与**选中的上游中转站协议**完全一致时（例如：客户端发送 OpenAI `/v1/chat/completions`，上游提供商 `protocol` 亦为 `openai`）：
 
-- **零解析开销**：入站请求体无需经过完整的 JSON DOM 树构建，直接流向目标上游套接字（仅在需要重命名模型时做轻量替换）；
-- **零缓冲透传**：SSE 数据块到达后即刻推入客户端套接字，内存无额外拼装拷贝，延迟达到硬件和网络极限。
+- **同形报文透传**：路由/校验解析请求，但没有协议转换时优先保留原始报文字节；模型映射或状态剥离可能改写正文。
+- **有界流式转发**：上游数据通过有界字符串队列交给下游；不会等待完整回答，但存在缓冲与拷贝，不是理论零开销。
+
+上游自动重定向一律拒绝（含同源），以避免凭据/提示词重放到其他位置或协议降级。缓冲/流式请求按传输失败进入未提交的故障转移；探测返回重定向状态和原因。请填写最终 Base URL。
 
 > 唯一的例外是 `strip_responses_state`：开启它的中转站在转发前需要改写请求体（见上文 `openai_responses`），因此该次请求会多一次 JSON 解析与序列化；未开启或没有可剥离字段时，请求体仍按客户端原始字节发出。
 
@@ -231,7 +233,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
 
 > **上游连接复用**：缓冲与流式两条路径都从**每工作线程一份**的上游连接池里取连接（每个中转站一条，键包含根地址、两个超时值与 CA 包），所以连续请求不会重复支付 TCP/TLS 握手——流式路径此前每次尝试都新建连接，等于把握手成本压在了流量最大的那条路上。传输干净结束时连接留在池中供下次复用；**被中止或因传输错误结束的传输会把它退役**，交给下一个请求的永远是干净 socket。httplib 在复用前会探测 socket 存活（含 TLS 对端关闭判定），因此中转站关掉空闲连接只会多一次重连，不会让请求失败。
 
-> **流式 token 统计**：为统计用量，流经的每个数据块只做一次子串匹配；**在事件边界结束且不含 `usage` 的块完全不拷贝、不解析**（快路径），命中 `usage` / `usageMetadata` 的块才解析（OpenAI 通常只有最后一个块），只有跨块被切断的事件才进入有界的接缝缓冲。因此上面的“零解析开销”与“无额外拼装拷贝”在语义上仍然成立。计数按出现过的**最大值**合并：Anthropic 把输入与输出分别放在 `message_start` 与 `message_delta`，Gemini 在每个块里累计上报，OpenAI 仅在客户端开启 `stream_options.include_usage` 时于流尾给出一次（`literouter` **不会**替你注入该参数，以免改动客户端看到的报文）。若上游始终未报告 usage，该次请求的 token 计为 0，不做估算或猜测。
+> **流式 token 统计**：观察器跳过不含 usage 的完整事件，只解析可能上报计数的事件；跨块事件进入有界接缝缓冲。计数按已出现最大值合并；Anthropic 输入/输出分开，Gemini 累计上报，OpenAI 需客户端开启 stream_options.include_usage。转发队列仍有字符串拷贝，不代表整体零拷贝。没有上报时计 0，不猜测。
 
 ### 跨协议双向转换 (Cross-Protocol Translation)
 
@@ -331,7 +333,8 @@ curl http://127.0.0.1:8787/v1/images/generations \
       "latency_ms_last": 310.5,
       "latency_ms_avg": 345.2,
       "latency_ms_p95": 0.0,
-      "last_used_unix": 1758003600.5
+      "last_used_unix": 1758003600.5,
+      "cost_usd": 0.075
     }
   ],
   "model_stats": [
@@ -374,7 +377,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
 - **请求**：`GET /__literouter/logs?since=<id>&limit=<n>`
 - **参数**：
   - `since`：拉取日志 ID 大于此值的增量记录；
-  - `limit`：最多返回条数（默认 100）。
+  - `limit`：最多返回条数（默认 500，最大 2000）。
 - **响应**：包含请求摘要、方法、目标模型、上游站点、HTTP 状态码、耗时（毫秒）、Token 统计等。
 
   日志条目保留这条请求的**入站与出站上下文**：`method` / `path` / `ingress_protocol` 是客户端实际调用的接口与协议；`client_ip` / `user_agent` 标识来源；`model` 是客户端请求的逻辑模型，`upstream_model` 是路由重命名后真正发给中转站的模型，`upstream_protocol` 是所选中转站的协议。`request_bytes` 与 `bytes` 分别表示发往上游的请求大小和返回给客户端的响应大小；`prompt_tokens` / `completion_tokens` / `cost_usd` 是上游实际报告并经本地单价换算的用量，媒体或不返回 usage 的协议为 0。`cache_status` 只在本地应答缓存参与时出现，取值 `hit` / `miss`。
@@ -398,7 +401,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
 ### 3. 配置热重载
 
 - **请求**：`POST /__literouter/reload`
-- **响应**：`{"ok": true, "message": "reloaded successfully"}`
+- **响应**：`{"ok": true, "summary": "no issues", "issues": []}`；校验失败返回 422 和对应报告，活动配置保持不变。
 
 ### 4. 重置遥测统计与熔断器
 
@@ -415,7 +418,7 @@ curl http://127.0.0.1:8787/v1/images/generations \
 
 - **请求**：`POST /__literouter/probe`
 - **请求体**（二选一）：
-  - `{"provider": "<id>"}`：探测**已配置**的中转站；密钥在服务端解析（`resolveSecret`），不会经由网络传输；
+  - `{"provider": "<id>"}`：按已保存配置探测；不将已保存密钥返回浏览器，但凭据会按协议发往所选上游。
   - 中转站配置 JSON（`base_url`, `api_key`, `protocol`, `headers`, `timeout_sec`）：探测尚未保存的临时条目，供表单使用。
 - **作用**：即时向该中转站发起探测，测试网络连通性，并自动拉取上游所支持的模型列表。
 
@@ -488,4 +491,4 @@ curl http://127.0.0.1:8787/v1/images/generations \
 - **鉴权**：静态外壳不含任何数据，因此无需密钥即可加载；控制台数据需要 `server.api_key`。需要鉴权时，浏览器首次访问会弹出密钥输入框，密钥只保存在本机 localStorage。
 - **打包方式**：前端构建产物（`web/dist/` 下的 `index.html`、`app.js`、`app.css`、`favicon.svg`）通过 C++23 `#embed` 编译进二进制，服务器上只拷贝一个 `literouter` 即可。若编译器不支持 `#embed`（例如 ISO 严格模式下的 GCC），改用环境变量 `LITEROUTER_WEB_DIR` 指向包含这四个文件的构建产物目录（如 `web/dist`）。
 - **能力**：实时指标磁贴（请求/成功率/Token 速率等）、中转站健康矩阵与一键探测、路由候选链排序与编辑、可视化全局配置编辑与安全回传保存、一键复制 Continue / Cursor 接入配置、增量日志流过滤（按级别/类型/关键字过滤、暂停/清空）、暗亮主题切换与中英双语国际化。
-- **安全性**：与控制台同源，不向跨域请求开放管理端点；密钥仅用于浏览器到本机服务的同源请求，且字面量密钥绝不出网。
+- **安全性**：管理数据保持同源并脱敏已保存凭据。模型请求仍发往用户选定的上游，必要鉴权头在那条连接上发送；不是“所有密钥绝不出网”的承诺。

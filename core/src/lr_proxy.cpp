@@ -14,6 +14,8 @@
 module;
 
 #include <httplib.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
 
 module literouter.core;
 
@@ -21,6 +23,8 @@ import std;
 import nlohmann.json;
 
 #include "lr_dump.h"
+#include "lr_tls.h"
+#include "lr_http_tls.h"
 
 namespace literouter {
 
@@ -877,11 +881,8 @@ bool isLoopbackRoot(std::string_view root) {
 // upstream proxy. Timeouts stay with each caller because they differ — the
 // instance check waits on a peer that may be mid-start, the admin calls do not.
 void applyAdminTransport(h::Client &client, std::string_view root) {
-    if (const auto bundle = resolveCaBundle(); !bundle.empty()) {
-        // `path.string()`, not pathToUtf8(): this value is handed to OpenSSL,
-        // which opens the file through the C library's narrow-path call — the
-        // ANSI code page on Windows. UTF-8 bytes would be the wrong encoding.
-        client.set_ca_cert_path(bundle.string());
+    if (const auto bundle = resolveCaBundle(); !bundle.empty() && startsWith(root, "https://")) {
+        detail::applyCaBundle(client, bundle);
     }
     client.enable_server_certificate_verification(true);
 
@@ -917,6 +918,7 @@ std::string existingInstance(const ServerConfig &server,
     ServerConfig target = server;
     if (wildcard) target.host = (host == "::" || host == "[::]") ? "::1" : "127.0.0.1";
     h::Client client{serverBaseUrl(target)};
+    if (!client.is_valid()) return {};
     applyAdminTransport(client, serverBaseUrl(target));
     client.set_connection_timeout(0, 400000);
     client.set_read_timeout(0, 400000);
@@ -955,7 +957,7 @@ bool configTargetWritable(const std::string &path) {
         return false;
     }
     std::error_code ec;
-    std::filesystem::path destination{path};
+    std::filesystem::path destination = pathFromUtf8(path);
     if (const auto status = std::filesystem::symlink_status(destination, ec);
         !ec && std::filesystem::is_symlink(status)) {
         destination = std::filesystem::canonical(destination, ec);
@@ -990,7 +992,8 @@ bool configTargetWritable(const std::string &path) {
 // The listening process's own record: who is on this port, since when, and with
 // which config. Written after the bind (the bound port is what identifies the
 // instance) and removed by stop().
-bool writePidFile(const std::filesystem::path &path, int port, const std::string &config_path) {
+bool writePidFile(const std::filesystem::path &path, const ServerConfig &server,
+                  const std::string &config_path) {
     // Called from start(), above which there is no handler: an exception here
     // would abort a proxy that has already bound its port and is about to
     // serve. `dumpJson` cannot throw on the bytes any more, but this stays
@@ -1003,7 +1006,8 @@ bool writePidFile(const std::filesystem::path &path, int port, const std::string
         }
         json doc = json::object();
         doc["pid"] = static_cast<std::int64_t>(currentProcessId());
-        doc["port"] = port;
+        doc["port"] = server.port;
+        doc["base_url"] = serverBaseUrl(server);
         doc["started_unix"] = nowUnix();
         doc["config"] = config_path;
         std::ofstream output{path, std::ios::binary | std::ios::trunc};
@@ -1042,7 +1046,36 @@ ProviderStat providerStatFromJson(const json &item) {
     stat.latency_ms_avg = item.value("latency_ms_avg", 0.0);
     stat.latency_ms_p95 = item.value("latency_ms_p95", 0.0);
     stat.last_used_unix = item.value("last_used_unix", 0.0);
+    stat.cost_usd = item.value("cost_usd", 0.0);
     return stat;
+}
+
+ModelStat modelStatFromJson(const json &item) {
+    ModelStat stat;
+    stat.model = item.value("model", std::string{});
+    stat.requests = item.value("requests", std::uint64_t{0});
+    stat.successes = item.value("successes", std::uint64_t{0});
+    stat.failures = item.value("failures", std::uint64_t{0});
+    stat.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
+    stat.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
+    stat.cost_usd = item.value("cost_usd", 0.0);
+    stat.latency_ms_avg = item.value("latency_ms_avg", 0.0);
+    stat.last_used_unix = item.value("last_used_unix", 0.0);
+    return stat;
+}
+
+TrafficBucket trafficBucketFromJson(const json &item) {
+    TrafficBucket bucket;
+    bucket.hour_unix = item.value("hour_unix", 0.0);
+    bucket.bucket_sec = item.value("bucket_sec", 3600);
+    bucket.requests = item.value("requests", std::uint64_t{0});
+    bucket.successes = item.value("successes", std::uint64_t{0});
+    bucket.failures = item.value("failures", std::uint64_t{0});
+    bucket.bytes_out = item.value("bytes_out", std::uint64_t{0});
+    bucket.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
+    bucket.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
+    bucket.cost_usd = item.value("cost_usd", 0.0);
+    return bucket;
 }
 
 LogEntry logEntryFromJson(const json &item) {
@@ -1662,6 +1695,7 @@ struct ProxyServer::Impl {
         counters["tokens_prompt"] = tokens_prompt;
         counters["tokens_completion"] = tokens_completion;
         counters["latency_ms_avg"] = latency_ms_avg;
+        counters["cost_usd"] = cost_usd;
         root["counters"] = std::move(counters);
 
         json providers = json::array();
@@ -1795,7 +1829,8 @@ struct ProxyServer::Impl {
         const std::string text{std::istreambuf_iterator<char>{input},
                                std::istreambuf_iterator<char>{}};
         const json root = json::parse(text, nullptr, false);
-        if (root.is_discarded() || !root.is_object() || root.value("version", 0) != 1) {
+        if (!root.is_object() || !root.contains("version") ||
+            !root.at("version").is_number_integer() || root.at("version") != 1) {
             recordSystem(std::format("ignoring {}: not a readable literouter telemetry file",
                                      pathToUtf8(state_path)),
                          "warning");
@@ -1813,8 +1848,11 @@ struct ProxyServer::Impl {
         std::uint64_t prompt_tokens = 0;
         std::uint64_t completion_tokens = 0;
         double avg_latency = 0.0;
+        double restored_cost = 0.0;
+        bool cost_recorded = false;
         std::map<std::string, ProviderStat, std::less<>> restored_stats;
         std::map<std::string, ModelStat, std::less<>> restored_model_stats;
+        std::deque<TrafficBucket> restored_hours;
         std::deque<LogEntry> entries;
         std::uint64_t next_seq = 1;
         try {
@@ -1826,6 +1864,8 @@ struct ProxyServer::Impl {
                 prompt_tokens = it->value("tokens_prompt", std::uint64_t{0});
                 completion_tokens = it->value("tokens_completion", std::uint64_t{0});
                 avg_latency = it->value("latency_ms_avg", 0.0);
+                cost_recorded = it->contains("cost_usd");
+                restored_cost = it->value("cost_usd", 0.0);
             }
             if (const auto it = root.find("providers"); it != root.end() && it->is_array()) {
                 for (const auto &item : *it) {
@@ -1840,21 +1880,16 @@ struct ProxyServer::Impl {
                     if (!item.is_object()) {
                         continue;
                     }
-                    ModelStat stat;
-                    stat.model = item.value("model", std::string{});
+                    ModelStat stat = modelStatFromJson(item);
                     if (stat.model.empty()) {
                         continue;
                     }
-                    stat.requests = item.value("requests", std::uint64_t{0});
-                    stat.successes = item.value("successes", std::uint64_t{0});
-                    stat.failures = item.value("failures", std::uint64_t{0});
-                    stat.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
-                    stat.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
-                    stat.cost_usd = item.value("cost_usd", 0.0);
-                    stat.latency_ms_avg = item.value("latency_ms_avg", 0.0);
-                    stat.last_used_unix = item.value("last_used_unix", 0.0);
                     restored_model_stats[stat.model] = std::move(stat);
                 }
+            }
+            if (!cost_recorded) {
+                // Older telemetry files still have each provider's cost.
+                for (const auto &entry : restored_stats) restored_cost += entry.second.cost_usd;
             }
             if (const auto it = root.find("log"); it != root.end() && it->is_object()) {
                 if (const auto list = it->find("entries"); list != it->end() && list->is_array()) {
@@ -1865,6 +1900,11 @@ struct ProxyServer::Impl {
                     }
                 }
                 next_seq = it->value("next_seq", std::uint64_t{1});
+            }
+            if (const auto it = root.find("hourly"); it != root.end() && it->is_array()) {
+                for (const auto &item : *it) {
+                    if (item.is_object()) restored_hours.push_back(trafficBucketFromJson(item));
+                }
             }
         } catch (const std::exception &error) {
             recordSystem(std::format("ignoring {}: {}", pathToUtf8(state_path), error.what()),
@@ -1883,28 +1923,6 @@ struct ProxyServer::Impl {
             restored_model_stats.erase(oldest);
         }
 
-        std::deque<TrafficBucket> restored_hours;
-        if (const auto it = root.find("hourly"); it != root.end() && it->is_array()) {
-            for (const auto &item : *it) {
-                if (!item.is_object()) {
-                    continue;
-                }
-                TrafficBucket bucket;
-                bucket.hour_unix = item.value("hour_unix", 0.0);
-                // A file written before the bucket width was configurable has
-                // no `bucket_sec`, and it was recorded hourly.
-                bucket.bucket_sec = item.value("bucket_sec", 3600);
-                bucket.requests = item.value("requests", std::uint64_t{0});
-                bucket.successes = item.value("successes", std::uint64_t{0});
-                bucket.failures = item.value("failures", std::uint64_t{0});
-                bucket.bytes_out = item.value("bytes_out", std::uint64_t{0});
-                bucket.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
-                bucket.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
-                bucket.cost_usd = item.value("cost_usd", 0.0);
-                restored_hours.push_back(bucket);
-            }
-        }
-
         const std::size_t restored = entries.size();
         {
             std::scoped_lock lock{telemetry_mutex};
@@ -1915,6 +1933,7 @@ struct ProxyServer::Impl {
             tokens_prompt = prompt_tokens;
             tokens_completion = completion_tokens;
             latency_ms_avg = avg_latency;
+            cost_usd = restored_cost;
             for (auto it = restored_stats.begin(); it != restored_stats.end(); ++it) {
                 stats[it->first] = std::move(it->second);
             }
@@ -1943,11 +1962,11 @@ struct ProxyServer::Impl {
         upstream_limiter.setConfig(config);
         response_cache.configure(config.server.response_cache_ttl_sec,
                                 config.server.response_cache_max_entries);
-        traffic_bucket_sec = std::clamp(config.server.traffic_bucket_sec, 60, 86400);
-        traffic_bucket_count =
-            static_cast<std::size_t>(std::clamp(config.server.traffic_bucket_count, 2, 10000));
         {
             std::scoped_lock lock{telemetry_mutex};
+            traffic_bucket_sec = std::clamp(config.server.traffic_bucket_sec, 60, 86400);
+            traffic_bucket_count =
+                static_cast<std::size_t>(std::clamp(config.server.traffic_bucket_count, 2, 10000));
             log.setCapacity(static_cast<std::size_t>(std::max(16, config.server.log_capacity)));
             // A narrower window than the trend currently holds trims it now
             // rather than at the next bucket boundary, so the chart reflects
@@ -1983,13 +2002,13 @@ struct ProxyServer::Impl {
             return;
         }
         std::error_code ec;
-        const auto stamp = std::filesystem::last_write_time(path, ec);
+        const auto stamp = std::filesystem::last_write_time(pathFromUtf8(path), ec);
         if (ec) {
             config_stamp_valid = false;
             return;
         }
         config_stamp = stamp;
-        config_size = std::filesystem::file_size(path, ec);
+        config_size = std::filesystem::file_size(pathFromUtf8(path), ec);
         config_stamp_valid = !ec;
     }
 
@@ -1999,11 +2018,11 @@ struct ProxyServer::Impl {
             return;
         }
         std::error_code ec;
-        const auto stamp = std::filesystem::last_write_time(path, ec);
+        const auto stamp = std::filesystem::last_write_time(pathFromUtf8(path), ec);
         if (ec) {
             return; // the file went away; the server keeps the config it has
         }
-        const std::uintmax_t size = std::filesystem::file_size(path, ec);
+        const std::uintmax_t size = std::filesystem::file_size(pathFromUtf8(path), ec);
         if (ec) {
             return;
         }
@@ -2012,7 +2031,7 @@ struct ProxyServer::Impl {
         }
         rememberConfigStamp();
 
-        auto loaded = ConfigStore::load(path);
+        auto loaded = ConfigStore::load(pathFromUtf8(path));
         if (!loaded) {
             recordSystem(std::format("config changed on disk but did not load: {}", loaded.error()),
                          "error");
@@ -2021,6 +2040,11 @@ struct ProxyServer::Impl {
         // The console's own save writes the file too; reloading what is already
         // running would only log a line that says nothing happened.
         if (toJsonString(loaded->config()) == toJsonString(snapshotConfig())) {
+            return;
+        }
+        const auto report = validate(loaded->config());
+        if (!report.ok()) {
+            recordSystem("config changed on disk but failed validation; keeping the active config", "error");
             return;
         }
         applyConfig(loaded->config());
@@ -3181,6 +3205,13 @@ struct ProxyServer::Impl {
                 bridge->queue.clear();
                 bridge->queued_bytes = 0;
             }
+            if (!client->is_valid()) {
+                std::scoped_lock lock{bridge->mutex};
+                bridge->error = "cannot initialize upstream client";
+                bridge->finished = true;
+                bridge->cv.notify_all();
+                return;
+            }
 
             h::Request upstream;
             upstream.method = "POST";
@@ -3199,6 +3230,7 @@ struct ProxyServer::Impl {
                 bridge->error = auth.error();
                 bridge->finished = true;
                 bridge->cv.notify_all();
+                return; // never send an unsigned/unauthenticated fallback request
             } else {
                 for (const auto &header : *auth) {
                     upstream.set_header(header.name, header.value);
@@ -3219,6 +3251,13 @@ struct ProxyServer::Impl {
 
             upstream.response_handler = [bridge](const h::Response &response) {
                 std::scoped_lock lock{bridge->mutex};
+                if (response.status >= 300 && response.status < 400 &&
+                    response.has_header("Location")) {
+                    bridge->error = "upstream redirects are disabled; configure the final base_url";
+                    bridge->finished = true;
+                    bridge->cv.notify_all();
+                    return false; // never commit or follow a credential-bearing redirect
+                }
                 bridge->status = response.status;
                 bridge->headers_unix = nowUnix();
                 bridge->headers.clear();
@@ -3254,7 +3293,7 @@ struct ProxyServer::Impl {
                 auto result = client->send(upstream);
                 std::scoped_lock lock{bridge->mutex};
                 if (!result) {
-                    bridge->error = errorText(result.error());
+                    if (bridge->error.empty()) bridge->error = errorText(result.error());
                     bridge->error_code = result.error();
                 }
                 bridge->finished = true;
@@ -3931,19 +3970,14 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     if (config.server.tls_cert_file.empty()) {
         impl_->server = std::make_unique<h::Server>();
     } else {
-        // The config stores UTF-8; OpenSSL's PEM loaders take a narrow path and
-        // decode it through the ANSI code page on Windows. Going through
-        // pathFromUtf8 -> pathForCApi is what makes a certificate under a
-        // directory with a non-ASCII name load on Windows, and is a no-op on
-        // the other two platforms.
-        const std::string cert_path = pathForCApi(pathFromUtf8(config.server.tls_cert_file));
-        const std::string key_path = pathForCApi(pathFromUtf8(config.server.tls_key_file));
+        // Load PEM through native filesystem paths on all platforms, retaining
+        // the chain and never handing OpenSSL a lossy ANSI filename.
+        const auto cert_path = pathFromUtf8(config.server.tls_cert_file);
+        const auto key_path = pathFromUtf8(config.server.tls_key_file);
         impl_->server = std::make_unique<h::SSLServer>([cert_path, key_path](h::tls::ctx_t context) {
             auto *ctx = static_cast<SSL_CTX *>(context);
             SSL_CTX_set_default_passwd_cb(ctx, [](char *, int, int, void *) -> int { return 0; });
-            return SSL_CTX_use_certificate_chain_file(ctx, cert_path.c_str()) == 1 &&
-                   SSL_CTX_use_PrivateKey_file(ctx, key_path.c_str(), SSL_FILETYPE_PEM) == 1 &&
-                   SSL_CTX_check_private_key(ctx) == 1;
+            return detail::loadCertificateChain(ctx, cert_path) && detail::loadPrivateKey(ctx, key_path);
         });
         if (!impl_->server->is_valid()) {
             return std::unexpected(std::string{"cannot initialize HTTPS listener from TLS files"});
@@ -4343,7 +4377,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         std::error_code ec;
         json root = json::object();
         root["path"] = path;
-        root["exists"] = !path.empty() && std::filesystem::is_regular_file(path, ec);
+        root["exists"] = !path.empty() && std::filesystem::is_regular_file(pathFromUtf8(path), ec);
         root["config"] = std::move(doc);
         root["validation"] = validationJson(validate(cfg));
         res.status = 200;
@@ -4425,7 +4459,7 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         if (!path.empty()) {
             ConfigStore store;
             store.config() = *parsed;
-            if (auto written = store.saveAs(path); !written) {
+            if (auto written = store.saveAs(pathFromUtf8(path)); !written) {
                 sendError(res, 500, written.error(), "write_failed", "config_write_failed");
                 return;
             }
@@ -4493,7 +4527,12 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
         }
         json root = json::object();
         root["entries"] = std::move(entries);
-        root["seq"] = impl_->log.next_seq > 0 ? impl_->log.next_seq - 1 : 0;
+        // Read the cursor under the same lock that allocates it. The returned
+        // entries remain the client's advancement boundary when a page is full.
+        {
+            std::scoped_lock lock{impl_->telemetry_mutex};
+            root["seq"] = impl_->log.next_seq > 0 ? impl_->log.next_seq - 1 : 0;
+        }
         res.status = 200;
         res.set_content(dumpJson(root), "application/json");
     });
@@ -4504,19 +4543,19 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
             sendError(res, 400, "this server was started without a config path");
             return;
         }
-        auto loaded = ConfigStore::load(path);
+        auto loaded = ConfigStore::load(pathFromUtf8(path));
         if (!loaded) {
             sendError(res, 422, loaded.error(), "invalid_config", "config_invalid");
             return;
         }
         const ValidationReport report = validate(loaded->config());
-        updateConfig(loaded->config());
+        if (report.ok()) updateConfig(loaded->config());
 
         json root = validationJson(report);
         res.status = report.ok() ? 200 : 422;
         res.set_content(dumpJson(root, 2), "application/json");
         impl_->recordSystem(report.ok() ? "config reloaded from disk"
-                                        : "config reloaded with validation errors",
+                                        : "config reload refused; keeping the active config",
                             report.ok() ? "info" : "warn");
     });
 
@@ -4574,19 +4613,23 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
                             "application/json");
             return;
         }
-        provider.base_url = body.value("base_url", std::string{});
-        provider.api_key = body.value("api_key", std::string{});
-        provider.timeout_sec = std::max(3, body.value("timeout_sec", 20));
-        provider.connect_timeout_sec = std::min(20, provider.timeout_sec);
-        if (const auto it = body.find("headers"); it != body.end() && it->is_object()) {
-            // Explicit iterators: see the note in lr_json.cpp about
-            // `iteration_proxy_value` and structured bindings.
-            for (auto entry = it->begin(); entry != it->end(); ++entry) {
-                if (entry.value().is_string()) {
-                    provider.headers.emplace(entry.key(), entry.value().get<std::string>());
-                }
-            }
+        // Reuse the full configuration codec, not an OpenAI-only field subset.
+        json entry = body;
+        if (!entry.contains("id")) entry["id"] = "inline-probe";
+        auto parsed = appConfigFromJson(dumpJson(json{{"providers", json::array({entry})}}));
+        if (!parsed || parsed->providers.empty()) {
+            sendError(res, 422, parsed ? "expected a provider object" : parsed.error());
+            return;
         }
+        const auto report = validate(*parsed);
+        if (!report.ok()) {
+            res.status = 422;
+            res.set_content(dumpJson(validationJson(report)), "application/json");
+            return;
+        }
+        provider = std::move(parsed->providers.front());
+        provider.timeout_sec = std::clamp(provider.timeout_sec, 3, 30);
+        provider.connect_timeout_sec = std::clamp(provider.connect_timeout_sec, 1, 20);
         const ProviderProbe probe = probeProvider(provider, provider.timeout_sec);
         res.status = 200;
         res.set_content(toJsonString(probe), "application/json");
@@ -4632,7 +4675,9 @@ std::expected<void, std::string> ProxyServer::start(const AppConfig &config) {
     // unidentifiable, and the file is what a later start reads to name the
     // process holding the port it wants.
     const std::filesystem::path pid_path = defaultPidPath(bound);
-    if (writePidFile(pid_path, bound, impl_->configPath())) {
+    auto listening = config.server;
+    listening.port = bound;
+    if (writePidFile(pid_path, listening, impl_->configPath())) {
         impl_->pid_path = pid_path;
     }
     impl_->started_unix = nowUnix();
@@ -4892,6 +4937,10 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
     }
 
     h::Client client{root};
+    if (!client.is_valid()) {
+        out.error = std::format("invalid address `{}`", base_url);
+        return out;
+    }
     applyAdminTransport(client, root);
     client.set_connection_timeout(2, 0);
     client.set_read_timeout(5, 0);
@@ -4941,6 +4990,16 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
     s.latency_ms_avg = parsed.value("latency_ms_avg", 0.0);
     s.log_seq = parsed.value("log_seq", std::uint64_t{0});
     s.breakers_open = parsed.value("breakers_open", 0);
+    s.cost_usd = parsed.value("cost_usd", 0.0);
+    s.traffic_bucket_sec = parsed.value("traffic_bucket_sec", 3600);
+    s.traffic_bucket_count = parsed.value("traffic_bucket_count", 24);
+    s.cache_enabled = parsed.value("cache_enabled", false);
+    s.cache_hits = parsed.value("cache_hits", std::uint64_t{0});
+    s.cache_misses = parsed.value("cache_misses", std::uint64_t{0});
+    s.cache_entries = parsed.value("cache_entries", std::uint64_t{0});
+    if (const auto it = parsed.find("model_stats"); it != parsed.end() && it->is_array()) {
+        for (const auto &item : *it) if (item.is_object()) s.model_stats.push_back(modelStatFromJson(item));
+    }
 
     if (const auto it = parsed.find("providers"); it != parsed.end() && it->is_array()) {
         for (const auto &item : *it) {
@@ -4955,16 +5014,7 @@ AdminStatus fetchStatus(std::string_view base_url, std::string_view api_key) {
             if (!item.is_object()) {
                 continue;
             }
-            TrafficBucket bucket;
-            bucket.hour_unix = item.value("hour_unix", 0.0);
-            bucket.requests = item.value("requests", std::uint64_t{0});
-            bucket.successes = item.value("successes", std::uint64_t{0});
-            bucket.failures = item.value("failures", std::uint64_t{0});
-            bucket.bytes_out = item.value("bytes_out", std::uint64_t{0});
-            bucket.tokens_prompt = item.value("tokens_prompt", std::uint64_t{0});
-            bucket.tokens_completion = item.value("tokens_completion", std::uint64_t{0});
-            bucket.cost_usd = item.value("cost_usd", 0.0);
-            s.hourly.push_back(std::move(bucket));
+            s.hourly.push_back(trafficBucketFromJson(item));
         }
     }
 
@@ -5012,6 +5062,10 @@ std::optional<h::Client> makeAdminClient(std::string_view base_url, std::string_
         if (proxy.scheme == "https" && !proxy.warning.empty()) { error = proxy.warning; return std::nullopt; }
     }
     h::Client client{root};
+    if (!client.is_valid()) {
+        error = std::format("invalid address `{}`", base_url);
+        return std::nullopt;
+    }
     applyAdminTransport(client, root);
     client.set_connection_timeout(2, 0);
     client.set_read_timeout(5, 0);
@@ -5024,6 +5078,66 @@ std::optional<h::Client> makeAdminClient(std::string_view base_url, std::string_
 }
 
 } // namespace
+
+std::expected<std::string, std::string> runningServerBaseUrl(
+    const ServerConfig &server, const std::filesystem::path &config_path) {
+    const auto destination = [](ServerConfig target) {
+        if (target.host == "0.0.0.0") target.host = "127.0.0.1";
+        else if (target.host == "::" || target.host == "[::]") target.host = "::1";
+        return serverBaseUrl(target);
+    };
+    if (server.port != 0) return destination(server);
+    if (config_path.empty()) return std::unexpected("dynamic port discovery needs a config path");
+    const auto normalize = [](const std::filesystem::path &path) {
+        std::error_code ec;
+        const auto canonical = std::filesystem::weakly_canonical(path, ec);
+        return ec ? path.lexically_normal() : canonical;
+    };
+    const auto wanted = normalize(config_path);
+    std::optional<std::string> found;
+    std::error_code ec;
+    std::filesystem::directory_iterator entries{defaultStateDir(), ec};
+    const std::filesystem::directory_iterator end;
+    for (; !ec && entries != end; entries.increment(ec)) {
+        const auto &entry = *entries;
+        std::error_code entryError;
+        const auto name = pathToUtf8(entry.path().filename());
+        if (!startsWith(name, "literouter-") || !endsWith(name, ".pid") ||
+            !entry.is_regular_file(entryError) || entryError ||
+            entry.file_size(entryError) > 16384 || entryError) continue;
+        try {
+            std::ifstream input{entry.path(), std::ios::binary};
+            const std::string text{std::istreambuf_iterator<char>{input},
+                                   std::istreambuf_iterator<char>{}};
+            const json record = json::parse(text, nullptr, false);
+            if (!record.is_object() || record.value("pid", 0) <= 0) continue;
+            if (normalize(pathFromUtf8(record.value("config", std::string{}))) != wanted) continue;
+            const int port = record.value("port", 0);
+            if (port < 1 || port > 65535) continue;
+            auto target = server;
+            target.port = port;
+            // Older records have no scheme; newer records reflect the active
+            // listener, even when the saved TLS config has since been edited.
+            const auto recorded = record.value("base_url", std::string{});
+            // Never let an unsigned courtesy file downgrade an HTTPS
+            // administrator credential to plaintext. Scheme changes require a
+            // matching CLI configuration or explicit restart, not auto-downgrade.
+            if (startsWith(recorded, "https://")) target.tls_cert_file = "active-https";
+            else if (startsWith(recorded, "http://") && !server.tls_cert_file.empty()) continue;
+            const std::string url = destination(target);
+            const auto live = fetchStatus(url, server.api_key);
+            if (!live.reachable || !live.snapshot.running || live.snapshot.port != port ||
+                normalize(pathFromUtf8(live.snapshot.config_path)) != wanted) continue;
+            if (found && *found != url)
+                return std::unexpected("multiple running instances use this config; use a fixed port");
+            found = url;
+        } catch (const std::exception &) {
+            // A corrupt or stale courtesy file must never crash a management client.
+        }
+    }
+    if (!found) return std::unexpected("no running instance found for this config's dynamic port");
+    return *found;
+}
 
 AdminLogs fetchLogs(std::string_view base_url, std::uint64_t since, std::size_t limit,
                     std::string_view api_key) {

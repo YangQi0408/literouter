@@ -71,13 +71,6 @@ void runServe(Context &ctx, const ServeOptions &opts) {
         config.server.port = opts.port;
     }
 
-    if (!store.existsOnDisk()) {
-        printWarn(std::format("config `{}` does not exist; running with the built-in seed",
-                              literouter::pathToUtf8(path)));
-        printNote("  create it with `literouter config init` once you have a relay to point at.",
-                  ctx.quiet);
-    }
-
     const literouter::ValidationReport report = literouter::validate(config);
     if (!report.issues.empty()) {
         printIssues(report, std::cerr);
@@ -100,6 +93,19 @@ void runServe(Context &ctx, const ServeOptions &opts) {
                               report.ok() ? paint("ok", "32") : paint("errors", "31")));
         std::println("listen would be {}", baseUrlOf(config));
         return;
+    }
+
+    if (!store.existsOnDisk()) {
+        // A real first run creates the editable seed. Check/print above stay
+        // read-only; command-line listener overrides are never saved here.
+        const auto saved = store.save();
+        if (!saved) {
+            printError(saved.error());
+            ctx.exitCode = kExitConfig;
+            return;
+        }
+        store.setExistsOnDisk(true);
+        printNote(std::string{literouter::i18n::tr("created the initial configuration")}, ctx.quiet);
     }
 
     literouter::ProxyServer server;

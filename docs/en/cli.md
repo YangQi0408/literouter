@@ -99,9 +99,7 @@ literouter status [OPTIONS]
 ```
 
 ### Options
-- `--json`: Output the raw JSON status snapshot;
-- `--live`: Continuously refresh dashboard in place (top/htop style);
-- `--interval <ms>`: Refresh interval in milliseconds (default 1000).
+- `--json`: Output the complete snapshot plus `reachable` / `url` management fields. Use the web console for a live dashboard; CLI has no `--live` / `--interval` flags.
 
 **Information displayed**:
 - Uptime, Active Requests, Success Rate, Average Latency;

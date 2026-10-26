@@ -67,7 +67,7 @@ void runExplain(Context &ctx, const ExplainOptions &opts) {
         return;
     }
     const auto reply = literouter::adminGet(
-        baseUrlOf(store->config()), "/explain?model=" + encodeQuery(opts.model),
+        adminBaseUrlOf(*store), "/explain?model=" + encodeQuery(opts.model),
         store->config().server.api_key);
     if (!reply.reachable || reply.status < 200 || reply.status >= 300) {
         const std::string error = reply.reachable

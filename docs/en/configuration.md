@@ -16,7 +16,7 @@ Numeric integer fields must be JSON integers within the signed 32-bit range. Fra
   - [Route Configuration (`routes`)](#route-configuration-routes)
 - [Secure Secret Resolution](#secure-secret-resolution)
   - [Supported Syntax Formats](#supported-syntax-formats)
-  - [Zero-Leak Invariant](#zero-leak-invariant)
+  - [Secret Preservation and Boundaries](#secret-preservation-and-boundaries)
 - [Configuration Validation Engine](#configuration-validation-engine)
 - [Hot Reload](#hot-reload)
 
@@ -265,7 +265,7 @@ Writes match the config file: a temp file in the same directory followed by an a
 |---|---|---|---|
 | `id` | `string` | Required | Unique identifier (alphanumeric, underscores, dashes) used in routes and telemetry. |
 | `name` | `string` | `id` | Human-friendly display label. |
-| `protocol` | `string` | `"openai"` | Upstream protocol: `openai` (default), `anthropic`, `gemini`, `openai_responses`, `azure`, `vertex`, `bedrock`, `ollama`. The proxy decides whether a conversion is needed by **wire shape**, not by name, so `azure` shares OpenAI's shape (zero-parse passthrough) and `vertex` shares Gemini's. |
+| `protocol` | `string` | `"openai"` | Upstream protocol: `openai` (default), `anthropic`, `gemini`, `openai_responses`, `azure`, `vertex`, `bedrock`, `ollama`. Matching **wire shapes** avoid protocol conversion: Azure shares OpenAI's shape and Vertex shares Gemini's. Routing/validation still parses requests. |
 | `api_version` | `string` | `""` | `azure`: the `api-version` query value (empty uses `2024-10-21`); `vertex`: the API version segment in the path (empty uses `v1`). |
 | `region` | `string` | `""` | `bedrock`: the AWS region (**required** — SigV4 cannot guess one); `vertex`: the location (empty uses `us-central1`). |
 | `project` | `string` | `""` | `vertex`: the project id (**required**). |
@@ -287,7 +287,7 @@ Writes match the config file: a temp file in the same directory followed by an a
 | `timeout_sec` | `uint32` | `120` | Upstream response timeout in seconds. |
 | `connect_timeout_sec` | `uint32` | `15` | TCP / TLS connection establishment timeout in seconds. |
 | `supports_stream` | `bool` | `true` | Whether this provider supports Server-Sent Events (SSE) streaming. |
-| `models` | `string[]`| `[]` | List of model names advertised by this provider (used in pass-through mode). |
+| `models` | `string[]`| `[]` | Advertised model directory, used in pass-through mode; never an implicit model fallback chain. Author replacements explicitly in route targets. |
 | `headers` | `object` | `{}` | Key-value pairs of extra HTTP headers attached to every request. |
 | `chat_path` | `string` | By protocol (`openai`, `anthropic`, `gemini`, `openai_responses`, `azure`, `vertex`, `bedrock`, `ollama`) | Custom chat endpoint path; automatically inferred from `protocol` if empty (e.g. `anthropic` → `/v1/messages`, `vertex` → `/v1/projects/…/publishers/google/models/{model}:generateContent`, `bedrock` → `/model/{model}/converse`). |
 | `embeddings_path`| `string` | `"/embeddings"`| Custom embeddings endpoint path. |
@@ -320,13 +320,18 @@ In any `api_key` field, `literouter` supports 5 declaration formats:
 5. ""                     // Empty; sends no Authorization header (for local/LAN gateways)
 ```
 
-### Zero-Leak Invariant
+### Secret Preservation and Boundaries
 
-To guarantee maximum credential security:
+Secret references are preserved and dedicated management fields are redacted;
+this is not an absolute guarantee for arbitrary text, logs or custom headers:
 
 1. **Resolved at invocation time**: The configuration holds raw placeholder strings in memory. Secrets are resolved into plaintext by `resolveSecret()` **strictly at the moment of issuing the network request**.
-2. **Never write back plaintext**: Whenever configuration is saved to disk, through `/ui` or the CLI, `ConfigStore` **strictly preserves the original environment variable placeholders**, preventing accidental leaks into configuration files.
+2. **Never persist resolved references**: `/ui`, CLI edits and `config export` preserve `${VAR}` references rather than writing their resolved value. User-entered literal credentials are still saved as literals.
 3. **Hardened file permissions**: every save clamps the file to its owner — `0600` on POSIX, and on Windows the DACL is replaced with a single ACE for the current user, since the config can hold a literal key and `%APPDATA%` is not the only place it may live.
+
+Automatic upstream redirects are refused: configure the final Base URL instead
+of replaying credentials or prompts to a Location target. Body redaction detects
+known patterns only; arbitrary text and unknown custom credential headers need care.
 
 ---
 
@@ -363,11 +368,15 @@ mcpp run -p cli -- doctor
 When editing `config.json` externally, reload changes without restarting:
 
 ```bash
-# Option 1: CLI reload
-mcpp run -p cli -- config reload
-
-# Option 2: Admin API endpoint
+# Option 1: Admin API endpoint (add Authorization when a key is configured)
 curl -X POST http://127.0.0.1:8787/__literouter/reload
 
-# Option 3: Click "Reload from disk" in the Settings tab of the console
+# Option 2: Click Reload in the console's service controls
+# Option 3: Explicitly enable server.reload_on_change
 ```
+
+Manual and automatic reload reject semantic errors and keep the active config;
+the endpoint returns 422 without applying invalid settings. Real first startup
+creates a missing template; `serve --check` and `--print-config` remain read-only.
+For configured port 0, CLI/tray discover a verified PID record matching the config
+path in the state directory and reject ambiguity instead of guessing an instance.

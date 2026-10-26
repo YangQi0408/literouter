@@ -31,6 +31,8 @@ std::optional<literouter::ConfigStore> loadStoreAt(const std::filesystem::path &
 
 // HTTP or HTTPS URL for the config's server section.
 std::string baseUrlOf(const literouter::AppConfig &config);
+// Resolves port-zero listeners through their verified per-config PID record.
+std::string adminBaseUrlOf(const literouter::ConfigStore &store);
 
 // Listener URL plus /v1 — the base an OpenAI-compatible client points at.
 std::string clientBaseUrlOf(const literouter::AppConfig &config);
