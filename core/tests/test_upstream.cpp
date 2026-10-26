@@ -48,14 +48,24 @@ int main() {
             }};
             while (!waiting.load()) std::this_thread::yield();
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#if defined(_WIN32)
+            lrCancelSocket(client, SD_BOTH);
+#else
             lrShutdownBoth(client);
+#endif
             reader.join();
             LR_CHECK_MSG(elapsed < 2, std::format("local shutdown needed {}s to wake transport polling", elapsed));
         } else {
             LR_CHECK_MSG(false, "loopback polling fixture could not connect");
         }
         if (peer != lr_invalid_socket) lrClose(peer);
-        if (client != lr_invalid_socket) lrClose(client);
+        if (client != lr_invalid_socket) {
+#if defined(_WIN32)
+            lrCloseSocket(client);
+#else
+            lrClose(client);
+#endif
+        }
         if (listener != lr_invalid_socket) lrClose(listener);
     }
     lr_test::ProxyEnvironment proxyEnv;

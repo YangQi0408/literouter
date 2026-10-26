@@ -4,4 +4,6 @@
 #include <httplib.h>
 #if defined(_WIN32)
 #undef WSAPoll
+#undef shutdown
+#undef closesocket
 #endif
