@@ -1255,8 +1255,19 @@ void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxySe
     relay_a.resetCounters();
     relay_b.resetCounters();
 
-    const double bufferedMs = timeBuffered(port, chatRequest(kRouteModel, false));
-    const double streamedMs = timeBuffered(port, chatRequest(kRouteModel, true));
+    // A single runner scheduling pause is not a Nagle stall. The median keeps
+    // the original budget while still failing a consistently paced socket.
+    const auto medianLatency = [&](bool stream) {
+        std::array<double, 5> samples;
+        for (auto &sample : samples) {
+            sample = timeBuffered(port, chatRequest(kRouteModel, stream));
+            if (sample < 0) return -1.0; // transport failures are never discarded
+        }
+        std::ranges::sort(samples);
+        return samples[samples.size() / 2];
+    };
+    const double bufferedMs = medianLatency(false);
+    const double streamedMs = medianLatency(true);
 
     LR_CHECK_MSG(bufferedMs >= 0.0, "the buffered control request never completed");
     LR_CHECK_MSG(streamedMs >= 0.0, "the streamed request never completed");
