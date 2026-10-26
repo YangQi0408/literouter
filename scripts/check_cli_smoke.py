@@ -26,10 +26,13 @@ def main():
             env.pop(key, None)
 
         def run(*arguments, input=None, code=0):
-            reply = subprocess.run([str(binary), *arguments], env=env, input=input,
-                                   text=True, encoding='utf-8', capture_output=True, timeout=20)
-            assert reply.returncode == code, (arguments, reply.returncode, reply.stderr)
-            return reply.stdout
+            # Literal bytes keep CRLF literal on Windows too; text-mode pipes
+            # would translate the test's \r\n into \r\r\n before the CLI sees it.
+            reply = subprocess.run([str(binary), *arguments], env=env,
+                                   input=input.encode('utf-8') if input is not None else None,
+                                   capture_output=True, timeout=20)
+            assert reply.returncode == code, (arguments, reply.returncode, reply.stderr.decode('utf-8'))
+            return reply.stdout.decode('utf-8')
 
         print('version:', run('--version').strip())
         run('serve', '--check', '--port', '0')
