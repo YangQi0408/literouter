@@ -21,11 +21,20 @@ ROOT = Path(__file__).resolve().parents[2]
 def module(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / 'scripts' / (name + '.py'))
     result = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(result)
+    import sys
+    with patch.object(sys, 'path', [str(ROOT / 'scripts'), *sys.path]):
+        spec.loader.exec_module(result)
     return result
 
 
 class ReleaseTools(unittest.TestCase):
+    def test_runner_staging_is_not_a_private_runtime_dependency(self):
+        helper = module('stage_linux_release')
+        stage = Path('/home/runner/work/project/staging/package')
+        helper.reject_private_paths('libc.so => ' + stage.as_posix() + '/lib/tray/libc.so (0x0)', stage)
+        with self.assertRaises(RuntimeError):
+            helper.reject_private_paths('libc.so => /home/runner/.mcpp/registry/libc.so (0x0)', stage)
+
     def test_license_manifest_covers_runtime_and_vendored_notices(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

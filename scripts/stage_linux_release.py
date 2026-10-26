@@ -42,6 +42,17 @@ def relocate(binary: Path, rpath: str):
     run('patchelf', '--set-rpath', rpath, str(binary))
 
 
+def reject_private_paths(checked: str, output: Path):
+    # A runner's own staging directory is the package under test, not an old
+    # registry dependency. Validate resolved paths rather than matching its home.
+    for source in re.findall(r'=>\s+(/\S+)', checked):
+        path = Path(source).resolve()
+        if path.is_relative_to(output.resolve()):
+            continue
+        if '/.mcpp/' in source or '/home/runner/' in source:
+            raise RuntimeError('staged program still reaches build-private paths:\n' + checked)
+
+
 def stage(cli: Path, tray: Path, output: Path):
     output.mkdir(parents=True, exist_ok=True)
     if (output / 'literouter').exists() or (output / 'literouter-tray').exists():
@@ -83,8 +94,7 @@ def stage(cli: Path, tray: Path, output: Path):
             env=os.environ | {'LD_LIBRARY_PATH': ''}, stderr=subprocess.STDOUT)
         if 'not found' in checked:
             raise RuntimeError('staged program is missing libraries:\n' + checked)
-        if '/.mcpp/' in checked or '/home/runner/' in checked:
-            raise RuntimeError('staged program still reaches build-private paths:\n' + checked)
+        reject_private_paths(checked, output)
     launcher = output / 'literouter-tray'
     launcher.write_text('''#!/bin/sh
 set -eu

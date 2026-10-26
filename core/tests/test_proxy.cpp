@@ -1169,6 +1169,16 @@ void group3bCapacityBadRequest(StubRelay &relay_a, StubRelay &relay_b,
 void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxyServer &proxy) {
     LR_GROUP("4. a streamed answer is relayed chunk by chunk");
     const int port = proxy.boundPort();
+    // The preceding streamed group's body can finish before its done callback.
+    // Do not reset counters while that callback can still add its usage here.
+    const auto idle = [&] {
+        for (int i = 0; i < 200; ++i) {
+            if (proxy.snapshot().active_requests == 0) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
+    };
+    LR_CHECK_MSG(idle(), "the preceding stream did not finish accounting");
     proxy.resetStats();
     relay_a.setMode(StubRelay::Mode::Stream);
     relay_b.setMode(StubRelay::Mode::Normal);
@@ -1204,6 +1214,7 @@ void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxySe
     // even though the chunk itself is passed through untouched — the body above
     // is byte-identical to the relay's own transcript, and these two numbers
     // come out of it.
+    LR_CHECK_MSG(idle(), "the streamed answer did not finish accounting");
     const literouter::Snapshot streamed = proxy.snapshot();
     LR_CHECK_EQ(streamed.tokens_prompt, static_cast<std::uint64_t>(11));
     LR_CHECK_EQ(streamed.tokens_completion, static_cast<std::uint64_t>(7));
@@ -1220,6 +1231,7 @@ void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxySe
     LR_CHECK_EQ(failedOver.body, join(relay_b.sseChunks()));
     LR_CHECK_EQ(relay_a.chatRequests(), 1);
     LR_CHECK_EQ(relay_b.chatRequests(), 1);
+    LR_CHECK_MSG(idle(), "the failover stream did not finish accounting");
     const literouter::Snapshot snapshot = proxy.snapshot();
     const auto *beta = statOf(snapshot, "beta");
     LR_CHECK(beta != nullptr && beta->retries_in == 1);
@@ -1255,19 +1267,19 @@ void group4Streaming(StubRelay &relay_a, StubRelay &relay_b, literouter::ProxySe
     relay_a.resetCounters();
     relay_b.resetCounters();
 
-    // A single runner scheduling pause is not a Nagle stall. The median keeps
-    // the original budget while still failing a consistently paced socket.
-    const auto medianLatency = [&](bool stream) {
+    // The fastest of several trials excludes scheduler pauses; a Nagle stall
+    // affects every trial and still violates the unchanged 30ms budget.
+    const auto baselineLatency = [&](bool stream) {
         std::array<double, 5> samples;
         for (auto &sample : samples) {
             sample = timeBuffered(port, chatRequest(kRouteModel, stream));
             if (sample < 0) return -1.0; // transport failures are never discarded
         }
         std::ranges::sort(samples);
-        return samples[samples.size() / 2];
+        return samples.front();
     };
-    const double bufferedMs = medianLatency(false);
-    const double streamedMs = medianLatency(true);
+    const double bufferedMs = baselineLatency(false);
+    const double streamedMs = baselineLatency(true);
 
     LR_CHECK_MSG(bufferedMs >= 0.0, "the buffered control request never completed");
     LR_CHECK_MSG(streamedMs >= 0.0, "the streamed request never completed");
