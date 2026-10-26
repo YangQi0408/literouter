@@ -11,7 +11,7 @@ inline std::string tlsFile(const std::filesystem::path &path) {
 
 inline bool loadCertificateChain(SSL_CTX *context, const std::filesystem::path &path) {
     const std::string pem = tlsFile(path);
-    if (pem.empty() || pem.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return false;
+    if (pem.empty() || pem.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)())) return false;
     const std::unique_ptr<BIO, decltype(&BIO_free)> input{
         BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free};
     if (!input) return false;
@@ -35,7 +35,7 @@ inline bool loadCertificateChain(SSL_CTX *context, const std::filesystem::path &
 
 inline bool loadPrivateKey(SSL_CTX *context, const std::filesystem::path &path) {
     const std::string pem = tlsFile(path);
-    if (pem.empty() || pem.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return false;
+    if (pem.empty() || pem.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)())) return false;
     const std::unique_ptr<BIO, decltype(&BIO_free)> input{
         BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free};
     if (!input) return false;
