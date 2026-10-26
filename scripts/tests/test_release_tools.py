@@ -37,12 +37,20 @@ class ReleaseTools(unittest.TestCase):
             (root / 'lib/libc.so.6').write_text('fixture')
             loader = root / 'lib64/ld-linux-x86-64.so.2'
             loader.write_text('fixture')
+            # Linux ldd always prints POSIX paths, independent of the host
+            # running this pure contract test (Windows drive paths do not).
+            printed_libc = '/fixture/lib/libc.so.6'
             def commands(*args):
                 if args[0] == 'ldd':
-                    return 'libc.so.6 => ' + (root / 'lib/libc.so.6').as_posix() + ' (0x0)\n/lib64/ld-linux-x86-64.so.2 (0x0)'
+                    return 'libc.so.6 => ' + printed_libc + ' (0x0)\n/lib64/ld-linux-x86-64.so.2 (0x0)'
                 return str(loader)
-            with patch.object(helper, 'run', commands):
-                self.assertEqual(helper.closure(root / 'program')['ld-linux-x86-64.so.2'], loader)
+            real_resolve = Path.resolve
+            def resolve(path, *args, **kwargs):
+                if path.as_posix() == printed_libc:
+                    return real_resolve(root / 'lib/libc.so.6', *args, **kwargs)
+                return real_resolve(path, *args, **kwargs)
+            with patch.object(helper, 'run', commands), patch.object(Path, 'resolve', resolve):
+                self.assertEqual(helper.closure(root / 'program')['ld-linux-x86-64.so.2'], loader.resolve())
 
     def test_runner_staging_is_not_a_private_runtime_dependency(self):
         helper = module('stage_linux_release')
