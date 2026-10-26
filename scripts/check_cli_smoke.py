@@ -27,7 +27,7 @@ def main():
 
         def run(*arguments, input=None, code=0):
             reply = subprocess.run([str(binary), *arguments], env=env, input=input,
-                                   text=True, capture_output=True, timeout=20)
+                                   text=True, encoding='utf-8', capture_output=True, timeout=20)
             assert reply.returncode == code, (arguments, reply.returncode, reply.stderr)
             return reply.stdout
 
@@ -42,19 +42,19 @@ def main():
                                            env=env, stdout=log, stderr=log)
                 port = None
                 for _ in range(120):
-                    assert process.poll() is None, (root / 'serve.log').read_text()
+                    assert process.poll() is None, (root / 'serve.log').read_text(encoding='utf-8')
                     records = list((root / 'state').glob('literouter-*.pid'))
                     if records:
-                        port = json.loads(records[0].read_text())['port']
+                        port = json.loads(records[0].read_text(encoding='utf-8'))['port']
                         break
                     time.sleep(0.05)
                 assert port and port != 8787, 'ephemeral listener never started'
                 assert config.is_file(), 'first serve did not create its configuration'
-                seed = json.loads(config.read_text())
+                seed = json.loads(config.read_text(encoding='utf-8'))
                 assert seed['server']['port'] == 8787, 'one-off CLI override was persisted'
                 # Save port 0 in this isolated file to exercise management discovery.
                 seed['server']['port'] = 0
-                config.write_text(json.dumps(seed))
+                config.write_text(json.dumps(seed), encoding='utf-8')
                 snapshot = json.loads(run('status', '--json'))
                 assert snapshot['reachable'] and snapshot['port'] == port, snapshot
                 assert snapshot['config_writable'], 'new configuration is incorrectly read-only'
@@ -66,7 +66,7 @@ def main():
                 assert parsed['ok'] and hashlib.sha256(config.read_bytes()).hexdigest() == before
                 run('providers', 'add', 'stdin-check', '--base-url', 'http://127.0.0.1:9',
                     '--key-stdin', input='fake-only-key\r\n')
-                providers = json.loads(config.read_text())['providers']
+                providers = json.loads(config.read_text(encoding='utf-8'))['providers']
                 assert next(item['api_key'] for item in providers if item['id'] == 'stdin-check') == 'fake-only-key'
                 connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
                 connection.request('POST', '/__literouter/shutdown')

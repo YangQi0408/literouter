@@ -76,9 +76,13 @@ class ReleaseTools(unittest.TestCase):
             root = Path(tmp)
             source = root / 'program'
             source.write_text('fixture executable')
-            subprocess.run(['bash', str(ROOT / 'scripts/make_macos_app.sh'), '--binary', str(source),
-                '--version', 'v0.5.0', '--output', str(root / 'output'), '--no-sign'], check=True, capture_output=True,
+            # Native Python passes Windows paths verbatim; Git Bash needs
+            # slash-form drive paths, and System32's WSL bash is not this shell.
+            bash = str(Path(os.environ.get('PROGRAMFILES', 'C:/Program Files')) / 'Git/bin/bash.exe') if os.name == 'nt' else 'bash'
+            reply = subprocess.run([bash, (ROOT / 'scripts/make_macos_app.sh').as_posix(), '--binary', source.as_posix(),
+                '--version', 'v0.5.0', '--output', (root / 'output').as_posix(), '--no-sign'], capture_output=True,
                 env=os.environ | {'MACOSX_DEPLOYMENT_TARGET': '14.0'})
+            self.assertEqual(reply.returncode, 0, reply.stderr.decode('utf-8', errors='replace'))
             app = root / 'output/literouter.app/Contents'
             info = plistlib.loads((app / 'Info.plist').read_bytes())
             self.assertEqual(info['CFBundleShortVersionString'], '0.5.0')
@@ -90,7 +94,7 @@ class ReleaseTools(unittest.TestCase):
                 self.assertTrue((app / 'Resources' / name).is_file())
 
     def test_windows_installer_uses_scoped_path_and_does_not_kill_other_installs(self):
-        source = (ROOT / 'scripts/make_windows_installer.iss').read_text()
+        source = (ROOT / 'scripts/make_windows_installer.iss').read_text(encoding='utf-8')
         self.assertIn('HKEY_CURRENT_USER', source)
         self.assertIn('EnvironmentRoot', source)
         self.assertNotIn("'/F /IM", source)
@@ -100,12 +104,12 @@ class ReleaseTools(unittest.TestCase):
         self.assertNotIn('Type: filesandordirs; Name: "{app}"', source)
 
     def test_release_requires_tests_and_passes_app_to_installer(self):
-        source = (ROOT / '.github/workflows/release.yml').read_text()
+        source = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')
         self.assertNotIn('continue-on-error: true', source)
         self.assertIn('mcpp test -p core --profile release', source)
         self.assertIn('--app "$app"', source)
         self.assertIn('stage_linux_release.py', source)
-        ci = (ROOT / '.github/workflows/ci.yml').read_text()
+        ci = (ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8')
         self.assertNotIn("-name 'literouter*'", ci)
 
 
