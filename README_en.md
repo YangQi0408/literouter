@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>High-Performance Local AI Relay Aggregator and Multi-Protocol Gateway built with C++23 and mcpp</strong><br>
-  Single Endpoint · Intelligent Failover · Header Gate · Auto-Healing Breaker · Cross-Protocol Fast Path · Zero-Leak Secrets · Native CLI & Embedded Web Console
+  Single Endpoint · Failover · Header Gate · Circuit Recovery · Wire Passthrough · Secret References · CLI, Desktop Tray & Embedded Web Console
 </p>
 
 <p align="center">
@@ -13,16 +13,16 @@
 
 ## What is literouter?
 
-`literouter` is a high-performance local AI gateway designed for developers and teams. It provides a single local endpoint (default `http://127.0.0.1:8787`) to client applications while dispatching requests across multiple upstream relays and official model provider APIs according to your configurable rules.
+`literouter` is a local AI gateway for individual developers. It provides a single local endpoint (default `http://127.0.0.1:8787`) while dispatching requests across upstream relays and official APIs. It is a single-user tool: one `server.api_key` protects both model and management endpoints, with no accounts, permission groups or quota distribution.
 
-Simply point any AI tool (such as **Cursor, Claude Desktop, VS Code (Continue/Cline/Roo Code), Chatbox, NextChat, Immersive Translate, shell scripts, or standard Python/Node.js SDKs**) to `literouter`, and let it handle upstream orchestration seamlessly in milliseconds: **which provider offers the requested model, which node is down or rate-limited, which requires model aliasing, and which is cheapest—all managed automatically in the background**.
+Point clients, editor extensions or SDKs that support a custom API address and a matching protocol to `literouter` to centralize model aliases, upstream candidates, limits and failover. Client versions and vendor extensions still need scenario-specific testing. Prices come from your configured rates, not an automatically synchronized bill.
 
 ```text
 ┌──────────────┐        ┌──────────────────────────────────────────────┐        ┌─────────────────────┐
 │ Client       │  ───▶  │  literouter :8787                            │  ───▶  │ Relay A (Official)  │
 │ (Cursor/     │  ◀───  │                                              │  ◀───  │                     │
 │  Claude/     │        │  Multi-Protocol Gateway · Header Gate Safety │        ├─────────────────────┤
-│  OpenAI SDK) │        │  Zero-Copy SSE · Per-Model Pricing · Telemetry│  ───▶  │ Relay B (Low-Cost)  │
+│  OpenAI SDK) │        │  SSE Forwarding · Model Rates · Telemetry   │  ───▶  │ Relay B (Low-Cost)  │
 └──────────────┘        └──────────────────────────────────────────────┘  ◀───  └─────────────────────┘
 ```
 
@@ -45,11 +45,15 @@ Download the file for your platform from [GitHub Releases](https://github.com/Ya
 
 | Platform | Download | How to run |
 |---|---|---|
-| **macOS** (Apple Silicon) | `literouter-<version>-macos-arm64-app.zip` | Unzip, drag `literouter.app` into Applications, double-click |
+| **macOS** (Apple Silicon, 14+) | `literouter-<version>-macos-arm64-app.zip` | Unzip, drag into Applications, double-click; allow an unnotarized build through the OS prompt |
 | **Windows** (x86_64) | `literouter-<version>-windows-x86_64-setup.exe` | Run the installer, launch from the Start menu |
 | **Linux** (x86_64) | `literouter-<version>-linux-x86_64.tar.gz` | Unzip and run the `literouter-tray` inside |
 
-On launch it does three things: starts the gateway **in its own process**, opens `http://127.0.0.1:8787/ui/` in your browser, and puts an icon in the tray. It has no window of its own — **the console is the interface**.
+On launch it starts the gateway **in the same process** (or adopts an existing instance), opens `/ui/` at the actual listener address, and puts an icon in the tray. The default is `http://127.0.0.1:8787/ui/`; port `0` and HTTPS use the actual port and scheme. It has no window of its own — **the console is the interface**.
+
+On Linux, `literouter-tray` is a launcher using the matching loader and shared libraries under `lib/tray/`; keep the entire extracted directory. A StatusNotifierWatcher is required (KDE, GNOME AppIndicator, or a tray-enabled panel). The standalone CLI requires glibc 2.38+. macOS code signing is not notarization; ad-hoc or Developer ID signing alone is not advertised as notarized.
+
+These packaging improvements describe the current source build; they **do not update existing v0.5.0 release assets**. Public distribution still requires the platform CI matrix and native desktop qualification. See the [build and packaging guide](scripts/README.md) for validation steps and platform limits.
 
 The tray menu has two entries (a limit of the underlying tray library):
 
@@ -182,14 +186,14 @@ Receiving a response confirms that `literouter` successfully routed and dispatch
 
 ## 🔌 Client & AI Tool Integration Guide
 
-Point your client application's API base to `http://127.0.0.1:8787` to enjoy transparent load balancing and failover.
+These are integration references for clients that support custom endpoints, not a guarantee for every client version. A configured `server.api_key` must be supplied; arbitrary placeholder strings work only while that local key is empty.
 
 | Client / Tool | Endpoint Dialect | Base URL / Server Address | API Key Notes |
 |---|---|---|---|
 | **Cursor** | OpenAI Compatible | `http://127.0.0.1:8787/v1` | Any string or `server.api_key` |
 | **VS Code (Continue)** | OpenAI / Anthropic | `http://127.0.0.1:8787/v1` | Any string or `server.api_key` |
 | **VS Code (Cline / Roo Code)** | OpenAI Compatible | `http://127.0.0.1:8787/v1` | Any string or `server.api_key` |
-| **Claude Desktop** | Native Anthropic | `http://127.0.0.1:8787` | Passthrough `/v1/messages` |
+| **Anthropic SDK / custom-endpoint tools** | Native Anthropic | `http://127.0.0.1:8787` | `/v1/messages`, subject to client support |
 | **NextChat / Chatbox** | OpenAI Compatible | `http://127.0.0.1:8787` | Any string or `server.api_key` |
 | **Immersive Translate / Cherry Studio** | OpenAI Compatible | `http://127.0.0.1:8787/v1` | Any string or `server.api_key` |
 | **Python / Node.js SDK** | OpenAI Official SDK | `http://127.0.0.1:8787/v1` | See code snippet below |
@@ -236,19 +240,19 @@ Pricing often differs significantly across providers and among different models 
 `literouter` provides fine-grained **provider default rates** alongside **per-model price overrides**:
 - **Provider Default Pricing**: Set `price_in_per_million` and `price_out_per_million` on a provider as baseline prices;
 - **Per-Model Overrides (`model_prices`)**: Override input/output rates for specific models; unlisted models fall back to the provider default;
-- **Cheapest Routing Policy (`routing_policy: "cheapest"`)**: Dynamically evaluates the actual price of the requested model across all candidate relays and routes to the cheapest healthy relay first;
-- **Balanced Round-Robin (`routing_policy: "round_robin"`)**: Rotates the first relay between requests so equal relays share traffic over time instead of staying in a fixed primary/backup split; a relay's model fallback chain stays together.
-- **Visual Management**: Easily configure model rates in the `/ui` Web Console and monitor real-time spend across relays and models.
+- **Cheapest Routing Policy (`routing_policy: "cheapest"`)**: Orders candidates by their configured rates for this model, not a synchronized bill; session affinity still takes precedence;
+- **Balanced Round-Robin (`routing_policy: "round_robin"`)**: Rotates the first relay; explicitly authored same-provider model fallbacks stay together. `providers[].models` is a directory and never implicitly replaces the requested model.
+- **Visual Management**: Configure model rates in `/ui` and estimate spend from reported usage; unreported or unpriced portions are not included.
 
 ---
 
 ## 🛡️ Key Architectural Capabilities
 
-- 🛡️ **Header Gate Streaming Safety**: Proprietary streaming failover mechanism. Connection failures, timeouts, 429s, or 5xx errors trigger transparent failover before the first response header reaches the client. Once the first byte is emitted, the connection is locked to **strictly prevent corrupting or interweaving answers**.
-- 🔄 **Multi-Protocol Gateway & Zero-Copy Fast Path**: Supports inbound OpenAI, Anthropic Claude, Google Gemini, and OpenAI Responses requests, and 8 outbound provider protocols. Matching protocols enjoy **zero JSON parsing and zero-copy streaming passthrough**, while mismatched protocols are converted bi-directionally on the fly.
+- 🛡️ **Header Gate Streaming Safety**: Connection failures, timeouts, 429s and retryable 5xx errors can try the next candidate before a response is committed. After commitment, the upstream is never switched, avoiding interleaved answers.
+- 🔄 **Multi-Protocol Gateway & Wire Passthrough**: Four inbound protocols and eight outbound protocols, including `openai_responses`. Matching wire shapes avoid protocol translation, but request validation/routing still parses JSON and streaming uses bounded queues; this is not end-to-end zero parsing or zero copying.
 - 🧠 **Local Response Cache**: Exact-match caching for **non-streaming** requests (TTL + LRU eviction). Cache hits are served directly from memory with `X-Literouter-Cache: hit` without upstream roundtrips, saving real API spend.
 - 🚦 **Relay-Side Rate Limiting & Auto-Breaker**: Set per-relay concurrency and rolling RPM limits. Saturated relays are skipped without penalizing health; failing relays trip into cooldown and auto-recover via single-request probes.
-- 🔐 **Zero-Leak Secret Placeholders**: Store `${OPENAI_API_KEY}` placeholders in your config. Secrets are resolved in memory strictly when dispatching requests and are never written back to disk.
+- 🔐 **Secret References & Redaction**: Store `${OPENAI_API_KEY}` references; saves preserve them and management responses hide dedicated stored credentials. Literal keys remain a supported user choice, so this is not an absolute zero-leak guarantee. Upstream redirects are refused; configure the final Base URL.
 - 💻 **Two Frontends in Harmony**:
   - **CLI**: Foreground server, `tail -f` live log streaming, status dashboards, and health diagnostics (`doctor`);
   - **Web Console**: An embedded modern React + Vite + Tailwind + shadcn/ui `/ui` console served directly on the same port with zero extra deployment.
@@ -296,7 +300,7 @@ mcpp build --workspace
 # Headless only — skips the graphics dependencies
 mcpp build -p core -p cli
 
-# Run the core test suites (all 13 pass)
+# Run the core and CLI test suites
 mcpp test -p core
 mcpp test -p cli
 ```
